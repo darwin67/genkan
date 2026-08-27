@@ -135,7 +135,11 @@ Allowed decision states:
 ## 9. Focus and gate PAM input by phase
 
 - **Severity:** Medium
-- **Decision:** Pending
+- **Decision:** Accepted. Assign a stable input ID and focus it for every PAM
+  prompt; accept edits and submission only in `WaitingForInput`; clear input
+  between prompts; disable it while processing; use a separate Retry control
+  for idle or disconnected states; and restore focus only when the next prompt
+  is ready.
 - **Finding:** PAM input is not focused when a prompt arrives and remains
   editable while input is not valid, causing discarded or misleading text.
 - **Recommendation:** Give the input a stable ID, focus it for each prompt,
