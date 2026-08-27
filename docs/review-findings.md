@@ -163,7 +163,12 @@ Allowed decision states:
 ## 11. Test the authentication state machine and IPC
 
 - **Severity:** Low
-- **Decision:** Pending
+- **Decision:** Accepted. Isolate authentication transitions for table-driven
+  tests covering prompt sequences, messages, failure, retry, cancellation,
+  stale responses, both success stages, and start failure. Add a fake greetd
+  Unix-socket server to verify framing, requests, cancellation, and the session
+  command environment. Retain value-level tests; do not require a coverage
+  percentage initially.
 - **Finding:** Current tests cover value conversion but not multi-step PAM
   conversations, cancellation, retries, stale results, both success states, or
   serialized greetd IPC.
