@@ -262,9 +262,10 @@ Allowed decision states:
 ## 18. Use one package version source
 
 - **Severity:** Low
-- **Decision:** Pending
+- **Decision:** Accepted
 - **Finding:** The package version is maintained independently in `Cargo.toml`
   and `flake.nix`.
 - **Recommendation:** Derive the Nix package version from `Cargo.toml` or add a
   check that requires both values to match.
-- **Resolution:** Not started.
+- **Resolution:** Treat `Cargo.toml` as the single source of truth and derive
+  the Nix package version from `package.version` using Nix's TOML parser.
