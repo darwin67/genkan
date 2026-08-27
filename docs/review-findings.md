@@ -58,7 +58,11 @@ Allowed decision states:
 ## 4. Parse Desktop Entry `Exec` according to the specification
 
 - **Severity:** Medium
-- **Decision:** Pending
+- **Decision:** Accepted with conservative execution rules. Use a maintained
+  Desktop Entry parser; validate type, visibility, `TryExec`, and localized
+  names; apply Desktop Entry quoting rather than shell parsing; support `%%`
+  and safe metadata substitutions; reject file, URL, icon, or unknown field
+  codes that have no defined login-session value; never invoke a shell.
 - **Finding:** Shell parsing and whole-argument field-code removal do not
   implement Desktop Entry quoting, escaping, and field-code behavior.
 - **Recommendation:** Use a Desktop Entry parser with explicit `Exec`
