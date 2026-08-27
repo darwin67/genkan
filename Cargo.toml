@@ -1,0 +1,20 @@
+[package]
+name = "genkan"
+version = "0.1.0"
+edition = "2021"
+description = "A small graphical greetd frontend for Wayland"
+license = "MIT"
+
+[dependencies]
+chrono = { version = "0.4.38", default-features = false, features = ["clock"] }
+clap = { version = "4.5.23", features = ["derive"] }
+greetd_ipc = { version = "0.10.3", features = ["tokio-codec"] }
+iced = { version = "0.13.1", features = ["canvas", "tokio"] }
+shell-words = "1.1.0"
+thiserror = "2.0.9"
+tokio = { version = "1.42.0", features = ["net", "sync"] }
+zbus = { version = "5.2.0", default-features = false, features = ["tokio"] }
+
+[profile.release]
+lto = "thin"
+strip = true
