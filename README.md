@@ -9,12 +9,15 @@ runs the user session itself.
 ## Development preview
 
 ```sh
-nix develop
-cargo run -- --windowed
+make dev
 ```
 
 The preview renders without greetd. Submitting the password field reports that
 `GREETD_SOCK` is missing, as expected.
+
+The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `build`,
+`package`, `verify`, and `clean` targets. Enter `nix develop` manually if
+direnv has not already loaded the flake environment.
 
 ## greetd configuration
 
@@ -45,8 +48,5 @@ The default session command is `sway --unsupported-gpu`. Override it with
 ## Validation
 
 ```sh
-nix develop -c cargo fmt --check
-nix develop -c cargo clippy --all-targets -- -D warnings
-nix develop -c cargo test
-nix build
+make verify
 ```

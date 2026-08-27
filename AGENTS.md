@@ -21,16 +21,13 @@ Enter the pinned Rust environment before running Cargo commands:
 
 ```sh
 nix develop
-cargo run -- --windowed
+make dev
 ```
 
 Before completing code changes, run:
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-nix build
+make verify
 ```
 
 ## Security and Behavior
