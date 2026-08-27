@@ -15,7 +15,11 @@ Allowed decision states:
 ## 1. Cancel abandoned greetd authentication sessions
 
 - **Severity:** High
-- **Decision:** Pending
+- **Decision:** Accepted in full. Power failures must preserve authentication
+  state; voluntarily abandoned attempts and graceful window exits must cancel
+  active greetd sessions; retries must recover stale sessions; attempt IDs
+  must prevent late responses from mutating newer state. A server-returned
+  `AuthError` does not require cancellation because greetd invalidates it.
 - **Finding:** Active greetd sessions can be dropped without `CancelSession`,
   potentially leaving greetd unable to accept another login attempt. Late
   asynchronous responses can also update an abandoned attempt.
