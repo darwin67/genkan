@@ -121,7 +121,11 @@ Allowed decision states:
 ## 8. Reject invalid session commands
 
 - **Severity:** Medium
-- **Decision:** Pending
+- **Decision:** Accepted by removing `--session-command`. Valid discovered
+  desktop entries are the sole session source; host-specific arguments such as
+  `sway --unsupported-gpu` belong in a NixOS-installed session entry. Report a
+  clear configuration error when no valid session is available, and never
+  substitute an implicit compositor command.
 - **Finding:** Empty or malformed `--session-command` input silently falls back
   to Sway.
 - **Recommendation:** Validate the value through Clap and fail at startup when
