@@ -252,11 +252,12 @@ Allowed decision states:
 ## 17. Add the declared MIT license text
 
 - **Severity:** Low
-- **Decision:** Pending
+- **Decision:** Accepted
 - **Finding:** `Cargo.toml` declares MIT but the repository has no `LICENSE`
   file.
 - **Recommendation:** Add the standard MIT license text.
-- **Resolution:** Not started.
+- **Resolution:** Add `LICENSE` containing the standard MIT license text with
+  `Copyright (c) 2026 Darwin D. Wu`.
 
 ## 18. Use one package version source
 
