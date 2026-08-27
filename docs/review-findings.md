@@ -90,7 +90,10 @@ Allowed decision states:
 ## 6. Make power confirmation modal
 
 - **Severity:** Medium
-- **Decision:** Pending
+- **Decision:** Accepted; retain Sleep, Restart, and Shut Down controls. Model
+  idle, confirmation, and execution states explicitly; block underlying input
+  and duplicate requests while modal; allow cancellation; and report logind
+  failures without changing the active greetd authentication state.
 - **Finding:** Authentication, session, and power controls can still receive
   events behind the confirmation overlay, and concurrent power requests are
   possible.
