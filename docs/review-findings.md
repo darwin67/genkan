@@ -150,7 +150,10 @@ Allowed decision states:
 ## 10. Bound authentication retry behavior
 
 - **Severity:** Medium
-- **Decision:** Pending
+- **Decision:** Accepted with explicit retry. Stop after authentication, socket,
+  or protocol failure; show a clear failed state; require the Retry control to
+  create a fresh greetd attempt; and focus the next prompt when ready. Do not
+  add automatic backoff initially because user action already bounds retries.
 - **Finding:** An account rejected before a prompt can trigger an immediate,
   unbounded authentication retry loop.
 - **Recommendation:** Require explicit user retry after failure or introduce a
