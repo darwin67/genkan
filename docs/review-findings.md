@@ -73,7 +73,12 @@ Allowed decision states:
 ## 5. Honor session search precedence and masking
 
 - **Severity:** Medium
-- **Decision:** Pending
+- **Decision:** Accepted. Honor configured `XDG_DATA_DIRS` order and use the
+  standard directories only as a fallback. Resolve precedence by relative
+  desktop filename, let hidden entries mask lower-priority copies, permit
+  distinct entries with identical commands, sort visible sessions
+  deterministically, and add the configured fallback only when its identity is
+  absent.
 - **Finding:** Search order does not follow `XDG_DATA_DIRS`; deduplication uses
   commands instead of relative filenames; hidden entries do not mask
   lower-priority entries.
