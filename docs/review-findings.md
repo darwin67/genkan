@@ -45,7 +45,10 @@ Allowed decision states:
 ## 3. Pin third-party CI actions
 
 - **Severity:** High
-- **Decision:** Pending
+- **Decision:** Accepted. Pin the Nix installer and Conventional Commit
+  validator to reviewed full commit SHAs with adjacent version comments.
+  Future action updates remain explicit dependency changes. Dependabot may be
+  added later but is not required to address this finding.
 - **Finding:** The Nix installer and Conventional Commit validation actions use
   mutable branch or version references.
 - **Recommendation:** Pin every third-party action to an audited full commit
