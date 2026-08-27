@@ -104,7 +104,13 @@ Allowed decision states:
 ## 7. Remove fixed personal package defaults
 
 - **Severity:** Medium
-- **Decision:** Pending
+- **Decision:** Accepted with device discovery. Query AccountsService over the
+  system D-Bus for cached, unlocked, non-system users; auto-select a sole user
+  and show a selector for multiple users; source display names and avatars from
+  account metadata without broad home-directory access. Discover Wayland
+  sessions from XDG entries. Keep identity and session CLI values only as
+  optional administrative overrides, and report clearly when discovery finds
+  no usable user or session.
 - **Finding:** The packaged binary defaults to the `darwin` account and a
   Sway-specific command, making an apparently generic package host-specific.
 - **Recommendation:** Require or derive user identity and require or verify the
