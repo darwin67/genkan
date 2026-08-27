@@ -223,12 +223,16 @@ Allowed decision states:
 ## 15. Correct and expand runtime documentation
 
 - **Severity:** Low
-- **Decision:** Pending
+- **Decision:** Accepted
 - **Finding:** The preview description does not match immediate authentication,
   and integration prerequisites and failure behavior are incomplete.
 - **Recommendation:** Correct preview wording and document package binding,
   graphics expectations, account scope, and logind policy behavior.
-- **Resolution:** Not started.
+- **Resolution:** State that authentication begins immediately and that users
+  and sessions are discovered from AccountsService and installed Wayland
+  desktop entries. Document NixOS package binding, greetd/Cage integration,
+  graphics-driver expectations, logind authorization and failure behavior,
+  and clear errors for unavailable runtime dependencies.
 
 ## 16. Align Conventional Commit policy and enforcement
 
