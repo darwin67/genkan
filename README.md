@@ -16,8 +16,8 @@ The preview renders without greetd. Submitting the password field reports that
 `GREETD_SOCK` is missing, as expected.
 
 The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `build`,
-`package`, `verify`, and `clean` targets. Enter `nix develop` manually if
-direnv has not already loaded the flake environment.
+`package`, `verify`, `changelog`, `next-version`, and `clean` targets. Enter
+`nix develop` manually if direnv has not already loaded the flake environment.
 
 ## greetd configuration
 

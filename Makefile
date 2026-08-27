@@ -1,4 +1,4 @@
-.PHONY: dev check fmt fmt-fix lint test build package verify clean
+.PHONY: dev check fmt fmt-fix lint test build package verify changelog next-version clean
 
 dev:
 	cargo run -- --windowed
@@ -25,6 +25,12 @@ package:
 	nix build
 
 verify: fmt lint test package
+
+changelog:
+	git cliff --output CHANGELOG.md
+
+next-version:
+	git cliff --bumped-version
 
 clean:
 	cargo clean

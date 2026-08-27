@@ -54,7 +54,10 @@
           };
 
           devShell = pkgs.mkShell {
-            packages = [ rustToolchain ];
+            packages = [
+              pkgs.git-cliff
+              rustToolchain
+            ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;
           };
         };

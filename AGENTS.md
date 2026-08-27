@@ -17,6 +17,12 @@ PAM authentication and launching the selected desktop session.
 
 ## Development
 
+Use Conventional Commit titles: `<type>(optional-scope): <description>`. The
+allowed types are `feat`, `fix`, `doc`, `docs`, `test`, `ci`, `refactor`,
+`perf`, `chore`, `revert`, `style`, and `security`. Use `!` before the colon or
+a `BREAKING CHANGE:` footer for breaking changes. Keep pull request titles,
+`.github/workflows/commits.yml`, and `cliff.toml` aligned.
+
 Enter the pinned Rust environment before running Cargo commands:
 
 ```sh
