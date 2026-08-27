@@ -237,13 +237,17 @@ Allowed decision states:
 ## 16. Align Conventional Commit policy and enforcement
 
 - **Severity:** Low
-- **Decision:** Pending
+- **Decision:** Accepted
 - **Finding:** Policy requires Conventional Commits, but automation validates
   only pull request titles, and relevant release files do not trigger main CI.
 - **Recommendation:** Enforce commit messages, or require squash merging and
   make PR titles authoritative. Include release and validation configuration
   in relevant CI path filters.
-- **Resolution:** Not started.
+- **Resolution:** Validate every non-merge commit introduced by a pull request
+  and continue validating pull request titles so squash merges are also
+  conventional. Keep allowed types aligned with `cliff.toml`, document the
+  merge-commit exemption, and include `cliff.toml` and
+  `.github/workflows/commits.yml` in relevant CI path filters.
 
 ## 17. Add the declared MIT license text
 
