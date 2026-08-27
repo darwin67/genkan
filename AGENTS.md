@@ -6,6 +6,18 @@ Genkan is a graphical greetd frontend for Linux, written in Rust with iced. It
 runs as an unprivileged application under Cage; greetd remains responsible for
 PAM authentication and launching the selected desktop session.
 
+## Version Control
+
+- Use Jujutsu (`jj`) whenever possible for status, diffs, history, commits,
+  rebases, and bookmark management.
+- Use Git only when an external integration requires it or `jj` has no
+  equivalent operation. Do not use Git staging, reset, or rebase commands.
+- This is a colocated repository. Export Jujutsu changes before a Git-only
+  integration when necessary, and import any resulting Git changes back into
+  Jujutsu.
+- Keep changes in small, logical Conventional Commits that are independently
+  reviewable.
+
 ## Architecture
 
 - `src/main.rs`: iced application and authentication state machine.
