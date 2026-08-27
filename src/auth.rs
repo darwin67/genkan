@@ -11,7 +11,7 @@ pub struct Client {
     stream: Arc<Mutex<UnixStream>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Response {
     Success,
     Error {
@@ -86,5 +86,91 @@ impl From<greetd_ipc::Response> for Response {
                 },
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_visible_and_secret_prompts() {
+        let visible = greetd_ipc::Response::AuthMessage {
+            auth_message_type: AuthMessageType::Visible,
+            auth_message: "Username:".into(),
+        };
+        let secret = greetd_ipc::Response::AuthMessage {
+            auth_message_type: AuthMessageType::Secret,
+            auth_message: "Password:".into(),
+        };
+
+        assert_eq!(
+            Response::from(visible),
+            Response::Prompt {
+                secret: false,
+                message: "Username:".into(),
+            }
+        );
+        assert_eq!(
+            Response::from(secret),
+            Response::Prompt {
+                secret: true,
+                message: "Password:".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn normalizes_information_and_error_messages() {
+        let information = greetd_ipc::Response::AuthMessage {
+            auth_message_type: AuthMessageType::Info,
+            auth_message: "Touch the fingerprint sensor".into(),
+        };
+        let error = greetd_ipc::Response::AuthMessage {
+            auth_message_type: AuthMessageType::Error,
+            auth_message: "Fingerprint not recognized".into(),
+        };
+
+        assert_eq!(
+            Response::from(information),
+            Response::Message {
+                error: false,
+                message: "Touch the fingerprint sensor".into(),
+            }
+        );
+        assert_eq!(
+            Response::from(error),
+            Response::Message {
+                error: true,
+                message: "Fingerprint not recognized".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn distinguishes_authentication_from_protocol_errors() {
+        let authentication = greetd_ipc::Response::Error {
+            error_type: ErrorType::AuthError,
+            description: "invalid credentials".into(),
+        };
+        let protocol = greetd_ipc::Response::Error {
+            error_type: ErrorType::Error,
+            description: "session unavailable".into(),
+        };
+
+        assert_eq!(
+            Response::from(authentication),
+            Response::Error {
+                authentication: true,
+                description: "invalid credentials".into(),
+            }
+        );
+        assert_eq!(
+            Response::from(protocol),
+            Response::Error {
+                authentication: false,
+                description: "session unavailable".into(),
+            }
+        );
     }
 }
