@@ -179,7 +179,12 @@ Allowed decision states:
 ## 12. Validate graphics runtime packaging
 
 - **Severity:** Low
-- **Decision:** Pending
+- **Decision:** Accepted in two stages. Add the Nix graphics-driver runpath and
+  packaged-binary smoke coverage, including a nested/headless Wayland launch
+  with software rendering where practical. Before resolution, test Cage on the
+  Framework AMD GPU, verify NVIDIA is not unnecessarily activated, exercise
+  external displays, and test an ARM Linux device when available. Record manual
+  results here.
 - **Finding:** Both architectures build, but CI does not launch Genkan under
   Cage and graphics-driver discovery has not been validated broadly.
 - **Recommendation:** Add the Nix driver runpath where appropriate and perform
