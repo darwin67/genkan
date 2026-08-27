@@ -1,0 +1,203 @@
+# Review Findings
+
+This register tracks decisions and remediation work from the full-repository
+Oracle review performed on 2026-08-27. Findings remain here until they are
+addressed or deliberately accepted.
+
+Allowed decision states:
+
+- **Pending**: not yet discussed.
+- **Accepted**: recommendation approved; remediation remains.
+- **Deferred**: valid finding intentionally postponed, with rationale.
+- **Rejected**: recommendation will not be implemented, with rationale.
+- **Addressed**: remediation completed and verified.
+
+## 1. Cancel abandoned greetd authentication sessions
+
+- **Severity:** High
+- **Decision:** Pending
+- **Finding:** Active greetd sessions can be dropped without `CancelSession`,
+  potentially leaving greetd unable to accept another login attempt. Late
+  asynchronous responses can also update an abandoned attempt.
+- **Recommendation:** Separate power errors from authentication failure; add
+  explicit cancellation for abandoned attempts and graceful window close;
+  recover stale daemon sessions before reconnecting; identify attempts so late
+  responses can be ignored.
+- **Resolution:** Not started.
+
+## 2. Model session and desktop identities separately
+
+- **Severity:** High
+- **Decision:** Pending
+- **Finding:** `XDG_SESSION_DESKTOP` and `XDG_CURRENT_DESKTOP` are populated
+  from the same first `DesktopNames` value instead of their distinct sources.
+- **Recommendation:** Derive the session ID from the desktop filename and
+  colon-join all `DesktopNames` values for `XDG_CURRENT_DESKTOP`.
+- **Resolution:** Not started.
+
+## 3. Pin third-party CI actions
+
+- **Severity:** High
+- **Decision:** Pending
+- **Finding:** The Nix installer and Conventional Commit validation actions use
+  mutable branch or version references.
+- **Recommendation:** Pin every third-party action to an audited full commit
+  SHA and retain a version comment for update tooling and reviewers.
+- **Resolution:** Not started.
+
+## 4. Parse Desktop Entry `Exec` according to the specification
+
+- **Severity:** Medium
+- **Decision:** Pending
+- **Finding:** Shell parsing and whole-argument field-code removal do not
+  implement Desktop Entry quoting, escaping, and field-code behavior.
+- **Recommendation:** Use a Desktop Entry parser with explicit `Exec`
+  expansion, or conservatively reject unsupported field-code forms. Validate
+  entry type, executable availability, visibility, and localized names.
+- **Resolution:** Not started.
+
+## 5. Honor session search precedence and masking
+
+- **Severity:** Medium
+- **Decision:** Pending
+- **Finding:** Search order does not follow `XDG_DATA_DIRS`; deduplication uses
+  commands instead of relative filenames; hidden entries do not mask
+  lower-priority entries.
+- **Recommendation:** Build the search path from `XDG_DATA_DIRS` with standard
+  defaults only when unset, and track entries by relative filename with hidden
+  entries represented as tombstones.
+- **Resolution:** Not started.
+
+## 6. Make power confirmation modal
+
+- **Severity:** Medium
+- **Decision:** Pending
+- **Finding:** Authentication, session, and power controls can still receive
+  events behind the confirmation overlay, and concurrent power requests are
+  possible.
+- **Recommendation:** Suppress underlying handlers while confirmation is open
+  and track a pending power operation to prevent duplicate requests.
+- **Resolution:** Not started.
+
+## 7. Remove fixed personal package defaults
+
+- **Severity:** Medium
+- **Decision:** Pending
+- **Finding:** The packaged binary defaults to the `darwin` account and a
+  Sway-specific command, making an apparently generic package host-specific.
+- **Recommendation:** Require or derive user identity and require or verify the
+  session command. Alternatively, explicitly define Genkan as a personal,
+  single-user greeter.
+- **Resolution:** Not started.
+
+## 8. Reject invalid session commands
+
+- **Severity:** Medium
+- **Decision:** Pending
+- **Finding:** Empty or malformed `--session-command` input silently falls back
+  to Sway.
+- **Recommendation:** Validate the value through Clap and fail at startup when
+  it is malformed or empty.
+- **Resolution:** Not started.
+
+## 9. Focus and gate PAM input by phase
+
+- **Severity:** Medium
+- **Decision:** Pending
+- **Finding:** PAM input is not focused when a prompt arrives and remains
+  editable while input is not valid, causing discarded or misleading text.
+- **Recommendation:** Give the input a stable ID, focus it for each prompt,
+  omit input handlers outside `WaitingForInput`, and use a distinct retry
+  control in `Idle`.
+- **Resolution:** Not started.
+
+## 10. Bound authentication retry behavior
+
+- **Severity:** Medium
+- **Decision:** Pending
+- **Finding:** An account rejected before a prompt can trigger an immediate,
+  unbounded authentication retry loop.
+- **Recommendation:** Require explicit user retry after failure or introduce a
+  bounded delay and backoff.
+- **Resolution:** Not started.
+
+## 11. Test the authentication state machine and IPC
+
+- **Severity:** Low
+- **Decision:** Pending
+- **Finding:** Current tests cover value conversion but not multi-step PAM
+  conversations, cancellation, retries, stale results, both success states, or
+  serialized greetd IPC.
+- **Recommendation:** Isolate the state reducer for table-driven transition
+  tests and add a fake Unix-socket greetd server for end-to-end protocol tests.
+- **Resolution:** Not started.
+
+## 12. Validate graphics runtime packaging
+
+- **Severity:** Low
+- **Decision:** Pending
+- **Finding:** Both architectures build, but CI does not launch Genkan under
+  Cage and graphics-driver discovery has not been validated broadly.
+- **Recommendation:** Add the Nix driver runpath where appropriate and perform
+  Cage smoke tests on representative Mesa, NVIDIA, and ARM systems.
+- **Resolution:** Not started.
+
+## 13. Clear power status after successful suspend
+
+- **Severity:** Low
+- **Decision:** Pending
+- **Finding:** The greeter continues to display “Requesting sleep…” after the
+  system resumes.
+- **Recommendation:** Track pending power state and clear or replace the status
+  after success or resume.
+- **Resolution:** Not started.
+
+## 14. Constrain PAM message layout
+
+- **Severity:** Low
+- **Decision:** Pending
+- **Finding:** Long PAM prompts and status messages can overflow the fixed
+  panel.
+- **Recommendation:** Constrain message width, enable wrapping, and cap
+  pathological message lengths if necessary.
+- **Resolution:** Not started.
+
+## 15. Correct and expand runtime documentation
+
+- **Severity:** Low
+- **Decision:** Pending
+- **Finding:** The preview description does not match immediate authentication,
+  and integration prerequisites and failure behavior are incomplete.
+- **Recommendation:** Correct preview wording and document package binding,
+  graphics expectations, account scope, and logind policy behavior.
+- **Resolution:** Not started.
+
+## 16. Align Conventional Commit policy and enforcement
+
+- **Severity:** Low
+- **Decision:** Pending
+- **Finding:** Policy requires Conventional Commits, but automation validates
+  only pull request titles, and relevant release files do not trigger main CI.
+- **Recommendation:** Enforce commit messages, or require squash merging and
+  make PR titles authoritative. Include release and validation configuration
+  in relevant CI path filters.
+- **Resolution:** Not started.
+
+## 17. Add the declared MIT license text
+
+- **Severity:** Low
+- **Decision:** Pending
+- **Finding:** `Cargo.toml` declares MIT but the repository has no `LICENSE`
+  file.
+- **Recommendation:** Add the standard MIT license text.
+- **Resolution:** Not started.
+
+## 18. Use one package version source
+
+- **Severity:** Low
+- **Decision:** Pending
+- **Finding:** The package version is maintained independently in `Cargo.toml`
+  and `flake.nix`.
+- **Recommendation:** Derive the Nix package version from `Cargo.toml` or add a
+  check that requires both values to match.
+- **Resolution:** Not started.
