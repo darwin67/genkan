@@ -194,7 +194,11 @@ Allowed decision states:
 ## 13. Clear power status after successful suspend
 
 - **Severity:** Low
-- **Decision:** Pending
+- **Decision:** Accepted. Track the pending action; show sleep progress; clear
+  it after resume with either no message or a short-lived welcome; restore PAM
+  input focus; and preserve authentication throughout. Keep restart and
+  shutdown pending until transition, but restore the greeter and report any
+  logind error without resetting authentication.
 - **Finding:** The greeter continues to display “Requesting sleep…” after the
   system resumes.
 - **Recommendation:** Track pending power state and clear or replace the status
