@@ -208,12 +208,17 @@ Allowed decision states:
 ## 14. Constrain PAM message layout
 
 - **Severity:** Low
-- **Decision:** Pending
+- **Decision:** Accepted
 - **Finding:** Long PAM prompts and status messages can overflow the fixed
   panel.
 - **Recommendation:** Constrain message width, enable wrapping, and cap
   pathological message lengths if necessary.
-- **Resolution:** Not started.
+- **Resolution:** Use wrapped labels above the input rather than relying on
+  placeholder-only prompts. Constrain prompt and status content to the panel,
+  make the panel responsive on smaller displays, and place unusually long
+  content in a bounded scroll area. Apply a generous display-length cap to
+  pathological PAM content while preserving informational and error message
+  semantics. Add layout tests where practical.
 
 ## 15. Correct and expand runtime documentation
 
