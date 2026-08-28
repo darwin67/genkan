@@ -300,7 +300,7 @@ impl App {
             Message::PowerResult(Ok(())) => Task::none(),
             Message::PowerResult(Err(error)) => {
                 self.power_state = PowerState::Idle;
-                self.message = Some(error);
+                self.message = Some(auth_flow::bounded_auth_text(&error));
                 self.message_is_error = true;
                 if self.phase == Phase::WaitingForInput {
                     text_input::focus(self.input_id.clone())

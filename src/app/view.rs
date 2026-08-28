@@ -1,4 +1,7 @@
-use iced::widget::{button, column, container, pick_list, row, stack, text, text_input, Space};
+use iced::widget::text::Wrapping;
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, stack, text, text_input, Space,
+};
 use iced::{Alignment, Color, Element, Fill, Length};
 
 use crate::accounts::Account;
@@ -53,7 +56,15 @@ impl App {
             } else {
                 Space::new(Length::Shrink, Length::Shrink).into()
             };
-        let input = text_input(&self.prompt, &self.input)
+        let prompt = scrollable(
+            text(&self.prompt)
+                .size(15)
+                .width(Fill)
+                .wrapping(Wrapping::WordOrGlyph),
+        )
+        .width(Fill)
+        .height(Length::Fixed(52.0));
+        let input = text_input("", &self.input)
             .id(self.input_id.clone())
             .on_input_maybe(
                 (interactive && self.phase == Phase::WaitingForInput)
@@ -65,6 +76,7 @@ impl App {
             .secure(self.secret)
             .padding([12, 18])
             .size(18)
+            .width(Fill)
             .style(theme::input);
         let submit = if self.phase == Phase::Failed {
             button(text("Retry").size(16))
@@ -80,7 +92,7 @@ impl App {
                 .padding([10, 16])
                 .style(theme::translucent_button)
         };
-        let auth_row = row![input, submit].spacing(8).width(Length::Fixed(340.0));
+        let auth_row = row![input, submit].spacing(8).width(Fill);
 
         let status = self.message.as_deref().unwrap_or(" ");
         let status_color = if self.message_is_error {
@@ -88,6 +100,15 @@ impl App {
         } else {
             Color::from_rgba8(255, 255, 255, 0.75)
         };
+        let status = scrollable(
+            text(status)
+                .size(14)
+                .color(status_color)
+                .width(Fill)
+                .wrapping(Wrapping::WordOrGlyph),
+        )
+        .width(Fill)
+        .height(Length::Fixed(52.0));
         let session_selector: Element<'_, Message> = if self.can_select_session() {
             pick_list(
                 self.sessions.as_slice(),
@@ -116,15 +137,23 @@ impl App {
         let login_panel = container(
             column![
                 avatar,
-                text(&self.display_name).size(26).color(Color::WHITE),
+                text(&self.display_name)
+                    .size(26)
+                    .color(Color::WHITE)
+                    .width(Fill)
+                    .wrapping(Wrapping::WordOrGlyph),
                 account_selector,
+                prompt,
                 auth_row,
-                text(status).size(14).color(status_color),
+                status,
                 session_selector,
             ]
             .spacing(14)
+            .width(Fill)
             .align_x(Alignment::Center),
         )
+        .width(Fill)
+        .max_width(420)
         .padding([28, 36])
         .style(theme::panel);
 

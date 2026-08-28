@@ -7,6 +7,7 @@ use genkan::auth::{self, Client};
 use super::{App, Closing, Message};
 
 const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const MAX_AUTH_TEXT_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
@@ -81,7 +82,7 @@ impl App {
                 text_input::focus(self.input_id.clone())
             }
             AuthTransition::Message { error, message } => {
-                self.message = Some(message);
+                self.message = Some(bounded_auth_text(&message));
                 self.message_is_error = error;
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
@@ -130,7 +131,7 @@ impl App {
         self.input.clear();
         self.prompt = "Password".into();
         self.secret = true;
-        self.message = Some(message);
+        self.message = Some(bounded_auth_text(&message));
         self.message_is_error = true;
         Task::none()
     }
@@ -209,11 +210,24 @@ pub(super) fn close_timeout(window: window::Id) -> Task<Message> {
 
 pub(super) fn clean_prompt(prompt: &str) -> String {
     let prompt = prompt.trim().trim_end_matches(':').trim();
-    if prompt.is_empty() {
-        "Password".into()
+    bounded_auth_text(if prompt.is_empty() {
+        "Password"
     } else {
-        prompt.into()
+        prompt
+    })
+}
+
+pub(super) fn bounded_auth_text(value: &str) -> String {
+    let mut characters = value.chars();
+    let mut bounded = characters
+        .by_ref()
+        .take(MAX_AUTH_TEXT_CHARS)
+        .collect::<String>();
+    if characters.next().is_some() {
+        bounded.pop();
+        bounded.push('…');
     }
+    bounded
 }
 
 #[cfg(test)]
@@ -224,6 +238,17 @@ mod tests {
     fn normalizes_pam_prompts() {
         assert_eq!(clean_prompt("Password: "), "Password");
         assert_eq!(clean_prompt(""), "Password");
+    }
+
+    #[test]
+    fn bounds_pathological_authentication_text() {
+        let bounded = bounded_auth_text(&"界".repeat(MAX_AUTH_TEXT_CHARS + 100));
+        assert_eq!(bounded.chars().count(), MAX_AUTH_TEXT_CHARS);
+        assert!(bounded.ends_with('…'));
+        assert_eq!(
+            clean_prompt(&format!("{}:", "x".repeat(600))),
+            bounded_auth_text(&"x".repeat(600))
+        );
     }
 
     #[test]
