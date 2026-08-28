@@ -5,15 +5,30 @@ edition = "2021"
 description = "A small graphical greetd frontend for Wayland"
 license = "MIT"
 
+[features]
+default = ["gui"]
+e2e = ["tokio/macros", "tokio/rt"]
+gui = ["dep:chrono", "dep:iced", "dep:shell-words", "dep:zbus"]
+
+[[bin]]
+name = "genkan"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "genkan-greetd-e2e"
+path = "src/bin/greetd-e2e.rs"
+required-features = ["e2e"]
+
 [dependencies]
-chrono = { version = "0.4.38", default-features = false, features = ["clock"] }
+chrono = { version = "0.4.38", default-features = false, features = ["clock"], optional = true }
 clap = { version = "4.5.23", features = ["derive"] }
 greetd_ipc = { version = "0.10.3", features = ["tokio-codec"] }
-iced = { version = "0.13.1", features = ["canvas", "tokio"] }
-shell-words = "1.1.0"
+iced = { version = "0.13.1", features = ["canvas", "tokio"], optional = true }
+shell-words = { version = "1.1.0", optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "time"] }
-zbus = { version = "5.2.0", default-features = false, features = ["tokio"] }
+zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.42.0", features = ["macros", "rt"] }

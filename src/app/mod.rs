@@ -8,9 +8,9 @@ use chrono::Local;
 use greetd_ipc::Request;
 use iced::{time, window, Subscription, Task};
 
-use crate::auth::{self, Client};
 use crate::power::{self, Action as PowerAction};
 use crate::sessions::{self, Session};
+use genkan::auth::{self, Client};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Closing {

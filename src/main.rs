@@ -1,5 +1,4 @@
 mod app;
-mod auth;
 mod background;
 mod power;
 mod sessions;

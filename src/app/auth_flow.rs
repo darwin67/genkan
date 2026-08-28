@@ -1,7 +1,7 @@
 use greetd_ipc::Request;
 use iced::{window, Task};
 
-use crate::auth::{self, Client};
+use genkan::auth::{self, Client};
 
 use super::{App, Closing, Message};
 
