@@ -31,8 +31,15 @@ struct AuthTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AuthEffect {
-    Prompt { secret: bool, message: String },
-    Acknowledge { error: bool, message: String },
+    Prompt {
+        secret: bool,
+        message: String,
+    },
+    Acknowledge {
+        error: bool,
+        message: String,
+        request: AuthRequest,
+    },
     StartSession(AuthRequest),
     Exit,
     Fail(String),
@@ -103,13 +110,17 @@ impl App {
                 self.input.clear();
                 text_input::focus(self.input_id.clone())
             }
-            AuthEffect::Acknowledge { error, message } => {
+            AuthEffect::Acknowledge {
+                error,
+                message,
+                request,
+            } => {
                 self.message = Some(bounded_auth_text(&message));
                 self.message_is_error = error;
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                exchange(client, AuthRequest::Acknowledge.into_greetd(), self.attempt)
+                exchange(client, request.into_greetd(), self.attempt)
             }
             AuthEffect::Exit => iced::exit(),
             AuthEffect::StartSession(request) => {
@@ -144,9 +155,14 @@ fn transition(
             Phase::WaitingForInput,
             AuthEffect::Prompt { secret, message },
         ),
-        auth::Response::Message { error, message } => {
-            (phase, AuthEffect::Acknowledge { error, message })
-        }
+        auth::Response::Message { error, message } => (
+            phase,
+            AuthEffect::Acknowledge {
+                error,
+                message,
+                request: AuthRequest::Acknowledge,
+            },
+        ),
         auth::Response::Success if phase == Phase::StartingSession => {
             (Phase::StartingSession, AuthEffect::Exit)
         }
@@ -309,6 +325,7 @@ mod tests {
                     effect: AuthEffect::Acknowledge {
                         error: false,
                         message: "Touch the security key".into(),
+                        request: AuthRequest::Acknowledge,
                     },
                 },
             ),
@@ -381,6 +398,7 @@ mod tests {
             AuthEffect::Acknowledge {
                 error: false,
                 message: "Touch the security key".into(),
+                request: AuthRequest::Acknowledge,
             }
         );
         assert!(matches!(
