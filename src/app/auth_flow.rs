@@ -22,6 +22,15 @@ pub(super) enum Phase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Attempt(u64);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthTransition {
+    Prompt { secret: bool, message: String },
+    Message { error: bool, message: String },
+    StartSession,
+    Exit,
+    Fail(String),
+}
+
 impl Attempt {
     pub(super) fn initial() -> Self {
         Self(1)
@@ -62,16 +71,16 @@ impl App {
         }
     }
 
-    fn handle_auth_response(&mut self, response: auth::Response) -> Task<Message> {
-        match response {
-            auth::Response::Prompt { secret, message } => {
+    pub(super) fn handle_auth_response(&mut self, response: auth::Response) -> Task<Message> {
+        match transition(self.phase, response) {
+            AuthTransition::Prompt { secret, message } => {
                 self.prompt = clean_prompt(&message);
                 self.secret = secret;
                 self.input.clear();
                 self.phase = Phase::WaitingForInput;
                 text_input::focus(self.input_id.clone())
             }
-            auth::Response::Message { error, message } => {
+            AuthTransition::Message { error, message } => {
                 self.message = Some(message);
                 self.message_is_error = error;
                 let Some(client) = self.client.clone() else {
@@ -83,8 +92,8 @@ impl App {
                     self.attempt,
                 )
             }
-            auth::Response::Success if self.phase == Phase::StartingSession => iced::exit(),
-            auth::Response::Success => {
+            AuthTransition::Exit => iced::exit(),
+            AuthTransition::StartSession => {
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
@@ -112,16 +121,7 @@ impl App {
                     },
                 )
             }
-            auth::Response::Error {
-                authentication,
-                description,
-            } => {
-                if authentication {
-                    self.fail("Authentication failed".into())
-                } else {
-                    self.fail(description)
-                }
-            }
+            AuthTransition::Fail(message) => self.fail(message),
         }
     }
 
@@ -133,6 +133,20 @@ impl App {
         self.message = Some(message);
         self.message_is_error = true;
         Task::none()
+    }
+}
+
+fn transition(phase: Phase, response: auth::Response) -> AuthTransition {
+    match response {
+        auth::Response::Prompt { secret, message } => AuthTransition::Prompt { secret, message },
+        auth::Response::Message { error, message } => AuthTransition::Message { error, message },
+        auth::Response::Success if phase == Phase::StartingSession => AuthTransition::Exit,
+        auth::Response::Success => AuthTransition::StartSession,
+        auth::Response::Error {
+            authentication: true,
+            ..
+        } => AuthTransition::Fail("Authentication failed".into()),
+        auth::Response::Error { description, .. } => AuthTransition::Fail(description),
     }
 }
 
@@ -210,5 +224,63 @@ mod tests {
     fn normalizes_pam_prompts() {
         assert_eq!(clean_prompt("Password: "), "Password");
         assert_eq!(clean_prompt(""), "Password");
+    }
+
+    #[test]
+    fn maps_every_authentication_response_transition() {
+        let cases = [
+            (
+                Phase::Authenticating,
+                auth::Response::Prompt {
+                    secret: true,
+                    message: "Password:".into(),
+                },
+                AuthTransition::Prompt {
+                    secret: true,
+                    message: "Password:".into(),
+                },
+            ),
+            (
+                Phase::Authenticating,
+                auth::Response::Message {
+                    error: false,
+                    message: "Touch the security key".into(),
+                },
+                AuthTransition::Message {
+                    error: false,
+                    message: "Touch the security key".into(),
+                },
+            ),
+            (
+                Phase::Authenticating,
+                auth::Response::Success,
+                AuthTransition::StartSession,
+            ),
+            (
+                Phase::StartingSession,
+                auth::Response::Success,
+                AuthTransition::Exit,
+            ),
+            (
+                Phase::Authenticating,
+                auth::Response::Error {
+                    authentication: true,
+                    description: "daemon detail".into(),
+                },
+                AuthTransition::Fail("Authentication failed".into()),
+            ),
+            (
+                Phase::StartingSession,
+                auth::Response::Error {
+                    authentication: false,
+                    description: "start rejected".into(),
+                },
+                AuthTransition::Fail("start rejected".into()),
+            ),
+        ];
+
+        for (phase, response, expected) in cases {
+            assert_eq!(transition(phase, response), expected);
+        }
     }
 }

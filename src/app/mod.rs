@@ -554,6 +554,45 @@ mod tests {
     }
 
     #[test]
+    fn prompt_sequences_replace_and_clear_the_previous_response() {
+        let mut app = app();
+        app.input = "previous response".into();
+
+        let _ = app.handle_auth_response(auth::Response::Prompt {
+            secret: false,
+            message: "Login code:".into(),
+        });
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.prompt, "Login code");
+        assert!(!app.secret);
+        assert!(app.input.is_empty());
+
+        app.input = "123456".into();
+        let _ = app.handle_auth_response(auth::Response::Prompt {
+            secret: true,
+            message: "Password:".into(),
+        });
+        assert_eq!(app.prompt, "Password");
+        assert!(app.secret);
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn session_start_transport_failure_enters_failed_state() {
+        let mut app = app();
+        app.phase = Phase::StartingSession;
+
+        let _ = app.update(Message::AuthResult {
+            attempt: app.attempt,
+            result: Err("greetd closed the socket".into()),
+        });
+
+        assert_eq!(app.phase, Phase::Failed);
+        assert_eq!(app.message.as_deref(), Some("greetd closed the socket"));
+        assert!(app.message_is_error);
+    }
+
+    #[test]
     fn power_failures_preserve_authentication_state() {
         let mut app = app();
         app.power_state = PowerState::Executing(PowerAction::Reboot);
