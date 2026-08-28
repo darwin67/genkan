@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 pub struct Session {
     pub name: String,
     pub command: Vec<String>,
-    pub desktop: String,
+    pub session_id: String,
+    pub desktop_names: Vec<String>,
 }
 
 impl Session {
@@ -15,16 +16,23 @@ impl Session {
         Self {
             name: "Sway".into(),
             command,
-            desktop: "sway".into(),
+            session_id: "sway".into(),
+            desktop_names: vec!["sway".into()],
         }
     }
 
     pub fn environment(&self) -> Vec<String> {
-        vec![
+        let mut environment = vec![
             "XDG_SESSION_TYPE=wayland".into(),
-            format!("XDG_CURRENT_DESKTOP={}", self.desktop),
-            format!("XDG_SESSION_DESKTOP={}", self.desktop),
-        ]
+            format!("XDG_SESSION_DESKTOP={}", self.session_id),
+        ];
+        if !self.desktop_names.is_empty() {
+            environment.push(format!(
+                "XDG_CURRENT_DESKTOP={}",
+                self.desktop_names.join(":")
+            ));
+        }
+        environment
     }
 }
 
@@ -78,7 +86,7 @@ fn parse_desktop_entry(path: &Path) -> Option<Session> {
     let mut in_entry = false;
     let mut name = None;
     let mut command = None;
-    let mut desktop = None;
+    let mut desktop_names = Vec::new();
     let mut hidden = false;
 
     for line in contents.lines() {
@@ -96,7 +104,13 @@ fn parse_desktop_entry(path: &Path) -> Option<Session> {
         match key {
             "Name" => name = Some(value.to_owned()),
             "Exec" => command = shell_words::split(value).ok().map(remove_field_codes),
-            "DesktopNames" => desktop = value.split(';').next().map(str::to_owned),
+            "DesktopNames" => {
+                desktop_names = value
+                    .split(';')
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+            }
             "Hidden" => hidden = value.eq_ignore_ascii_case("true"),
             _ => {}
         }
@@ -111,13 +125,9 @@ fn parse_desktop_entry(path: &Path) -> Option<Session> {
     }
     Some(Session {
         name: name?,
-        desktop: desktop.unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or("wayland")
-                .to_owned()
-        }),
         command,
+        session_id: path.file_stem()?.to_str()?.to_owned(),
+        desktop_names,
     })
 }
 
@@ -137,16 +147,32 @@ mod tests {
         let session = Session {
             name: "River".into(),
             command: vec!["river".into()],
-            desktop: "river".into(),
+            session_id: "river-session".into(),
+            desktop_names: vec!["River".into(), "wlroots".into()],
         };
 
         assert_eq!(
             session.environment(),
             [
                 "XDG_SESSION_TYPE=wayland",
-                "XDG_CURRENT_DESKTOP=river",
-                "XDG_SESSION_DESKTOP=river",
+                "XDG_SESSION_DESKTOP=river-session",
+                "XDG_CURRENT_DESKTOP=River:wlroots",
             ]
+        );
+    }
+
+    #[test]
+    fn omits_current_desktop_without_desktop_names() {
+        let session = Session {
+            name: "Niri".into(),
+            command: vec!["niri".into()],
+            session_id: "niri".into(),
+            desktop_names: Vec::new(),
+        };
+
+        assert_eq!(
+            session.environment(),
+            ["XDG_SESSION_TYPE=wayland", "XDG_SESSION_DESKTOP=niri"]
         );
     }
 
@@ -164,7 +190,8 @@ mod tests {
         let parsed = parse_desktop_entry(&path).unwrap();
         assert_eq!(parsed.name, "Sway Desktop");
         assert_eq!(parsed.command, ["sway", "--unsupported-gpu"]);
-        assert_eq!(parsed.desktop, "sway");
+        assert_eq!(parsed.session_id, "sway");
+        assert_eq!(parsed.desktop_names, ["sway", "wlroots"]);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -184,14 +211,15 @@ mod tests {
     }
 
     #[test]
-    fn uses_file_name_as_desktop_when_desktop_names_is_missing() {
+    fn uses_file_name_as_session_id_without_inventing_a_desktop_name() {
         let directory = std::env::temp_dir().join(format!("genkan-desktop-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("niri.desktop");
         fs::write(&path, "[Desktop Entry]\nName=Niri\nExec=niri --session\n").unwrap();
 
         let parsed = parse_desktop_entry(&path).unwrap();
-        assert_eq!(parsed.desktop, "niri");
+        assert_eq!(parsed.session_id, "niri");
+        assert!(parsed.desktop_names.is_empty());
         fs::remove_dir_all(directory).unwrap();
     }
 }
