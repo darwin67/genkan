@@ -8,7 +8,7 @@ use crate::power::Action as PowerAction;
 use crate::{background, theme};
 
 use super::auth_flow::Phase;
-use super::{App, Message};
+use super::{App, Message, PowerState};
 
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
@@ -46,7 +46,7 @@ impl App {
                 ..Default::default()
             });
 
-        let interactive = self.closing.is_none();
+        let interactive = self.closing.is_none() && self.power_state == PowerState::Idle;
         let account_selector: Element<'_, Message> =
             if interactive && self.phase == Phase::SelectingUser && self.accounts.len() > 1 {
                 pick_list(
@@ -153,38 +153,55 @@ impl App {
         .align_x(Alignment::Center)
         .padding([44, 20]);
 
-        let content: Element<'_, Message> = if let Some(action) = self.confirmation {
-            let confirmation = container(
-                column![
-                    text(format!("{} this computer?", action.label())).size(24),
-                    row![
-                        button("Cancel")
-                            .on_press_maybe(interactive.then_some(Message::CancelPower)),
-                        button(action.label())
-                            .on_press_maybe(interactive.then_some(Message::ConfirmPower(action))),
+        let content: Element<'_, Message> = match self.power_state {
+            PowerState::Confirming(action) => {
+                let confirmation = container(
+                    column![
+                        text(format!("{} this computer?", action.label())).size(24),
+                        row![
+                            button("Cancel")
+                                .on_press_maybe(interactive.then_some(Message::CancelPower)),
+                            button(action.label()).on_press_maybe(
+                                interactive.then_some(Message::ConfirmPower(action))
+                            ),
+                        ]
+                        .spacing(12),
                     ]
-                    .spacing(12),
-                ]
-                .align_x(Alignment::Center)
-                .spacing(22),
-            )
-            .padding(30)
-            .style(theme::panel);
-            stack![
-                main_content,
-                container(confirmation)
-                    .width(Fill)
-                    .height(Fill)
                     .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
-            ]
-            .into()
-        } else {
-            main_content.into()
+                    .spacing(22),
+                )
+                .padding(30)
+                .style(theme::panel);
+                modal(main_content, confirmation)
+            }
+            PowerState::Executing(action) => {
+                let progress = container(
+                    text(format!("Requesting {}…", action.label().to_lowercase())).size(22),
+                )
+                .padding(30)
+                .style(theme::panel);
+                modal(main_content, progress)
+            }
+            PowerState::Idle => main_content.into(),
         };
 
         stack![background, content].into()
     }
+}
+
+fn modal<'a>(
+    main_content: impl Into<Element<'a, Message>>,
+    dialog: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    stack![
+        main_content.into(),
+        container(dialog)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+    ]
+    .into()
 }
 
 fn power_button(action: PowerAction, interactive: bool) -> Element<'static, Message> {

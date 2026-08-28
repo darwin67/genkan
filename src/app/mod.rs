@@ -21,6 +21,13 @@ enum Closing {
     Dispatching(window::Id),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PowerState {
+    Idle,
+    Confirming(PowerAction),
+    Executing(PowerAction),
+}
+
 impl Closing {
     fn is_cleaning(self, window: window::Id) -> bool {
         matches!(self, Self::WaitingForClient(id) | Self::Cancelling(id) if id == window)
@@ -50,7 +57,7 @@ pub(crate) struct App {
     selected_session: Option<Session>,
     started_at: Instant,
     now: chrono::DateTime<Local>,
-    confirmation: Option<PowerAction>,
+    power_state: PowerState,
     attempt: Attempt,
     closing: Option<Closing>,
 }
@@ -121,7 +128,7 @@ impl App {
             selected_session,
             started_at: Instant::now(),
             now: Local::now(),
-            confirmation: None,
+            power_state: PowerState::Idle,
             attempt,
             closing: None,
         };
@@ -158,6 +165,29 @@ impl App {
                     )
                 }
                 Closing::Dispatching(_) => false,
+            };
+            if !allowed {
+                return Task::none();
+            }
+        }
+
+        if self.power_state != PowerState::Idle {
+            let allowed = match (self.power_state, &message) {
+                (
+                    _,
+                    Message::Tick
+                    | Message::AuthResult { .. }
+                    | Message::AccountsResult(_)
+                    | Message::CloseRequested(_)
+                    | Message::SessionCancelled(_)
+                    | Message::CloseTimeout(_),
+                ) => true,
+                (PowerState::Confirming(_), Message::CancelPower) => true,
+                (PowerState::Confirming(expected), Message::ConfirmPower(actual)) => {
+                    expected == *actual
+                }
+                (PowerState::Executing(_), Message::PowerResult(_)) => true,
+                _ => false,
             };
             if !allowed {
                 return Task::none();
@@ -239,27 +269,46 @@ impl App {
             }
             Message::Submit => Task::none(),
             Message::AuthResult { attempt, result } => self.handle_auth_result(attempt, result),
-            Message::AskPower(action) => {
-                self.confirmation = Some(action);
+            Message::AskPower(action) if self.power_state == PowerState::Idle => {
+                self.power_state = PowerState::Confirming(action);
                 Task::none()
             }
-            Message::CancelPower => {
-                self.confirmation = None;
+            Message::AskPower(_) => Task::none(),
+            Message::CancelPower if matches!(self.power_state, PowerState::Confirming(_)) => {
+                self.power_state = PowerState::Idle;
                 Task::none()
             }
-            Message::ConfirmPower(action) => {
-                self.confirmation = None;
+            Message::CancelPower => Task::none(),
+            Message::ConfirmPower(action) if self.power_state == PowerState::Confirming(action) => {
+                self.power_state = PowerState::Executing(action);
                 self.message = Some(format!("Requesting {}…", action.label().to_lowercase()));
                 self.message_is_error = false;
                 Task::perform(power::execute(action), |result| {
                     Message::PowerResult(result.map_err(|error| error.to_string()))
                 })
             }
+            Message::ConfirmPower(_) => Task::none(),
+            Message::PowerResult(Ok(()))
+                if self.power_state == PowerState::Executing(PowerAction::Suspend) =>
+            {
+                self.power_state = PowerState::Idle;
+                self.message = None;
+                if self.phase == Phase::WaitingForInput {
+                    text_input::focus(self.input_id.clone())
+                } else {
+                    Task::none()
+                }
+            }
             Message::PowerResult(Ok(())) => Task::none(),
             Message::PowerResult(Err(error)) => {
+                self.power_state = PowerState::Idle;
                 self.message = Some(error);
                 self.message_is_error = true;
-                Task::none()
+                if self.phase == Phase::WaitingForInput {
+                    text_input::focus(self.input_id.clone())
+                } else {
+                    Task::none()
+                }
             }
             Message::CloseRequested(window) if self.client.is_some() => {
                 self.attempt.advance();
@@ -362,7 +411,7 @@ mod tests {
             selected_session: Some(session()),
             started_at: Instant::now(),
             now: Local::now(),
-            confirmation: None,
+            power_state: PowerState::Idle,
             attempt,
             closing: None,
         }
@@ -474,12 +523,81 @@ mod tests {
     #[test]
     fn power_failures_preserve_authentication_state() {
         let mut app = app();
+        app.power_state = PowerState::Executing(PowerAction::Reboot);
         let _ = app.update(Message::PowerResult(Err("not authorized".into())));
 
         assert_eq!(app.phase, Phase::WaitingForInput);
         assert_eq!(app.input, "secret");
+        assert_eq!(app.power_state, PowerState::Idle);
         assert_eq!(app.message.as_deref(), Some("not authorized"));
         assert!(app.message_is_error);
+    }
+
+    #[test]
+    fn power_confirmation_blocks_underlying_and_duplicate_input() {
+        let mut app = app();
+
+        let _ = app.update(Message::AskPower(PowerAction::PowerOff));
+        let _ = app.update(Message::InputChanged("replacement".into()));
+        let _ = app.update(Message::Submit);
+        let _ = app.update(Message::SelectSession(Session {
+            name: "Other".into(),
+            command: vec!["other".into()],
+            session_id: "other".into(),
+            desktop_names: Vec::new(),
+        }));
+        let _ = app.update(Message::AskPower(PowerAction::Reboot));
+
+        assert_eq!(
+            app.power_state,
+            PowerState::Confirming(PowerAction::PowerOff)
+        );
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.input, "secret");
+        assert_eq!(
+            app.selected_session
+                .as_ref()
+                .map(|session| session.name.as_str()),
+            Some("Sway")
+        );
+    }
+
+    #[test]
+    fn power_confirmation_only_executes_the_confirmed_action() {
+        let mut app = app();
+        let _ = app.update(Message::AskPower(PowerAction::PowerOff));
+
+        let _ = app.update(Message::ConfirmPower(PowerAction::Reboot));
+        assert_eq!(
+            app.power_state,
+            PowerState::Confirming(PowerAction::PowerOff)
+        );
+
+        let _ = app.update(Message::ConfirmPower(PowerAction::PowerOff));
+        assert_eq!(
+            app.power_state,
+            PowerState::Executing(PowerAction::PowerOff)
+        );
+
+        let _ = app.update(Message::CancelPower);
+        let _ = app.update(Message::AskPower(PowerAction::Reboot));
+        assert_eq!(
+            app.power_state,
+            PowerState::Executing(PowerAction::PowerOff)
+        );
+    }
+
+    #[test]
+    fn successful_suspend_restores_the_greeter() {
+        let mut app = app();
+        app.power_state = PowerState::Executing(PowerAction::Suspend);
+        app.message = Some("Requesting sleep…".into());
+
+        let _ = app.update(Message::PowerResult(Ok(())));
+
+        assert_eq!(app.power_state, PowerState::Idle);
+        assert_eq!(app.message, None);
+        assert_eq!(app.phase, Phase::WaitingForInput);
     }
 
     #[test]
