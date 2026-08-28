@@ -10,6 +10,7 @@ on:
       - "Makefile"
       - "flake.nix"
       - "flake.lock"
+      - "nix/**"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [main]
@@ -20,6 +21,7 @@ on:
       - "Makefile"
       - "flake.nix"
       - "flake.lock"
+      - "nix/**"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
@@ -99,6 +101,14 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - run: nix develop --command make test
+
+  greetd-e2e:
+    name: greetd E2E
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix build .#checks.x86_64-linux.greetd-e2e --print-build-logs
 
   package:
     name: Package (${{ matrix.system }})
