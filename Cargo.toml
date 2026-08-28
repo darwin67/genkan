@@ -8,7 +8,7 @@ license = "MIT"
 [features]
 default = ["gui"]
 e2e = ["tokio/macros", "tokio/rt"]
-gui = ["dep:chrono", "dep:iced", "dep:rclip-desktop-entry", "dep:zbus"]
+gui = ["dep:chrono", "dep:iced", "dep:rclip-desktop-entry", "dep:rustix", "dep:zbus"]
 
 [[bin]]
 name = "genkan"
@@ -26,6 +26,7 @@ clap = { version = "4.5.23", features = ["derive"] }
 greetd_ipc = { version = "0.10.3", features = ["tokio-codec"] }
 iced = { version = "0.13.1", features = ["canvas", "image", "tokio"], optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
+rustix = { version = "1.1.4", features = ["fs"], optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "time"] }
 zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }

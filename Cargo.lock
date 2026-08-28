@@ -1307,6 +1307,7 @@ dependencies = [
  "greetd_ipc",
  "iced",
  "rclip-desktop-entry",
+ "rustix 1.1.4",
  "thiserror 2.0.20",
  "tokio",
  "zbus 5.19.0",

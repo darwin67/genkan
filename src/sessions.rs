@@ -1,11 +1,12 @@
 use std::collections::BTreeSet;
 use std::env;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use rclip_desktop_entry::{parse, EntryType, ExecPiece, FieldCode, Locale};
+use rustix::fs::{access, Access};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
@@ -41,10 +42,14 @@ pub fn discover() -> Vec<Session> {
     let data_dirs = env::var_os("XDG_DATA_DIRS")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-    let directories = env::split_paths(&data_dirs)
+    discover_in(&session_directories(&data_dirs))
+}
+
+fn session_directories(data_dirs: &OsStr) -> Vec<PathBuf> {
+    env::split_paths(data_dirs)
+        .filter(|path| path.is_absolute())
         .map(|path| path.join("wayland-sessions"))
-        .collect::<Vec<_>>();
-    discover_in(&directories)
+        .collect()
 }
 
 fn discover_in(directories: &[PathBuf]) -> Vec<Session> {
@@ -66,14 +71,12 @@ fn discover_in(directories: &[PathBuf]) -> Vec<Session> {
             if seen.contains(id) {
                 continue;
             }
+            seen.insert(id.to_owned());
             match parse_desktop_entry(&path) {
                 Some(ParsedEntry::Visible(session)) => {
-                    seen.insert(id.to_owned());
                     sessions.push(session);
                 }
-                Some(ParsedEntry::Hidden) => {
-                    seen.insert(id.to_owned());
-                }
+                Some(ParsedEntry::Hidden) => {}
                 None => {}
             }
         }
@@ -204,7 +207,8 @@ fn expand_exec(
 
 fn executable_available(program: &str) -> bool {
     if program.contains('/') {
-        return is_executable(Path::new(program));
+        let path = Path::new(program);
+        return path.is_absolute() && is_executable(path);
     }
     env::var_os("PATH")
         .map(|path| {
@@ -215,13 +219,14 @@ fn executable_available(program: &str) -> bool {
 
 fn is_executable(path: &Path) -> bool {
     fs::metadata(path)
-        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .map(|metadata| metadata.is_file() && access(path, Access::EXEC_OK).is_ok())
         .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -404,6 +409,49 @@ mod tests {
         );
         fs::remove_dir_all(high).unwrap();
         fs::remove_dir_all(low).unwrap();
+    }
+
+    #[test]
+    fn invalid_higher_priority_entry_masks_lower_copy() {
+        let high = test_directory("invalid-high");
+        let low = test_directory("valid-low");
+        let program = executable(&low, "session");
+        write_session(
+            &high,
+            "shared",
+            "Name=Broken\nTryExec=./relative\nExec=./relative\n",
+        );
+        write_session(
+            &low,
+            "shared",
+            &format!("Name=Lower copy\nExec={}\n", program.display()),
+        );
+
+        assert!(discover_in(&[high.clone(), low.clone()]).is_empty());
+        fs::remove_dir_all(high).unwrap();
+        fs::remove_dir_all(low).unwrap();
+    }
+
+    #[test]
+    fn rejects_relative_paths_and_inaccessible_execute_bits() {
+        let directory = test_directory("permissions");
+        write_session(&directory, "relative", "Name=Relative\nExec=./session\n");
+        let inaccessible = directory.join("inaccessible");
+        fs::write(&inaccessible, "#!/bin/sh\n").unwrap();
+        let mut permissions = fs::metadata(&inaccessible).unwrap().permissions();
+        permissions.set_mode(0o010);
+        fs::set_permissions(&inaccessible, permissions).unwrap();
+        write_session(
+            &directory,
+            "inaccessible",
+            &format!("Name=Inaccessible\nExec={}\n", inaccessible.display()),
+        );
+
+        assert!(discover_in(std::slice::from_ref(&directory)).is_empty());
+        assert!(session_directories(OsStr::new("relative:/usr/share"))
+            .iter()
+            .all(|path| path.is_absolute()));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
