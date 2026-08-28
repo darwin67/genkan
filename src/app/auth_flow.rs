@@ -24,12 +24,33 @@ pub(super) enum Phase {
 pub(crate) struct Attempt(u64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum AuthTransition {
+struct AuthTransition {
+    phase: Phase,
+    effect: AuthEffect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthEffect {
     Prompt { secret: bool, message: String },
-    Message { error: bool, message: String },
-    StartSession,
+    Acknowledge { error: bool, message: String },
+    StartSession(AuthRequest),
     Exit,
     Fail(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthRequest {
+    Acknowledge,
+    StartSession { cmd: Vec<String>, env: Vec<String> },
+}
+
+impl AuthRequest {
+    fn into_greetd(self) -> Request {
+        match self {
+            Self::Acknowledge => Request::PostAuthMessageResponse { response: None },
+            Self::StartSession { cmd, env } => Request::StartSession { cmd, env },
+        }
+    }
 }
 
 impl Attempt {
@@ -73,56 +94,32 @@ impl App {
     }
 
     pub(super) fn handle_auth_response(&mut self, response: auth::Response) -> Task<Message> {
-        match transition(self.phase, response) {
-            AuthTransition::Prompt { secret, message } => {
+        let transition = transition(self.phase, response, self.selected_session.as_ref());
+        self.phase = transition.phase;
+        match transition.effect {
+            AuthEffect::Prompt { secret, message } => {
                 self.prompt = clean_prompt(&message);
                 self.secret = secret;
                 self.input.clear();
-                self.phase = Phase::WaitingForInput;
                 text_input::focus(self.input_id.clone())
             }
-            AuthTransition::Message { error, message } => {
+            AuthEffect::Acknowledge { error, message } => {
                 self.message = Some(bounded_auth_text(&message));
                 self.message_is_error = error;
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                exchange(
-                    client,
-                    Request::PostAuthMessageResponse { response: None },
-                    self.attempt,
-                )
+                exchange(client, AuthRequest::Acknowledge.into_greetd(), self.attempt)
             }
-            AuthTransition::Exit => iced::exit(),
-            AuthTransition::StartSession => {
+            AuthEffect::Exit => iced::exit(),
+            AuthEffect::StartSession(request) => {
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                self.phase = Phase::StartingSession;
                 self.message = Some("Starting session…".into());
-                let Some(session) = self.selected_session.clone() else {
-                    return self.fail("No valid Wayland session is selected".into());
-                };
-                let attempt = self.attempt;
-                Task::perform(
-                    async move {
-                        let environment = session.environment();
-                        client
-                            .exchange(Request::StartSession {
-                                cmd: session.command,
-                                env: environment,
-                            })
-                            .await
-                    },
-                    move |result| Message::AuthResult {
-                        attempt,
-                        result: result
-                            .map(|response| (None, response))
-                            .map_err(|error| error.to_string()),
-                    },
-                )
+                exchange(client, request.into_greetd(), self.attempt)
             }
-            AuthTransition::Fail(message) => self.fail(message),
+            AuthEffect::Fail(message) => self.fail(message),
         }
     }
 
@@ -137,18 +134,45 @@ impl App {
     }
 }
 
-fn transition(phase: Phase, response: auth::Response) -> AuthTransition {
-    match response {
-        auth::Response::Prompt { secret, message } => AuthTransition::Prompt { secret, message },
-        auth::Response::Message { error, message } => AuthTransition::Message { error, message },
-        auth::Response::Success if phase == Phase::StartingSession => AuthTransition::Exit,
-        auth::Response::Success => AuthTransition::StartSession,
+fn transition(
+    phase: Phase,
+    response: auth::Response,
+    session: Option<&crate::sessions::Session>,
+) -> AuthTransition {
+    let (phase, effect) = match response {
+        auth::Response::Prompt { secret, message } => (
+            Phase::WaitingForInput,
+            AuthEffect::Prompt { secret, message },
+        ),
+        auth::Response::Message { error, message } => {
+            (phase, AuthEffect::Acknowledge { error, message })
+        }
+        auth::Response::Success if phase == Phase::StartingSession => {
+            (Phase::StartingSession, AuthEffect::Exit)
+        }
+        auth::Response::Success => match session {
+            Some(session) => (
+                Phase::StartingSession,
+                AuthEffect::StartSession(AuthRequest::StartSession {
+                    cmd: session.command.clone(),
+                    env: session.environment(),
+                }),
+            ),
+            None => (
+                Phase::Failed,
+                AuthEffect::Fail("No valid Wayland session is selected".into()),
+            ),
+        },
         auth::Response::Error {
             authentication: true,
             ..
-        } => AuthTransition::Fail("Authentication failed".into()),
-        auth::Response::Error { description, .. } => AuthTransition::Fail(description),
-    }
+        } => (
+            Phase::Failed,
+            AuthEffect::Fail("Authentication failed".into()),
+        ),
+        auth::Response::Error { description, .. } => (Phase::Failed, AuthEffect::Fail(description)),
+    };
+    AuthTransition { phase, effect }
 }
 
 pub(super) fn begin(username: String, attempt: Attempt, recover: bool) -> Task<Message> {
@@ -253,6 +277,12 @@ mod tests {
 
     #[test]
     fn maps_every_authentication_response_transition() {
+        let session = crate::sessions::Session {
+            name: "River".into(),
+            command: vec!["/run/current-system/sw/bin/river".into(), "-c".into()],
+            session_id: "river-session".into(),
+            desktop_names: vec!["River".into(), "wlroots".into()],
+        };
         let cases = [
             (
                 Phase::Authenticating,
@@ -260,9 +290,12 @@ mod tests {
                     secret: true,
                     message: "Password:".into(),
                 },
-                AuthTransition::Prompt {
-                    secret: true,
-                    message: "Password:".into(),
+                AuthTransition {
+                    phase: Phase::WaitingForInput,
+                    effect: AuthEffect::Prompt {
+                        secret: true,
+                        message: "Password:".into(),
+                    },
                 },
             ),
             (
@@ -271,20 +304,36 @@ mod tests {
                     error: false,
                     message: "Touch the security key".into(),
                 },
-                AuthTransition::Message {
-                    error: false,
-                    message: "Touch the security key".into(),
+                AuthTransition {
+                    phase: Phase::Authenticating,
+                    effect: AuthEffect::Acknowledge {
+                        error: false,
+                        message: "Touch the security key".into(),
+                    },
                 },
             ),
             (
                 Phase::Authenticating,
                 auth::Response::Success,
-                AuthTransition::StartSession,
+                AuthTransition {
+                    phase: Phase::StartingSession,
+                    effect: AuthEffect::StartSession(AuthRequest::StartSession {
+                        cmd: vec!["/run/current-system/sw/bin/river".into(), "-c".into()],
+                        env: vec![
+                            "XDG_SESSION_TYPE=wayland".into(),
+                            "XDG_SESSION_DESKTOP=river-session".into(),
+                            "XDG_CURRENT_DESKTOP=River:wlroots".into(),
+                        ],
+                    }),
+                },
             ),
             (
                 Phase::StartingSession,
                 auth::Response::Success,
-                AuthTransition::Exit,
+                AuthTransition {
+                    phase: Phase::StartingSession,
+                    effect: AuthEffect::Exit,
+                },
             ),
             (
                 Phase::Authenticating,
@@ -292,7 +341,10 @@ mod tests {
                     authentication: true,
                     description: "daemon detail".into(),
                 },
-                AuthTransition::Fail("Authentication failed".into()),
+                AuthTransition {
+                    phase: Phase::Failed,
+                    effect: AuthEffect::Fail("Authentication failed".into()),
+                },
             ),
             (
                 Phase::StartingSession,
@@ -300,12 +352,51 @@ mod tests {
                     authentication: false,
                     description: "start rejected".into(),
                 },
-                AuthTransition::Fail("start rejected".into()),
+                AuthTransition {
+                    phase: Phase::Failed,
+                    effect: AuthEffect::Fail("start rejected".into()),
+                },
             ),
         ];
 
         for (phase, response, expected) in cases {
-            assert_eq!(transition(phase, response), expected);
+            assert_eq!(transition(phase, response, Some(&session)), expected);
         }
+    }
+
+    #[test]
+    fn acknowledges_informational_messages_without_a_response() {
+        let transition = transition(
+            Phase::Authenticating,
+            auth::Response::Message {
+                error: false,
+                message: "Touch the security key".into(),
+            },
+            None,
+        );
+
+        assert_eq!(transition.phase, Phase::Authenticating);
+        assert_eq!(
+            transition.effect,
+            AuthEffect::Acknowledge {
+                error: false,
+                message: "Touch the security key".into(),
+            }
+        );
+        assert!(matches!(
+            AuthRequest::Acknowledge.into_greetd(),
+            Request::PostAuthMessageResponse { response: None }
+        ));
+    }
+
+    #[test]
+    fn successful_authentication_requires_a_selected_session() {
+        assert_eq!(
+            transition(Phase::Authenticating, auth::Response::Success, None),
+            AuthTransition {
+                phase: Phase::Failed,
+                effect: AuthEffect::Fail("No valid Wayland session is selected".into()),
+            }
+        );
     }
 }
