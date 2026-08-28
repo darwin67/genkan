@@ -10,6 +10,8 @@ const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
     Idle,
+    DiscoveringUsers,
+    SelectingUser,
     CreatingSession,
     WaitingForInput,
     Authenticating,

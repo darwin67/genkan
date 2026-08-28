@@ -1,3 +1,4 @@
+mod accounts;
 mod app;
 mod background;
 mod power;
@@ -11,10 +12,10 @@ use iced::{window, Theme};
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Arguments {
-    #[arg(long, default_value = "darwin")]
-    username: String,
-    #[arg(long, default_value = "Darwin")]
-    display_name: String,
+    #[arg(long)]
+    username: Option<String>,
+    #[arg(long, requires = "username")]
+    display_name: Option<String>,
     #[arg(long)]
     windowed: bool,
 }
@@ -38,4 +39,21 @@ pub fn main() -> iced::Result {
         .exit_on_close_request(false)
         .antialiasing(true)
         .run_with(|| App::new(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_overrides_are_optional() {
+        let arguments = Arguments::try_parse_from(["genkan"]).unwrap();
+        assert_eq!(arguments.username, None);
+        assert_eq!(arguments.display_name, None);
+    }
+
+    #[test]
+    fn display_name_override_requires_username() {
+        assert!(Arguments::try_parse_from(["genkan", "--display-name", "Operator"]).is_err());
+    }
 }

@@ -1,6 +1,9 @@
-use iced::widget::{button, column, container, pick_list, row, stack, text, text_input, Space};
-use iced::{Alignment, Color, Element, Fill, Length};
+use iced::widget::{
+    button, column, container, image, pick_list, row, stack, text, text_input, Space,
+};
+use iced::{Alignment, Color, ContentFit, Element, Fill, Length};
 
+use crate::accounts::Account;
 use crate::power::Action as PowerAction;
 use crate::{background, theme};
 
@@ -18,28 +21,44 @@ impl App {
             .size(22)
             .color(Color::from_rgba8(255, 255, 255, 0.85));
 
-        let avatar = container(
+        let avatar_content: Element<'_, Message> = if let Some(path) = &self.icon_file {
+            image(path).content_fit(ContentFit::Cover).into()
+        } else {
             text(initials(&self.display_name))
                 .size(38)
-                .color(Color::WHITE),
-        )
-        .width(Length::Fixed(92.0))
-        .height(Length::Fixed(92.0))
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgba8(
-                255, 255, 255, 0.18,
-            ))),
-            border: iced::Border {
-                color: Color::from_rgba8(255, 255, 255, 0.45),
-                width: 2.0,
-                radius: 46.0.into(),
-            },
-            ..Default::default()
-        });
+                .color(Color::WHITE)
+                .into()
+        };
+        let avatar = container(avatar_content)
+            .width(Length::Fixed(92.0))
+            .height(Length::Fixed(92.0))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .style(|_| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgba8(
+                    255, 255, 255, 0.18,
+                ))),
+                border: iced::Border {
+                    color: Color::from_rgba8(255, 255, 255, 0.45),
+                    width: 2.0,
+                    radius: 46.0.into(),
+                },
+                ..Default::default()
+            });
 
         let interactive = self.closing.is_none();
+        let account_selector: Element<'_, Message> =
+            if interactive && self.phase == Phase::SelectingUser && self.accounts.len() > 1 {
+                pick_list(
+                    self.accounts.as_slice(),
+                    None::<&Account>,
+                    Message::SelectAccount,
+                )
+                .width(Length::Fixed(260.0))
+                .into()
+            } else {
+                Space::new(Length::Shrink, Length::Shrink).into()
+            };
         let input = text_input(&self.prompt, &self.input)
             .on_input_maybe(interactive.then_some(Message::InputChanged))
             .on_submit_maybe(interactive.then_some(Message::Submit))
@@ -91,6 +110,7 @@ impl App {
             column![
                 avatar,
                 text(&self.display_name).size(26).color(Color::WHITE),
+                account_selector,
                 auth_row,
                 text(status).size(14).color(status_color),
                 session_selector,

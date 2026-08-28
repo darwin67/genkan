@@ -8,6 +8,7 @@ use chrono::Local;
 use greetd_ipc::Request;
 use iced::{time, window, Subscription, Task};
 
+use crate::accounts::{self, Account};
 use crate::power::{self, Action as PowerAction};
 use crate::sessions::{self, Session};
 use genkan::auth::{self, Client};
@@ -26,14 +27,16 @@ impl Closing {
 }
 
 pub(crate) struct Config {
-    pub(crate) username: String,
-    pub(crate) display_name: String,
+    pub(crate) username: Option<String>,
+    pub(crate) display_name: Option<String>,
 }
 
 #[derive(Debug)]
 pub(crate) struct App {
     username: String,
     display_name: String,
+    icon_file: Option<std::path::PathBuf>,
+    accounts: Vec<Account>,
     input: String,
     prompt: String,
     message: Option<String>,
@@ -59,6 +62,8 @@ pub(crate) enum Message {
         attempt: Attempt,
         result: Result<(Option<Client>, auth::Response), String>,
     },
+    AccountsResult(Result<Vec<Account>, String>),
+    SelectAccount(Account),
     SelectSession(Session),
     AskPower(PowerAction),
     CancelPower,
@@ -73,19 +78,37 @@ impl App {
     pub(crate) fn new(config: Config) -> (Self, Task<Message>) {
         let sessions = sessions::discover();
         let selected_session = sessions.first().cloned();
-        let configured = selected_session.is_some();
+        let account = config
+            .username
+            .map(|username| Account::override_account(username, config.display_name));
+        let configured = selected_session.is_some() && account.is_some();
+        let discovering = selected_session.is_some() && account.is_none();
         let attempt = Attempt::initial();
 
         let app = Self {
-            username: config.username,
-            display_name: config.display_name,
+            username: account
+                .as_ref()
+                .map(|account| account.username.clone())
+                .unwrap_or_default(),
+            display_name: account
+                .as_ref()
+                .map(|account| account.display_name.clone())
+                .unwrap_or_else(|| "Select account".into()),
+            icon_file: account
+                .as_ref()
+                .and_then(|account| account.icon_file.clone()),
+            accounts: Vec::new(),
             input: String::new(),
             prompt: "Password".into(),
-            message: (!configured).then(|| "No valid Wayland sessions are installed".into()),
-            message_is_error: !configured,
+            message: selected_session
+                .is_none()
+                .then(|| "No valid Wayland sessions are installed".into()),
+            message_is_error: selected_session.is_none(),
             secret: true,
             phase: if configured {
                 Phase::CreatingSession
+            } else if discovering {
+                Phase::DiscoveringUsers
             } else {
                 Phase::Idle
             },
@@ -100,6 +123,8 @@ impl App {
         };
         let task = if configured {
             auth_flow::begin(app.username.clone(), attempt, true)
+        } else if discovering {
+            discover_accounts()
         } else {
             Task::none()
         };
@@ -144,6 +169,25 @@ impl App {
                 self.input = value;
                 Task::none()
             }
+            Message::AccountsResult(Ok(accounts)) if accounts.len() == 1 => {
+                self.accounts = accounts;
+                self.select_account(self.accounts[0].clone())
+            }
+            Message::AccountsResult(Ok(accounts)) if accounts.is_empty() => {
+                self.fail("AccountsService found no unlocked non-system users".into())
+            }
+            Message::AccountsResult(Ok(accounts)) => {
+                self.accounts = accounts;
+                self.phase = Phase::SelectingUser;
+                self.message = Some("Select an account".into());
+                self.message_is_error = false;
+                Task::none()
+            }
+            Message::AccountsResult(Err(error)) => self.fail(error),
+            Message::SelectAccount(account) if self.phase == Phase::SelectingUser => {
+                self.select_account(account)
+            }
+            Message::SelectAccount(_) => Task::none(),
             Message::SelectSession(session)
                 if !matches!(self.phase, Phase::Authenticating | Phase::StartingSession) =>
             {
@@ -236,6 +280,23 @@ impl App {
             Message::SessionCancelled(_) | Message::CloseTimeout(_) => Task::none(),
         }
     }
+
+    fn select_account(&mut self, account: Account) -> Task<Message> {
+        self.username = account.username;
+        self.display_name = account.display_name;
+        self.icon_file = account.icon_file;
+        self.message = None;
+        self.message_is_error = false;
+        self.phase = Phase::CreatingSession;
+        let attempt = self.attempt.advance();
+        auth_flow::begin(self.username.clone(), attempt, true)
+    }
+}
+
+fn discover_accounts() -> Task<Message> {
+    Task::perform(accounts::discover(), |result| {
+        Message::AccountsResult(result.map_err(|error| error.to_string()))
+    })
 }
 
 #[cfg(test)]
@@ -257,6 +318,8 @@ mod tests {
         App {
             username: "darwin".into(),
             display_name: "Darwin".into(),
+            icon_file: None,
+            accounts: Vec::new(),
             input: "secret".into(),
             prompt: "Password".into(),
             message: Some("Keep this message".into()),
@@ -272,6 +335,53 @@ mod tests {
             attempt,
             closing: None,
         }
+    }
+
+    fn account(username: &str) -> Account {
+        Account::override_account(username.into(), Some(username.to_uppercase()))
+    }
+
+    #[test]
+    fn sole_discovered_account_starts_authentication() {
+        let mut app = app();
+        app.phase = Phase::DiscoveringUsers;
+
+        let _ = app.update(Message::AccountsResult(Ok(vec![account("alice")])));
+
+        assert_eq!(app.phase, Phase::CreatingSession);
+        assert_eq!(app.username, "alice");
+        assert_eq!(app.display_name, "ALICE");
+        assert_eq!(app.accounts.len(), 1);
+    }
+
+    #[test]
+    fn multiple_discovered_accounts_require_selection() {
+        let mut app = app();
+        app.phase = Phase::DiscoveringUsers;
+
+        let _ = app.update(Message::AccountsResult(Ok(vec![
+            account("alice"),
+            account("bob"),
+        ])));
+
+        assert_eq!(app.phase, Phase::SelectingUser);
+        assert_eq!(app.accounts.len(), 2);
+        assert_eq!(app.message.as_deref(), Some("Select an account"));
+    }
+
+    #[test]
+    fn empty_account_discovery_reports_configuration_error() {
+        let mut app = app();
+        app.phase = Phase::DiscoveringUsers;
+
+        let _ = app.update(Message::AccountsResult(Ok(Vec::new())));
+
+        assert_eq!(app.phase, Phase::Idle);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("AccountsService found no unlocked non-system users")
+        );
+        assert!(app.message_is_error);
     }
 
     #[test]
