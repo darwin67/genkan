@@ -49,10 +49,17 @@
             version = packageVersion;
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+            nativeBuildInputs = [
+              pkgs.addDriverRunpath
+              pkgs.makeWrapper
+            ];
             postInstall = ''
               wrapProgram $out/bin/genkan \
-                --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries}
+                --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries} \
+                --suffix VK_ADD_DRIVER_FILES : ${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d
+            '';
+            postFixup = ''
+              addDriverRunpath $out/bin/.genkan-wrapped
             '';
           };
 
@@ -89,6 +96,10 @@
         in
         {
           package = config.package;
+          graphics-smoke = import ./nix/tests/graphics-smoke.nix {
+            pkgs = config.pkgs;
+            genkan = config.package;
+          };
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           greetd-e2e = config.pkgs.testers.runNixOSTest (

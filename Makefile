@@ -1,4 +1,4 @@
-.PHONY: dev check fmt fmt-fix lint test e2e build package verify changelog next-version clean
+.PHONY: dev check fmt fmt-fix lint test smoke e2e build package verify changelog next-version clean
 
 dev:
 	cargo run -- --windowed
@@ -19,6 +19,9 @@ lint:
 test:
 	cargo test
 
+smoke:
+	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).graphics-smoke --print-build-logs
+
 e2e:
 	nix build .#checks.x86_64-linux.greetd-e2e --print-build-logs
 
@@ -28,7 +31,7 @@ build:
 package:
 	nix build
 
-verify: fmt lint test package
+verify: fmt lint test package smoke
 
 changelog:
 	git cliff --output CHANGELOG.md

@@ -34,6 +34,8 @@ PAM authentication and launching the selected desktop session.
 - `src/power.rs`: logind power operations over D-Bus.
 - `src/background.rs` and `src/theme.rs`: presentation and animation.
 - `nix/tests/greetd.nix`: real greetd and PAM NixOS VM test.
+- `nix/tests/graphics-smoke.nix`: packaged-binary launch under nested Cage and
+  headless Weston with software Vulkan rendering.
 - `flake.nix`: pinned Rust toolchain, package, and development shell for Linux.
 
 ## Development

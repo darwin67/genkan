@@ -117,7 +117,7 @@ jobs:
       - run: nix build .#checks.x86_64-linux.greetd-e2e --print-build-logs
 
   package:
-    name: Package (${{ matrix.system }})
+    name: Package and graphics smoke (${{ matrix.system }})
     strategy:
       fail-fast: false
       matrix:
@@ -130,4 +130,4 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
-      - run: nix build .#packages.${{ matrix.system }}.default --print-build-logs
+      - run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs
