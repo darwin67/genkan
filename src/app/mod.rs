@@ -43,7 +43,7 @@ pub(crate) struct Config {
 pub(crate) struct App {
     username: String,
     display_name: String,
-    icon_file: Option<std::path::PathBuf>,
+    avatar: Option<iced::widget::image::Handle>,
     accounts: Vec<Account>,
     input: String,
     input_id: text_input::Id,
@@ -104,9 +104,10 @@ impl App {
                 .as_ref()
                 .map(|account| account.display_name.clone())
                 .unwrap_or_else(|| "Select account".into()),
-            icon_file: account
+            avatar: account
                 .as_ref()
-                .and_then(|account| account.icon_file.clone()),
+                .and_then(|account| account.avatar.as_ref())
+                .map(avatar_handle),
             accounts: Vec::new(),
             input: String::new(),
             input_id: text_input::Id::new("authentication-input"),
@@ -358,7 +359,7 @@ impl App {
     fn select_account(&mut self, account: Account) -> Task<Message> {
         self.username = account.username;
         self.display_name = account.display_name;
-        self.icon_file = account.icon_file;
+        self.avatar = account.avatar.as_ref().map(avatar_handle);
         self.message = None;
         self.message_is_error = false;
         self.phase = Phase::CreatingSession;
@@ -395,6 +396,10 @@ fn discover_accounts() -> Task<Message> {
     })
 }
 
+fn avatar_handle(avatar: &accounts::Avatar) -> iced::widget::image::Handle {
+    iced::widget::image::Handle::from_rgba(avatar.width, avatar.height, avatar.rgba.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,7 +419,7 @@ mod tests {
         App {
             username: "darwin".into(),
             display_name: "Darwin".into(),
-            icon_file: None,
+            avatar: None,
             accounts: Vec::new(),
             input: "secret".into(),
             input_id: text_input::Id::new("test-authentication-input"),

@@ -1306,6 +1306,7 @@ dependencies = [
  "clap",
  "greetd_ipc",
  "iced",
+ "image",
  "rclip-desktop-entry",
  "rustix 1.1.4",
  "thiserror 2.0.20",

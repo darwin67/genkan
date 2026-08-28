@@ -21,8 +21,8 @@ impl App {
             .size(22)
             .color(Color::from_rgba8(255, 255, 255, 0.85));
 
-        let avatar_content: Element<'_, Message> = if let Some(path) = &self.icon_file {
-            image(path).content_fit(ContentFit::Cover).into()
+        let avatar_content: Element<'_, Message> = if let Some(avatar) = &self.avatar {
+            image(avatar).content_fit(ContentFit::Cover).into()
         } else {
             text(initials(&self.display_name))
                 .size(38)
