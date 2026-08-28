@@ -11,7 +11,10 @@ on:
       - "flake.nix"
       - "flake.lock"
       - "nix/**"
+      - "scripts/check-commits.sh"
+      - "cliff.toml"
       - ".github/workflows/ci.yml"
+      - ".github/workflows/commits.yml"
   pull_request:
     branches: [main]
     paths:
@@ -22,7 +25,10 @@ on:
       - "flake.nix"
       - "flake.lock"
       - "nix/**"
+      - "scripts/check-commits.sh"
+      - "cliff.toml"
       - ".github/workflows/ci.yml"
+      - ".github/workflows/commits.yml"
   workflow_dispatch:
 
 permissions:

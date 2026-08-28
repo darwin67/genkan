@@ -43,6 +43,9 @@ allowed types are `feat`, `fix`, `doc`, `docs`, `test`, `ci`, `refactor`,
 `perf`, `chore`, `revert`, `style`, and `security`. Use `!` before the colon or
 a `BREAKING CHANGE:` footer for breaking changes. Keep pull request titles,
 `.github/workflows/commits.yml`, and `cliff.toml` aligned.
+CI validates every non-merge commit introduced by a pull request. Merge commits
+are exempt because their generated subjects are controlled by the hosting
+platform; pull request titles remain authoritative for squash merges.
 
 Enter the pinned Rust environment before running Cargo commands:
 
