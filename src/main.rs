@@ -1,3 +1,4 @@
+mod accounts;
 mod app;
 mod background;
 mod power;
@@ -11,14 +12,25 @@ use iced::{window, Theme};
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Arguments {
-    #[arg(long, default_value = "darwin")]
-    username: String,
-    #[arg(long, default_value = "Darwin")]
-    display_name: String,
-    #[arg(long, default_value = "sway --unsupported-gpu")]
-    session_command: String,
+    #[arg(long, value_parser = parse_username)]
+    username: Option<String>,
+    #[arg(long, requires = "username", value_parser = parse_display_name)]
+    display_name: Option<String>,
     #[arg(long)]
     windowed: bool,
+}
+
+fn parse_username(value: &str) -> Result<String, String> {
+    if !accounts::valid_username(value) {
+        Err("username must be 1–256 characters without whitespace or control characters".into())
+    } else {
+        Ok(value.into())
+    }
+}
+
+fn parse_display_name(value: &str) -> Result<String, String> {
+    accounts::presentation_label(value)
+        .ok_or_else(|| "display name must contain visible characters".into())
 }
 
 pub fn main() -> iced::Result {
@@ -27,7 +39,6 @@ pub fn main() -> iced::Result {
     let config = Config {
         username: arguments.username,
         display_name: arguments.display_name,
-        session_command: arguments.session_command,
     };
 
     iced::application("Genkan", App::update, App::view)
@@ -41,4 +52,44 @@ pub fn main() -> iced::Result {
         .exit_on_close_request(false)
         .antialiasing(true)
         .run_with(|| App::new(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_overrides_are_optional() {
+        let arguments = Arguments::try_parse_from(["genkan"]).unwrap();
+        assert_eq!(arguments.username, None);
+        assert_eq!(arguments.display_name, None);
+    }
+
+    #[test]
+    fn display_name_override_requires_username() {
+        assert!(Arguments::try_parse_from(["genkan", "--display-name", "Operator"]).is_err());
+    }
+
+    #[test]
+    fn identity_overrides_reject_empty_or_malformed_values() {
+        assert!(Arguments::try_parse_from(["genkan", "--username", ""]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "--username", "two users"]).is_err());
+        assert!(Arguments::try_parse_from([
+            "genkan",
+            "--username",
+            "operator",
+            "--display-name",
+            " \n ",
+        ])
+        .is_err());
+        assert!(Arguments::try_parse_from([
+            "genkan",
+            "--username",
+            "operator",
+            "--display-name",
+            "\u{0600}\u{202e}\u{200b}",
+        ])
+        .is_err());
+        assert!(Arguments::try_parse_from(["genkan", "--username", "user\u{0600}"]).is_err());
+    }
 }

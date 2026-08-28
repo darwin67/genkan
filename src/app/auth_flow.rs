@@ -1,4 +1,5 @@
 use greetd_ipc::Request;
+use iced::widget::text_input;
 use iced::{window, Task};
 
 use genkan::auth::{self, Client};
@@ -9,7 +10,9 @@ const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
-    Idle,
+    Failed,
+    DiscoveringUsers,
+    SelectingUser,
     CreatingSession,
     WaitingForInput,
     Authenticating,
@@ -66,7 +69,7 @@ impl App {
                 self.secret = secret;
                 self.input.clear();
                 self.phase = Phase::WaitingForInput;
-                Task::none()
+                text_input::focus(self.input_id.clone())
             }
             auth::Response::Message { error, message } => {
                 self.message = Some(message);
@@ -87,7 +90,9 @@ impl App {
                 };
                 self.phase = Phase::StartingSession;
                 self.message = Some("Starting session…".into());
-                let session = self.selected_session.clone();
+                let Some(session) = self.selected_session.clone() else {
+                    return self.fail("No valid Wayland session is selected".into());
+                };
                 let attempt = self.attempt;
                 Task::perform(
                     async move {
@@ -112,14 +117,7 @@ impl App {
                 description,
             } => {
                 if authentication {
-                    self.phase = Phase::CreatingSession;
-                    self.input.clear();
-                    self.prompt = "Password".into();
-                    self.secret = true;
-                    self.message = Some("Authentication failed".into());
-                    self.message_is_error = true;
-                    let attempt = self.attempt.advance();
-                    restart(self.client.take(), self.username.clone(), attempt)
+                    self.fail("Authentication failed".into())
                 } else {
                     self.fail(description)
                 }
@@ -128,7 +126,7 @@ impl App {
     }
 
     pub(super) fn fail(&mut self, message: String) -> Task<Message> {
-        self.phase = Phase::Idle;
+        self.phase = Phase::Failed;
         self.input.clear();
         self.prompt = "Password".into();
         self.secret = true;

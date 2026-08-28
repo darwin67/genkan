@@ -1,11 +1,12 @@
 use iced::widget::{button, column, container, pick_list, row, stack, text, text_input, Space};
 use iced::{Alignment, Color, Element, Fill, Length};
 
+use crate::accounts::Account;
 use crate::power::Action as PowerAction;
 use crate::{background, theme};
 
 use super::auth_flow::Phase;
-use super::{App, Message};
+use super::{App, Message, PowerState};
 
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
@@ -18,42 +19,67 @@ impl App {
             .size(22)
             .color(Color::from_rgba8(255, 255, 255, 0.85));
 
-        let avatar = container(
-            text(initials(&self.display_name))
-                .size(38)
-                .color(Color::WHITE),
-        )
-        .width(Length::Fixed(92.0))
-        .height(Length::Fixed(92.0))
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgba8(
-                255, 255, 255, 0.18,
-            ))),
-            border: iced::Border {
-                color: Color::from_rgba8(255, 255, 255, 0.45),
-                width: 2.0,
-                radius: 46.0.into(),
-            },
-            ..Default::default()
-        });
+        let avatar_content: Element<'_, Message> = text(initials(&self.display_name))
+            .size(38)
+            .color(Color::WHITE)
+            .into();
+        let avatar = container(avatar_content)
+            .width(Length::Fixed(92.0))
+            .height(Length::Fixed(92.0))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .style(|_| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgba8(
+                    255, 255, 255, 0.18,
+                ))),
+                border: iced::Border {
+                    color: Color::from_rgba8(255, 255, 255, 0.45),
+                    width: 2.0,
+                    radius: 46.0.into(),
+                },
+                ..Default::default()
+            });
 
-        let interactive = self.closing.is_none();
+        let interactive = self.closing.is_none() && self.power_state == PowerState::Idle;
+        let account_selector: Element<'_, Message> =
+            if interactive && self.phase == Phase::SelectingUser && self.accounts.len() > 1 {
+                pick_list(
+                    self.accounts.as_slice(),
+                    None::<&Account>,
+                    Message::SelectAccount,
+                )
+                .width(Length::Fixed(260.0))
+                .into()
+            } else {
+                Space::new(Length::Shrink, Length::Shrink).into()
+            };
         let input = text_input(&self.prompt, &self.input)
-            .on_input_maybe(interactive.then_some(Message::InputChanged))
-            .on_submit_maybe(interactive.then_some(Message::Submit))
+            .id(self.input_id.clone())
+            .on_input_maybe(
+                (interactive && self.phase == Phase::WaitingForInput)
+                    .then_some(Message::InputChanged),
+            )
+            .on_submit_maybe(
+                (interactive && self.phase == Phase::WaitingForInput).then_some(Message::Submit),
+            )
             .secure(self.secret)
             .padding([12, 18])
             .size(18)
             .style(theme::input);
-        let submit = button(text("→").size(22))
-            .on_press_maybe(
-                (interactive && matches!(self.phase, Phase::Idle | Phase::WaitingForInput))
-                    .then_some(Message::Submit),
-            )
-            .padding([10, 16])
-            .style(theme::translucent_button);
+        let submit = if self.phase == Phase::Failed {
+            button(text("Retry").size(16))
+                .on_press_maybe(interactive.then_some(Message::Retry))
+                .padding([12, 16])
+                .style(theme::translucent_button)
+        } else {
+            button(text("→").size(22))
+                .on_press_maybe(
+                    (interactive && self.phase == Phase::WaitingForInput)
+                        .then_some(Message::Submit),
+                )
+                .padding([10, 16])
+                .style(theme::translucent_button)
+        };
         let auth_row = row![input, submit].spacing(8).width(Length::Fixed(340.0));
 
         let status = self.message.as_deref().unwrap_or(" ");
@@ -62,27 +88,36 @@ impl App {
         } else {
             Color::from_rgba8(255, 255, 255, 0.75)
         };
-        let session_selector: Element<'_, Message> = if interactive {
+        let session_selector: Element<'_, Message> = if self.can_select_session() {
             pick_list(
                 self.sessions.as_slice(),
-                Some(&self.selected_session),
+                self.selected_session.as_ref(),
                 Message::SelectSession,
             )
             .width(Length::Fixed(220.0))
             .into()
         } else {
-            container(text(self.selected_session.to_string()).size(16))
-                .width(Length::Fixed(220.0))
-                .height(Length::Fixed(32.0))
-                .padding([0, 12])
-                .align_y(Alignment::Center)
-                .into()
+            container(
+                text(
+                    self.selected_session
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "No session available".into()),
+                )
+                .size(16),
+            )
+            .width(Length::Fixed(220.0))
+            .height(Length::Fixed(32.0))
+            .padding([0, 12])
+            .align_y(Alignment::Center)
+            .into()
         };
 
         let login_panel = container(
             column![
                 avatar,
                 text(&self.display_name).size(26).color(Color::WHITE),
+                account_selector,
                 auth_row,
                 text(status).size(14).color(status_color),
                 session_selector,
@@ -93,10 +128,11 @@ impl App {
         .padding([28, 36])
         .style(theme::panel);
 
+        let power_interactive = self.can_request_power();
         let power_buttons = row![
-            power_button(PowerAction::Suspend, interactive),
-            power_button(PowerAction::Reboot, interactive),
-            power_button(PowerAction::PowerOff, interactive),
+            power_button(PowerAction::Suspend, power_interactive),
+            power_button(PowerAction::Reboot, power_interactive),
+            power_button(PowerAction::PowerOff, power_interactive),
         ]
         .spacing(14);
 
@@ -112,38 +148,56 @@ impl App {
         .align_x(Alignment::Center)
         .padding([44, 20]);
 
-        let content: Element<'_, Message> = if let Some(action) = self.confirmation {
-            let confirmation = container(
-                column![
-                    text(format!("{} this computer?", action.label())).size(24),
-                    row![
-                        button("Cancel")
-                            .on_press_maybe(interactive.then_some(Message::CancelPower)),
-                        button(action.label())
-                            .on_press_maybe(interactive.then_some(Message::ConfirmPower(action))),
+        let content: Element<'_, Message> = match self.power_state {
+            PowerState::Confirming(action) => {
+                let dialog_interactive = self.power_dialog_interactive();
+                let confirmation = container(
+                    column![
+                        text(format!("{} this computer?", action.label())).size(24),
+                        row![
+                            button("Cancel")
+                                .on_press_maybe(dialog_interactive.then_some(Message::CancelPower)),
+                            button(action.label()).on_press_maybe(
+                                dialog_interactive.then_some(Message::ConfirmPower(action))
+                            ),
+                        ]
+                        .spacing(12),
                     ]
-                    .spacing(12),
-                ]
-                .align_x(Alignment::Center)
-                .spacing(22),
-            )
-            .padding(30)
-            .style(theme::panel);
-            stack![
-                main_content,
-                container(confirmation)
-                    .width(Fill)
-                    .height(Fill)
                     .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
-            ]
-            .into()
-        } else {
-            main_content.into()
+                    .spacing(22),
+                )
+                .padding(30)
+                .style(theme::panel);
+                modal(main_content, confirmation)
+            }
+            PowerState::Executing(action) => {
+                let progress = container(
+                    text(format!("Requesting {}…", action.label().to_lowercase())).size(22),
+                )
+                .padding(30)
+                .style(theme::panel);
+                modal(main_content, progress)
+            }
+            PowerState::Idle => main_content.into(),
         };
 
         stack![background, content].into()
     }
+}
+
+fn modal<'a>(
+    main_content: impl Into<Element<'a, Message>>,
+    dialog: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    stack![
+        main_content.into(),
+        container(dialog)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+    ]
+    .into()
 }
 
 fn power_button(action: PowerAction, interactive: bool) -> Element<'static, Message> {
