@@ -3,7 +3,7 @@
   name = "genkan-greetd-e2e";
 
   nodes.machine =
-    { lib, pkgs, ... }:
+    { config, lib, pkgs, ... }:
     let
       session = pkgs.writeShellScript "genkan-e2e-session" ''
         set -eu
@@ -12,6 +12,14 @@
         ${pkgs.coreutils}/bin/touch /tmp/genkan-e2e.passed
         exec ${pkgs.coreutils}/bin/sleep infinity
       '';
+      sessionPackage = (pkgs.writeTextDir "share/wayland-sessions/genkan-e2e.desktop" ''
+        [Desktop Entry]
+        Type=Application
+        Name=Genkan E2E
+        Exec=${session}
+      '').overrideAttrs {
+        passthru.providedSessions = [ "genkan-e2e" ];
+      };
     in
     {
       users.mutableUsers = false;
@@ -30,6 +38,9 @@
           "--session-command ${session}"
         ];
       };
+      services.displayManager.sessionPackages = [ sessionPackage ];
+      systemd.services.greetd.environment.XDG_DATA_DIRS =
+        "${config.services.displayManager.sessionData.desktops}/share";
     };
 
   testScript = ''
@@ -37,6 +48,12 @@
 
     machine.start()
     machine.wait_for_unit("greetd.service")
+    xdg_data_dirs = machine.succeed(
+        "systemctl show greetd --property=Environment --value"
+    ).split("XDG_DATA_DIRS=", 1)[1].split()[0]
+    machine.succeed(
+        f"test -f {xdg_data_dirs}/wayland-sessions/genkan-e2e.desktop"
+    )
     machine.wait_until_succeeds(
         "test -f /tmp/genkan-e2e.passed",
         timeout=timedelta(seconds=60),
