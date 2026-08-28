@@ -10,35 +10,6 @@ Allowed decision states:
 - **Accepted**: recommendation approved; remediation remains.
 - **Deferred**: valid finding intentionally postponed, with rationale.
 - **Rejected**: recommendation will not be implemented, with rationale.
-- **Addressed**: remediation completed and verified.
-
-## 1. Cancel abandoned greetd authentication sessions
-
-- **Severity:** High
-- **Decision:** Addressed. Power failures preserve authentication state;
-  voluntarily abandoned attempts and graceful window exits cancel active
-  greetd sessions; retries recover stale sessions; attempt IDs prevent late
-  responses from mutating newer state. Treat a server-returned `AuthError` as
-  requiring cancellation because stock greetd 0.10.3 retains its configuring
-  session despite the protocol documentation stating otherwise.
-- **Finding:** Active greetd sessions can be dropped without `CancelSession`,
-  potentially leaving greetd unable to accept another login attempt. Late
-  asynchronous responses can also update an abandoned attempt.
-- **Recommendation:** Separate power errors from authentication failure; add
-  explicit cancellation for abandoned attempts and graceful window close;
-  recover stale daemon sessions before reconnecting; identify attempts so late
-  responses can be ignored.
-- **Resolution:** Authentication tasks carry monotonic attempt IDs, and the UI
-  ignores responses from superseded attempts. Retrying explicitly cancels the
-  retained client session and falls back to stale-session recovery over a new
-  connection. `AuthError` follows the same cancel-before-retry path. Graceful
-  window closure enters an explicit closing state, ignores repeated close
-  requests, and waits for `CancelSession`, including creation requests already
-  in flight. A three-second deadline force-closes a stalled shutdown so the
-  next startup can recover any stale daemon state. Power errors update only
-  their status message. State tests cover stale responses, power failures,
-  repeated and deferred closes, and shutdown timeout; fake-socket tests verify
-  stale recovery and cancel-before-retry ordering.
 
 ## 2. Model session and desktop identities separately
 
@@ -52,21 +23,6 @@ Allowed decision states:
 - **Recommendation:** Derive the session ID from the desktop filename and
   colon-join all `DesktopNames` values for `XDG_CURRENT_DESKTOP`.
 - **Resolution:** Not started.
-
-## 3. Pin third-party CI actions
-
-- **Severity:** High
-- **Decision:** Addressed. Pin the Nix installer and Conventional Commit
-  validator to reviewed full commit SHAs with adjacent version comments.
-  Future action updates remain explicit dependency changes. Dependabot may be
-  added later but is not required to address this finding.
-- **Finding:** The Nix installer and Conventional Commit validation actions use
-  mutable branch or version references.
-- **Recommendation:** Pin every third-party action to an audited full commit
-  SHA and retain a version comment for update tooling and reviewers.
-- **Resolution:** All workflow actions are pinned to full commit SHAs with
-  adjacent release comments. The Nix jobs use the fixed-installer Determinate
-  action rather than selecting the latest installer at runtime.
 
 ## 4. Parse Desktop Entry `Exec` according to the specification
 
@@ -278,15 +234,3 @@ Allowed decision states:
 - **Recommendation:** Add the standard MIT license text.
 - **Resolution:** Add `LICENSE` containing the standard MIT license text with
   `Copyright (c) 2026 Darwin D. Wu`.
-
-## 18. Use one package version source
-
-- **Severity:** Low
-- **Decision:** Addressed
-- **Finding:** The package version is maintained independently in `Cargo.toml`
-  and `flake.nix`.
-- **Recommendation:** Derive the Nix package version from `Cargo.toml` or add a
-  check that requires both values to match.
-- **Resolution:** `Cargo.toml` is the single source of truth; the flake derives
-  production and E2E package versions from `package.version` using Nix's TOML
-  parser.
