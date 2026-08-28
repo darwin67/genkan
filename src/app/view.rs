@@ -106,8 +106,10 @@ impl App {
                 column![
                     text(format!("{} this computer?", action.label())).size(24),
                     row![
-                        button("Cancel").on_press(Message::CancelPower),
-                        button(action.label()).on_press(Message::ConfirmPower(action)),
+                        button("Cancel")
+                            .on_press_maybe(interactive.then_some(Message::CancelPower)),
+                        button(action.label())
+                            .on_press_maybe(interactive.then_some(Message::ConfirmPower(action))),
                     ]
                     .spacing(12),
                 ]
