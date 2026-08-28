@@ -25,6 +25,8 @@ Allowed decision states:
 - **Resolution:** The package now uses Nix's driver runpath hook and advertises
   the system Vulkan ICD directory. CI on x86_64 and aarch64 launches the
   packaged binary under nested Cage and headless Weston using Mesa software
-  Vulkan, and fails on early compositor, loader, or application exit. This
-  validates architecture-specific software rendering but does not substitute
-  for the deferred AMD, NVIDIA, external-display, and physical ARM checks.
+  Vulkan, asserts the packaged runpath and ICD wrapper configuration, and fails
+  on early compositor, loader, or application exit. Graceful and forced
+  shutdown deadlines keep the check bounded. This validates
+  architecture-specific software rendering but does not substitute for the
+  deferred AMD, NVIDIA, external-display, and physical ARM checks.
