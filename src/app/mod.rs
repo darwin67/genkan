@@ -370,6 +370,10 @@ impl App {
         let attempt = self.attempt.advance();
         auth_flow::restart(client, self.username.clone(), attempt)
     }
+
+    fn power_dialog_interactive(&self) -> bool {
+        self.closing.is_none() && matches!(self.power_state, PowerState::Confirming(_))
+    }
 }
 
 fn discover_accounts() -> Task<Message> {
@@ -567,6 +571,8 @@ mod tests {
         let mut app = app();
         let _ = app.update(Message::AskPower(PowerAction::PowerOff));
 
+        assert!(app.power_dialog_interactive());
+
         let _ = app.update(Message::ConfirmPower(PowerAction::Reboot));
         assert_eq!(
             app.power_state,
@@ -578,6 +584,7 @@ mod tests {
             app.power_state,
             PowerState::Executing(PowerAction::PowerOff)
         );
+        assert!(!app.power_dialog_interactive());
 
         let _ = app.update(Message::CancelPower);
         let _ = app.update(Message::AskPower(PowerAction::Reboot));

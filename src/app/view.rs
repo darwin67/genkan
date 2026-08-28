@@ -155,14 +155,15 @@ impl App {
 
         let content: Element<'_, Message> = match self.power_state {
             PowerState::Confirming(action) => {
+                let dialog_interactive = self.power_dialog_interactive();
                 let confirmation = container(
                     column![
                         text(format!("{} this computer?", action.label())).size(24),
                         row![
                             button("Cancel")
-                                .on_press_maybe(interactive.then_some(Message::CancelPower)),
+                                .on_press_maybe(dialog_interactive.then_some(Message::CancelPower)),
                             button(action.label()).on_press_maybe(
-                                interactive.then_some(Message::ConfirmPower(action))
+                                dialog_interactive.then_some(Message::ConfirmPower(action))
                             ),
                         ]
                         .spacing(12),
