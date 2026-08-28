@@ -12,6 +12,20 @@ use crate::auth::{self, Client};
 use crate::power::{self, Action as PowerAction};
 use crate::sessions::{self, Session};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Closing {
+    WaitingForClient(window::Id),
+    Cancelling(window::Id),
+}
+
+impl Closing {
+    fn window(self) -> window::Id {
+        match self {
+            Self::WaitingForClient(window) | Self::Cancelling(window) => window,
+        }
+    }
+}
+
 pub(crate) struct Config {
     pub(crate) username: String,
     pub(crate) display_name: String,
@@ -35,7 +49,7 @@ pub(crate) struct App {
     now: chrono::DateTime<Local>,
     confirmation: Option<PowerAction>,
     attempt: Attempt,
-    closing: Option<window::Id>,
+    closing: Option<Closing>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +68,7 @@ pub(crate) enum Message {
     PowerResult(Result<(), String>),
     CloseRequested(window::Id),
     SessionCancelled(window::Id),
+    CloseTimeout(window::Id),
 }
 
 impl App {
@@ -162,16 +177,29 @@ impl App {
                 self.message_is_error = true;
                 Task::none()
             }
+            Message::CloseRequested(_) if self.closing.is_some() => Task::none(),
             Message::CloseRequested(window) if self.client.is_some() => {
                 self.attempt.advance();
-                auth_flow::cancel_and_close(self.client.take(), window)
+                self.closing = Some(Closing::Cancelling(window));
+                Task::batch([
+                    auth_flow::cancel_for_close(self.client.take(), window),
+                    auth_flow::close_timeout(window),
+                ])
             }
             Message::CloseRequested(window) if self.phase == Phase::CreatingSession => {
-                self.closing = Some(window);
-                Task::none()
+                self.closing = Some(Closing::WaitingForClient(window));
+                auth_flow::close_timeout(window)
             }
             Message::CloseRequested(window) => window::close(window),
-            Message::SessionCancelled(window) => window::close(window),
+            Message::SessionCancelled(window) | Message::CloseTimeout(window)
+                if self
+                    .closing
+                    .is_some_and(|closing| closing.window() == window) =>
+            {
+                self.closing = None;
+                window::close(window)
+            }
+            Message::SessionCancelled(_) | Message::CloseTimeout(_) => Task::none(),
         }
     }
 }
@@ -231,5 +259,57 @@ mod tests {
         assert_eq!(app.input, "secret");
         assert_eq!(app.message.as_deref(), Some("not authorized"));
         assert!(app.message_is_error);
+    }
+
+    #[test]
+    fn repeated_close_is_ignored_while_waiting_for_cancellation() {
+        let mut app = app();
+        app.phase = Phase::CreatingSession;
+        let first = window::Id::unique();
+        let second = window::Id::unique();
+
+        let _ = app.update(Message::CloseRequested(first));
+        assert_eq!(app.closing, Some(Closing::WaitingForClient(first)));
+
+        let _ = app.update(Message::CloseRequested(second));
+        assert_eq!(app.closing, Some(Closing::WaitingForClient(first)));
+    }
+
+    #[test]
+    fn repeated_close_is_ignored_while_cancelling() {
+        let mut app = app();
+        let first = window::Id::unique();
+        let second = window::Id::unique();
+        app.closing = Some(Closing::Cancelling(first));
+
+        let _ = app.update(Message::CloseRequested(second));
+
+        assert_eq!(app.closing, Some(Closing::Cancelling(first)));
+    }
+
+    #[test]
+    fn creation_result_starts_deferred_close_cancellation() {
+        let mut app = app();
+        let window = window::Id::unique();
+        app.phase = Phase::CreatingSession;
+        app.closing = Some(Closing::WaitingForClient(window));
+
+        let _ = app.update(Message::AuthResult {
+            attempt: app.attempt,
+            result: Err("socket closed".into()),
+        });
+
+        assert_eq!(app.closing, Some(Closing::Cancelling(window)));
+    }
+
+    #[test]
+    fn close_timeout_releases_a_stalled_shutdown() {
+        let mut app = app();
+        let window = window::Id::unique();
+        app.closing = Some(Closing::Cancelling(window));
+
+        let _ = app.update(Message::CloseTimeout(window));
+
+        assert_eq!(app.closing, None);
     }
 }

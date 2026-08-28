@@ -3,7 +3,9 @@ use iced::{window, Task};
 
 use crate::auth::{self, Client};
 
-use super::{App, Message};
+use super::{App, Closing, Message};
+
+const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
@@ -37,13 +39,14 @@ impl App {
         if attempt != self.attempt {
             return Task::none();
         }
-        if let Some(window) = self.closing.take() {
+        if let Some(Closing::WaitingForClient(window)) = self.closing {
             let client = match result {
                 Ok((client, _)) => client,
                 Err(_) => None,
             };
             self.attempt.advance();
-            return cancel_and_close(client, window);
+            self.closing = Some(Closing::Cancelling(window));
+            return cancel_for_close(client, window);
         }
         match result {
             Ok((client, response)) => {
@@ -109,7 +112,6 @@ impl App {
                 description,
             } => {
                 if authentication {
-                    self.client = None;
                     self.phase = Phase::CreatingSession;
                     self.input.clear();
                     self.prompt = "Password".into();
@@ -117,7 +119,7 @@ impl App {
                     self.message = Some("Authentication failed".into());
                     self.message_is_error = true;
                     let attempt = self.attempt.advance();
-                    begin(self.username.clone(), attempt, false)
+                    restart(self.client.take(), self.username.clone(), attempt)
                 } else {
                     self.fail(description)
                 }
@@ -155,25 +157,14 @@ pub(super) fn begin(username: String, attempt: Attempt, recover: bool) -> Task<M
 }
 
 pub(super) fn restart(client: Option<Client>, username: String, attempt: Attempt) -> Task<Message> {
-    Task::perform(
-        async move {
-            let needs_recovery = match client {
-                Some(client) => auth::cancel(Some(client)).await.is_err(),
-                None => true,
-            };
-            if needs_recovery {
-                auth::recover_and_begin(username).await
-            } else {
-                auth::begin(username).await
-            }
-        },
-        move |result| Message::AuthResult {
+    Task::perform(auth::restart(client, username), move |result| {
+        Message::AuthResult {
             attempt,
             result: result
                 .map(|(client, response)| (Some(client), response))
                 .map_err(|error| error.to_string()),
-        },
-    )
+        }
+    })
 }
 
 pub(super) fn exchange(client: Client, request: Request, attempt: Attempt) -> Task<Message> {
@@ -188,10 +179,20 @@ pub(super) fn exchange(client: Client, request: Request, attempt: Attempt) -> Ta
     )
 }
 
-pub(super) fn cancel_and_close(client: Option<Client>, window: window::Id) -> Task<Message> {
+pub(super) fn cancel_for_close(client: Option<Client>, window: window::Id) -> Task<Message> {
     Task::perform(auth::cancel(client), move |_| {
         Message::SessionCancelled(window)
     })
+}
+
+pub(super) fn close_timeout(window: window::Id) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::time::sleep(CLOSE_TIMEOUT).await;
+            window
+        },
+        Message::CloseTimeout,
+    )
 }
 
 pub(super) fn clean_prompt(prompt: &str) -> String {
