@@ -211,13 +211,3 @@ Allowed decision states:
   conventional. Keep allowed types aligned with `cliff.toml`, document the
   merge-commit exemption, and include `cliff.toml` and
   `.github/workflows/commits.yml` in relevant CI path filters.
-
-## 17. Add the declared MIT license text
-
-- **Severity:** Low
-- **Decision:** Accepted
-- **Finding:** `Cargo.toml` declares MIT but the repository has no `LICENSE`
-  file.
-- **Recommendation:** Add the standard MIT license text.
-- **Resolution:** Add `LICENSE` containing the standard MIT license text with
-  `Copyright (c) 2026 Darwin D. Wu`.
