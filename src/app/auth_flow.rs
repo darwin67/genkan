@@ -87,7 +87,9 @@ impl App {
                 };
                 self.phase = Phase::StartingSession;
                 self.message = Some("Starting session…".into());
-                let session = self.selected_session.clone();
+                let Some(session) = self.selected_session.clone() else {
+                    return self.fail("No valid Wayland session is selected".into());
+                };
                 let attempt = self.attempt;
                 Task::perform(
                     async move {

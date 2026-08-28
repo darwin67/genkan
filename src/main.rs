@@ -15,8 +15,6 @@ struct Arguments {
     username: String,
     #[arg(long, default_value = "Darwin")]
     display_name: String,
-    #[arg(long, default_value = "sway --unsupported-gpu")]
-    session_command: String,
     #[arg(long)]
     windowed: bool,
 }
@@ -27,7 +25,6 @@ pub fn main() -> iced::Result {
     let config = Config {
         username: arguments.username,
         display_name: arguments.display_name,
-        session_command: arguments.session_command,
     };
 
     iced::application("Genkan", App::update, App::view)

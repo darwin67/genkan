@@ -28,7 +28,6 @@ impl Closing {
 pub(crate) struct Config {
     pub(crate) username: String,
     pub(crate) display_name: String,
-    pub(crate) session_command: String,
 }
 
 #[derive(Debug)]
@@ -43,7 +42,7 @@ pub(crate) struct App {
     phase: Phase,
     client: Option<Client>,
     sessions: Vec<Session>,
-    selected_session: Session,
+    selected_session: Option<Session>,
     started_at: Instant,
     now: chrono::DateTime<Local>,
     confirmation: Option<PowerAction>,
@@ -72,17 +71,9 @@ pub(crate) enum Message {
 
 impl App {
     pub(crate) fn new(config: Config) -> (Self, Task<Message>) {
-        let command = shell_words::split(&config.session_command)
-            .ok()
-            .filter(|parts| !parts.is_empty())
-            .unwrap_or_else(|| vec!["sway".into(), "--unsupported-gpu".into()]);
-        let fallback = Session::sway(command);
-        let sessions = sessions::discover(fallback.clone());
-        let selected_session = sessions
-            .iter()
-            .find(|session| session.command == fallback.command)
-            .cloned()
-            .unwrap_or(fallback);
+        let sessions = sessions::discover();
+        let selected_session = sessions.first().cloned();
+        let configured = selected_session.is_some();
         let attempt = Attempt::initial();
 
         let app = Self {
@@ -90,10 +81,14 @@ impl App {
             display_name: config.display_name,
             input: String::new(),
             prompt: "Password".into(),
-            message: None,
-            message_is_error: false,
+            message: (!configured).then(|| "No valid Wayland sessions are installed".into()),
+            message_is_error: !configured,
             secret: true,
-            phase: Phase::CreatingSession,
+            phase: if configured {
+                Phase::CreatingSession
+            } else {
+                Phase::Idle
+            },
             client: None,
             sessions,
             selected_session,
@@ -103,7 +98,11 @@ impl App {
             attempt,
             closing: None,
         };
-        let task = auth_flow::begin(app.username.clone(), attempt, true);
+        let task = if configured {
+            auth_flow::begin(app.username.clone(), attempt, true)
+        } else {
+            Task::none()
+        };
         (app, task)
     }
 
@@ -148,7 +147,7 @@ impl App {
             Message::SelectSession(session)
                 if !matches!(self.phase, Phase::Authenticating | Phase::StartingSession) =>
             {
-                self.selected_session = session;
+                self.selected_session = Some(session);
                 Task::none()
             }
             Message::SelectSession(_) => Task::none(),
@@ -243,6 +242,15 @@ impl App {
 mod tests {
     use super::*;
 
+    fn session() -> Session {
+        Session {
+            name: "Sway".into(),
+            command: vec!["sway".into()],
+            session_id: "sway".into(),
+            desktop_names: vec!["sway".into()],
+        }
+    }
+
     fn app() -> App {
         let mut attempt = Attempt::initial();
         attempt.advance();
@@ -256,8 +264,8 @@ mod tests {
             secret: true,
             phase: Phase::WaitingForInput,
             client: None,
-            sessions: vec![Session::sway(vec!["sway".into()])],
-            selected_session: Session::sway(vec!["sway".into()]),
+            sessions: vec![session()],
+            selected_session: Some(session()),
             started_at: Instant::now(),
             now: Local::now(),
             confirmation: None,

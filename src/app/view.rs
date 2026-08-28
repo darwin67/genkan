@@ -65,18 +65,26 @@ impl App {
         let session_selector: Element<'_, Message> = if interactive {
             pick_list(
                 self.sessions.as_slice(),
-                Some(&self.selected_session),
+                self.selected_session.as_ref(),
                 Message::SelectSession,
             )
             .width(Length::Fixed(220.0))
             .into()
         } else {
-            container(text(self.selected_session.to_string()).size(16))
-                .width(Length::Fixed(220.0))
-                .height(Length::Fixed(32.0))
-                .padding([0, 12])
-                .align_y(Alignment::Center)
-                .into()
+            container(
+                text(
+                    self.selected_session
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "No session available".into()),
+                )
+                .size(16),
+            )
+            .width(Length::Fixed(220.0))
+            .height(Length::Fixed(32.0))
+            .padding([0, 12])
+            .align_y(Alignment::Center)
+            .into()
         };
 
         let login_panel = container(
