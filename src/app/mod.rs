@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use auth_flow::{Attempt, Phase};
 use chrono::Local;
 use greetd_ipc::Request;
+use iced::widget::text_input;
 use iced::{time, window, Subscription, Task};
 
 use crate::accounts::{self, Account};
@@ -38,6 +39,7 @@ pub(crate) struct App {
     icon_file: Option<std::path::PathBuf>,
     accounts: Vec<Account>,
     input: String,
+    input_id: text_input::Id,
     prompt: String,
     message: Option<String>,
     message_is_error: bool,
@@ -58,6 +60,7 @@ pub(crate) enum Message {
     Tick,
     InputChanged(String),
     Submit,
+    Retry,
     AuthResult {
         attempt: Attempt,
         result: Result<(Option<Client>, auth::Response), String>,
@@ -99,6 +102,7 @@ impl App {
                 .and_then(|account| account.icon_file.clone()),
             accounts: Vec::new(),
             input: String::new(),
+            input_id: text_input::Id::new("authentication-input"),
             prompt: "Password".into(),
             message: selected_session
                 .is_none()
@@ -110,7 +114,7 @@ impl App {
             } else if discovering {
                 Phase::DiscoveringUsers
             } else {
-                Phase::Idle
+                Phase::Failed
             },
             client: None,
             sessions,
@@ -165,10 +169,11 @@ impl App {
                 self.now = Local::now();
                 Task::none()
             }
-            Message::InputChanged(value) => {
+            Message::InputChanged(value) if self.phase == Phase::WaitingForInput => {
                 self.input = value;
                 Task::none()
             }
+            Message::InputChanged(_) => Task::none(),
             Message::AccountsResult(Ok(accounts)) if accounts.len() == 1 => {
                 self.accounts = accounts;
                 self.select_account(self.accounts[0].clone())
@@ -195,13 +200,29 @@ impl App {
                 Task::none()
             }
             Message::SelectSession(_) => Task::none(),
-            Message::Submit if self.phase == Phase::Idle => {
-                self.message = None;
-                self.phase = Phase::CreatingSession;
-                let client = self.client.take();
-                let attempt = self.attempt.advance();
-                auth_flow::restart(client, self.username.clone(), attempt)
+            Message::Retry if self.phase == Phase::Failed && self.selected_session.is_none() => {
+                self.sessions = sessions::discover();
+                self.selected_session = self.sessions.first().cloned();
+                if self.selected_session.is_none() {
+                    self.message = Some("No valid Wayland sessions are installed".into());
+                    self.message_is_error = true;
+                    return Task::none();
+                }
+                if self.username.is_empty() {
+                    self.phase = Phase::DiscoveringUsers;
+                    self.message = None;
+                    discover_accounts()
+                } else {
+                    self.retry_authentication()
+                }
             }
+            Message::Retry if self.phase == Phase::Failed && self.username.is_empty() => {
+                self.phase = Phase::DiscoveringUsers;
+                self.message = None;
+                discover_accounts()
+            }
+            Message::Retry if self.phase == Phase::Failed => self.retry_authentication(),
+            Message::Retry => Task::none(),
             Message::Submit if self.phase == Phase::WaitingForInput => {
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
@@ -291,6 +312,15 @@ impl App {
         let attempt = self.attempt.advance();
         auth_flow::begin(self.username.clone(), attempt, true)
     }
+
+    fn retry_authentication(&mut self) -> Task<Message> {
+        self.message = None;
+        self.message_is_error = false;
+        self.phase = Phase::CreatingSession;
+        let client = self.client.take();
+        let attempt = self.attempt.advance();
+        auth_flow::restart(client, self.username.clone(), attempt)
+    }
 }
 
 fn discover_accounts() -> Task<Message> {
@@ -321,6 +351,7 @@ mod tests {
             icon_file: None,
             accounts: Vec::new(),
             input: "secret".into(),
+            input_id: text_input::Id::new("test-authentication-input"),
             prompt: "Password".into(),
             message: Some("Keep this message".into()),
             message_is_error: false,
@@ -376,7 +407,7 @@ mod tests {
 
         let _ = app.update(Message::AccountsResult(Ok(Vec::new())));
 
-        assert_eq!(app.phase, Phase::Idle);
+        assert_eq!(app.phase, Phase::Failed);
         assert_eq!(
             app.message.as_deref(),
             Some("AccountsService found no unlocked non-system users")
@@ -401,6 +432,43 @@ mod tests {
         assert_eq!(app.phase, Phase::WaitingForInput);
         assert_eq!(app.input, "secret");
         assert_eq!(app.message.as_deref(), Some("Keep this message"));
+    }
+
+    #[test]
+    fn ignores_input_outside_a_pam_prompt() {
+        let mut app = app();
+        app.phase = Phase::Authenticating;
+
+        let _ = app.update(Message::InputChanged("replacement".into()));
+        let _ = app.update(Message::Submit);
+
+        assert_eq!(app.input, "secret");
+        assert_eq!(app.phase, Phase::Authenticating);
+    }
+
+    #[test]
+    fn authentication_error_waits_for_explicit_retry() {
+        let mut app = app();
+        let attempt = app.attempt;
+
+        let _ = app.update(Message::AuthResult {
+            attempt,
+            result: Ok((
+                None,
+                auth::Response::Error {
+                    authentication: true,
+                    description: "authentication failed".into(),
+                },
+            )),
+        });
+
+        assert_eq!(app.phase, Phase::Failed);
+        assert_eq!(app.attempt, attempt);
+        assert_eq!(app.message.as_deref(), Some("Authentication failed"));
+
+        let _ = app.update(Message::Retry);
+        assert_eq!(app.phase, Phase::CreatingSession);
+        assert_ne!(app.attempt, attempt);
     }
 
     #[test]
@@ -487,7 +555,7 @@ mod tests {
         let mut app = app();
         let window = window::Id::unique();
         let old_attempt = app.attempt;
-        app.phase = Phase::Idle;
+        app.phase = Phase::Failed;
 
         let _ = app.update(Message::CloseRequested(window));
 
@@ -495,9 +563,9 @@ mod tests {
         assert_ne!(app.attempt, old_attempt);
         let closing_attempt = app.attempt;
 
-        let _ = app.update(Message::Submit);
+        let _ = app.update(Message::Retry);
 
-        assert_eq!(app.phase, Phase::Idle);
+        assert_eq!(app.phase, Phase::Failed);
         assert_eq!(app.attempt, closing_attempt);
         assert_eq!(app.closing, Some(Closing::Cancelling(window)));
     }
@@ -507,15 +575,15 @@ mod tests {
         let mut app = app();
         let window = window::Id::unique();
         let attempt = app.attempt;
-        app.phase = Phase::Idle;
+        app.phase = Phase::Failed;
         app.closing = Some(Closing::Cancelling(window));
 
         let _ = app.update(Message::SessionCancelled(window));
         assert_eq!(app.closing, Some(Closing::Dispatching(window)));
 
-        let _ = app.update(Message::Submit);
+        let _ = app.update(Message::Retry);
 
-        assert_eq!(app.phase, Phase::Idle);
+        assert_eq!(app.phase, Phase::Failed);
         assert_eq!(app.attempt, attempt);
         assert_eq!(app.closing, Some(Closing::Dispatching(window)));
     }

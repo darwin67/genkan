@@ -60,19 +60,32 @@ impl App {
                 Space::new(Length::Shrink, Length::Shrink).into()
             };
         let input = text_input(&self.prompt, &self.input)
-            .on_input_maybe(interactive.then_some(Message::InputChanged))
-            .on_submit_maybe(interactive.then_some(Message::Submit))
+            .id(self.input_id.clone())
+            .on_input_maybe(
+                (interactive && self.phase == Phase::WaitingForInput)
+                    .then_some(Message::InputChanged),
+            )
+            .on_submit_maybe(
+                (interactive && self.phase == Phase::WaitingForInput).then_some(Message::Submit),
+            )
             .secure(self.secret)
             .padding([12, 18])
             .size(18)
             .style(theme::input);
-        let submit = button(text("→").size(22))
-            .on_press_maybe(
-                (interactive && matches!(self.phase, Phase::Idle | Phase::WaitingForInput))
-                    .then_some(Message::Submit),
-            )
-            .padding([10, 16])
-            .style(theme::translucent_button);
+        let submit = if self.phase == Phase::Failed {
+            button(text("Retry").size(16))
+                .on_press_maybe(interactive.then_some(Message::Retry))
+                .padding([12, 16])
+                .style(theme::translucent_button)
+        } else {
+            button(text("→").size(22))
+                .on_press_maybe(
+                    (interactive && self.phase == Phase::WaitingForInput)
+                        .then_some(Message::Submit),
+                )
+                .padding([10, 16])
+                .style(theme::translucent_button)
+        };
         let auth_row = row![input, submit].spacing(8).width(Length::Fixed(340.0));
 
         let status = self.message.as_deref().unwrap_or(" ");
