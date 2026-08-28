@@ -88,7 +88,7 @@ impl App {
         } else {
             Color::from_rgba8(255, 255, 255, 0.75)
         };
-        let session_selector: Element<'_, Message> = if interactive {
+        let session_selector: Element<'_, Message> = if self.can_select_session() {
             pick_list(
                 self.sessions.as_slice(),
                 self.selected_session.as_ref(),

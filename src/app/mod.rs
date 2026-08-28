@@ -219,9 +219,7 @@ impl App {
                 self.select_account(account)
             }
             Message::SelectAccount(_) => Task::none(),
-            Message::SelectSession(session)
-                if !matches!(self.phase, Phase::Authenticating | Phase::StartingSession) =>
-            {
+            Message::SelectSession(session) if self.can_select_session() => {
                 self.selected_session = Some(session);
                 Task::none()
             }
@@ -382,6 +380,12 @@ impl App {
                 Phase::WaitingForInput | Phase::Failed | Phase::SelectingUser
             )
     }
+
+    fn can_select_session(&self) -> bool {
+        self.closing.is_none()
+            && self.power_state == PowerState::Idle
+            && !matches!(self.phase, Phase::Authenticating | Phase::StartingSession)
+    }
 }
 
 fn discover_accounts() -> Task<Message> {
@@ -504,6 +508,24 @@ mod tests {
 
         assert_eq!(app.input, "secret");
         assert_eq!(app.phase, Phase::Authenticating);
+    }
+
+    #[test]
+    fn session_selection_is_disabled_while_authentication_is_in_flight() {
+        for phase in [Phase::Authenticating, Phase::StartingSession] {
+            let mut app = app();
+            app.phase = phase;
+
+            let _ = app.update(Message::SelectSession(Session {
+                name: "Other".into(),
+                command: vec!["other".into()],
+                session_id: "other".into(),
+                desktop_names: Vec::new(),
+            }));
+
+            assert!(!app.can_select_session(), "phase {phase:?}");
+            assert_eq!(app.selected_session.as_ref().unwrap().name, "Sway");
+        }
     }
 
     #[test]
