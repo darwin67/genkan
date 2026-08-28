@@ -191,11 +191,20 @@ impl App {
                 auth_flow::close_timeout(window)
             }
             Message::CloseRequested(window) => window::close(window),
-            Message::SessionCancelled(window) | Message::CloseTimeout(window)
+            Message::SessionCancelled(window)
                 if self
                     .closing
                     .is_some_and(|closing| closing.window() == window) =>
             {
+                self.closing = None;
+                window::close(window)
+            }
+            Message::CloseTimeout(window)
+                if self
+                    .closing
+                    .is_some_and(|closing| closing.window() == window) =>
+            {
+                self.attempt.advance();
                 self.closing = None;
                 window::close(window)
             }
@@ -303,13 +312,29 @@ mod tests {
     }
 
     #[test]
-    fn close_timeout_releases_a_stalled_shutdown() {
+    fn close_timeout_invalidates_a_late_creation_result() {
         let mut app = app();
         let window = window::Id::unique();
-        app.closing = Some(Closing::Cancelling(window));
+        let old_attempt = app.attempt;
+        app.phase = Phase::CreatingSession;
+        app.closing = Some(Closing::WaitingForClient(window));
 
         let _ = app.update(Message::CloseTimeout(window));
-
         assert_eq!(app.closing, None);
+        assert_ne!(app.attempt, old_attempt);
+
+        let _ = app.update(Message::AuthResult {
+            attempt: old_attempt,
+            result: Ok((
+                None,
+                auth::Response::Prompt {
+                    secret: true,
+                    message: "Late prompt".into(),
+                },
+            )),
+        });
+
+        assert_eq!(app.phase, Phase::CreatingSession);
+        assert_eq!(app.prompt, "Password");
     }
 }
