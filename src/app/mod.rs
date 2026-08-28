@@ -269,14 +269,18 @@ impl App {
             }
             Message::Submit => Task::none(),
             Message::AuthResult { attempt, result } => self.handle_auth_result(attempt, result),
-            Message::AskPower(action) if self.power_state == PowerState::Idle => {
+            Message::AskPower(action) if self.can_request_power() => {
                 self.power_state = PowerState::Confirming(action);
                 Task::none()
             }
             Message::AskPower(_) => Task::none(),
             Message::CancelPower if matches!(self.power_state, PowerState::Confirming(_)) => {
                 self.power_state = PowerState::Idle;
-                Task::none()
+                if self.phase == Phase::WaitingForInput {
+                    text_input::focus(self.input_id.clone())
+                } else {
+                    Task::none()
+                }
             }
             Message::CancelPower => Task::none(),
             Message::ConfirmPower(action) if self.power_state == PowerState::Confirming(action) => {
@@ -373,6 +377,15 @@ impl App {
 
     fn power_dialog_interactive(&self) -> bool {
         self.closing.is_none() && matches!(self.power_state, PowerState::Confirming(_))
+    }
+
+    fn can_request_power(&self) -> bool {
+        self.closing.is_none()
+            && self.power_state == PowerState::Idle
+            && matches!(
+                self.phase,
+                Phase::WaitingForInput | Phase::Failed | Phase::SelectingUser
+            )
     }
 }
 
@@ -564,6 +577,24 @@ mod tests {
                 .map(|session| session.name.as_str()),
             Some("Sway")
         );
+    }
+
+    #[test]
+    fn power_requests_are_blocked_during_authentication_operations() {
+        for phase in [
+            Phase::DiscoveringUsers,
+            Phase::CreatingSession,
+            Phase::Authenticating,
+            Phase::StartingSession,
+        ] {
+            let mut app = app();
+            app.phase = phase;
+
+            let _ = app.update(Message::AskPower(PowerAction::PowerOff));
+
+            assert_eq!(app.power_state, PowerState::Idle, "phase {phase:?}");
+            assert!(!app.can_request_power(), "phase {phase:?}");
+        }
     }
 
     #[test]

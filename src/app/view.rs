@@ -134,10 +134,11 @@ impl App {
         .padding([28, 36])
         .style(theme::panel);
 
+        let power_interactive = self.can_request_power();
         let power_buttons = row![
-            power_button(PowerAction::Suspend, interactive),
-            power_button(PowerAction::Reboot, interactive),
-            power_button(PowerAction::PowerOff, interactive),
+            power_button(PowerAction::Suspend, power_interactive),
+            power_button(PowerAction::Reboot, power_interactive),
+            power_button(PowerAction::PowerOff, power_interactive),
         ]
         .spacing(14);
 
