@@ -185,7 +185,12 @@ Allowed decision states:
   serialized greetd IPC.
 - **Recommendation:** Isolate the state reducer for table-driven transition
   tests and add a fake Unix-socket greetd server for end-to-end protocol tests.
-- **Resolution:** Not started.
+- **Resolution:** Partially started. State tests now cover stale responses,
+  power failures, repeated and deferred close requests, and bounded shutdown.
+  Fake-socket tests cover framing, stale-session recovery, `AuthError`
+  cancellation ordering, and cancellation-failure fallback. Multi-step PAM
+  conversations, both success stages, start failure, and serialized
+  `StartSession` command/environment coverage remain.
 
 ## 12. Validate graphics runtime packaging
 
