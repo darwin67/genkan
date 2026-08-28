@@ -27,8 +27,10 @@ PAM authentication and launching the selected desktop session.
 - `src/app/auth_flow.rs`: authentication transitions, attempt lifecycle, and
   greetd tasks.
 - `src/app/view.rs`: greeter rendering and presentation helpers.
+- `src/accounts.rs`: AccountsService discovery and login account metadata.
 - `src/auth.rs`: greetd IPC transport and response normalization.
-- `src/sessions.rs`: Wayland desktop-session discovery and environment setup.
+- `src/sessions.rs`: validated Wayland desktop-entry discovery, command
+  expansion, and environment setup.
 - `src/power.rs`: logind power operations over D-Bus.
 - `src/background.rs` and `src/theme.rs`: presentation and animation.
 - `nix/tests/greetd.nix`: real greetd and PAM NixOS VM test.
@@ -65,8 +67,12 @@ make e2e
 
 - Never validate passwords in Genkan or log credentials and PAM responses.
 - Keep greetd as the owner of authentication and session creation.
+- Discover login identities through AccountsService; keep CLI identity values
+  as optional administrative overrides only.
 - Handle every greetd prompt type and do not assume authentication is a single
   password exchange.
+- Launch only validated entries from `wayland-sessions`; never add an implicit
+  compositor command or invoke a shell.
 - Pass the Wayland XDG session environment before requesting `StartSession`.
 - Keep power actions behind explicit confirmation where data loss is possible.
 - Preserve failed-authentication recovery without restarting the greeter.

@@ -29,9 +29,11 @@ services.greetd = {
   enable = true;
   settings.default_session = {
     user = "greeter";
-    command = "${pkgs.cage}/bin/cage -- ${genkan}/bin/genkan --username darwin --display-name Darwin";
+    command = "${pkgs.cage}/bin/cage -- ${genkan}/bin/genkan";
   };
 };
+
+services.accounts-daemon.enable = true;
 
 # Do not replace the active greeter during nixos-rebuild switch.
 systemd.services.greetd.restartIfChanged = false;
@@ -42,9 +44,17 @@ then requests the selected session with the Wayland XDG environment. Power
 buttons call logind over the system D-Bus; restart and shutdown require
 confirmation.
 
-The default session command is `sway --unsupported-gpu`. Override it with
-`--session-command`, or select another entry discovered from
-`wayland-sessions/*.desktop`.
+Genkan discovers cached, unlocked, non-system login users through
+AccountsService. It automatically selects a sole account and presents a
+selector when multiple accounts are available. `--username` and
+`--display-name` remain optional administrative overrides.
+
+Wayland sessions come exclusively from validated `wayland-sessions/*.desktop`
+entries in `XDG_DATA_DIRS`. Genkan honors directory precedence and hidden-entry
+masking, validates `Type`, visibility, `TryExec`, and executable availability,
+and applies Desktop Entry quoting and field-code rules without invoking a
+shell. If no usable account or session is available, the greeter reports a
+configuration error instead of supplying a host-specific fallback.
 
 ## Validation
 
