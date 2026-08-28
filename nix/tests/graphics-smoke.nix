@@ -8,6 +8,8 @@ pkgs.runCommand "genkan-graphics-smoke"
     nativeBuildInputs = [
       pkgs.cage
       pkgs.coreutils
+      pkgs.gnugrep
+      pkgs.patchelf
       pkgs.weston
     ];
   }
@@ -30,11 +32,26 @@ pkgs.runCommand "genkan-graphics-smoke"
     weston_pid=""
     cleanup() {
       if [ -n "$weston_pid" ]; then
-        kill "$weston_pid" 2>/dev/null || true
+        kill -TERM "$weston_pid" 2>/dev/null || true
+        for _ in $(seq 1 20); do
+          if ! kill -0 "$weston_pid" 2>/dev/null; then
+            break
+          fi
+          sleep 0.1
+        done
+        if kill -0 "$weston_pid" 2>/dev/null; then
+          kill -KILL "$weston_pid" 2>/dev/null || true
+        fi
         wait "$weston_pid" 2>/dev/null || true
       fi
     }
     trap cleanup EXIT
+
+    patchelf --print-rpath ${genkan}/bin/.genkan-wrapped \
+      | tr : '\n' \
+      | grep -Fx ${pkgs.addDriverRunpath.driverLink}/lib
+    grep -F 'VK_ADD_DRIVER_FILES' ${genkan}/bin/genkan
+    grep -F ${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d ${genkan}/bin/genkan
 
     weston \
       --backend=headless-backend.so \
@@ -59,9 +76,9 @@ pkgs.runCommand "genkan-graphics-smoke"
     WAYLAND_DISPLAY=wayland-genkan \
       WLR_RENDERER=pixman \
       WGPU_BACKEND=vulkan \
-      VK_ICD_FILENAMES=${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.parsed.cpu.name}.json \
+      VK_DRIVER_FILES=${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.parsed.cpu.name}.json \
       LIBGL_ALWAYS_SOFTWARE=1 \
-      timeout --signal=TERM 8 \
+      timeout --kill-after=2s --signal=TERM 8s \
       cage -- ${genkan}/bin/genkan --username smoke \
       > "$TMPDIR/cage.log" 2>&1
     status=$?
