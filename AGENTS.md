@@ -21,6 +21,8 @@ PAM authentication and launching the selected desktop session.
 ## Architecture
 
 - `src/main.rs`: CLI parsing and iced application startup.
+- `src/lib.rs`: reusable protocol-facing library surface.
+- `src/bin/greetd-e2e.rs`: feature-gated real-greetd VM test driver.
 - `src/app/mod.rs`: application state, messages, and event orchestration.
 - `src/app/auth_flow.rs`: authentication transitions, attempt lifecycle, and
   greetd tasks.
@@ -29,6 +31,7 @@ PAM authentication and launching the selected desktop session.
 - `src/sessions.rs`: Wayland desktop-session discovery and environment setup.
 - `src/power.rs`: logind power operations over D-Bus.
 - `src/background.rs` and `src/theme.rs`: presentation and animation.
+- `nix/tests/greetd.nix`: real greetd and PAM NixOS VM test.
 - `flake.nix`: pinned Rust toolchain, package, and development shell for Linux.
 
 ## Development
@@ -50,6 +53,12 @@ Before completing code changes, run:
 
 ```sh
 make verify
+```
+
+For authentication protocol or lifecycle changes, also run:
+
+```sh
+make e2e
 ```
 
 ## Security and Behavior

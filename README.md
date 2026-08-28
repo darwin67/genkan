@@ -15,9 +15,10 @@ make dev
 The preview renders without greetd. Submitting the password field reports that
 `GREETD_SOCK` is missing, as expected.
 
-The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `build`,
-`package`, `verify`, `changelog`, `next-version`, and `clean` targets. Enter
-`nix develop` manually if direnv has not already loaded the flake environment.
+The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `e2e`,
+`build`, `package`, `verify`, `changelog`, `next-version`, and `clean` targets.
+Enter `nix develop` manually if direnv has not already loaded the flake
+environment.
 
 ## greetd configuration
 
@@ -50,3 +51,15 @@ The default session command is `sway --unsupported-gpu`. Override it with
 ```sh
 make verify
 ```
+
+Authentication changes should also run the x86_64 NixOS VM test:
+
+```sh
+make e2e
+```
+
+The VM boots real greetd 0.10.3 with its NixOS PAM configuration. A
+feature-gated driver using Genkan's authentication client submits an incorrect
+password, cancels and recreates the greetd session, authenticates successfully,
+and starts a marker session. The test verifies the launched user and serialized
+session environment. It does not exercise iced rendering or input automation.

@@ -188,9 +188,11 @@ Allowed decision states:
 - **Resolution:** Partially started. State tests now cover stale responses,
   power failures, repeated and deferred close requests, and bounded shutdown.
   Fake-socket tests cover framing, stale-session recovery, `AuthError`
-  cancellation ordering, and cancellation-failure fallback. Multi-step PAM
-  conversations, both success stages, start failure, and serialized
-  `StartSession` command/environment coverage remain.
+  cancellation ordering, and cancellation-failure fallback. A NixOS VM test
+  exercises Genkan's shared client against real greetd 0.10.3 and PAM through
+  incorrect credentials, cancellation/retry, successful authentication, and
+  `StartSession`, verifying the launched user and environment. Table-driven UI
+  transitions for both success stages and start failure remain.
 
 ## 12. Validate graphics runtime packaging
 
@@ -278,10 +280,11 @@ Allowed decision states:
 ## 18. Use one package version source
 
 - **Severity:** Low
-- **Decision:** Accepted
+- **Decision:** Addressed
 - **Finding:** The package version is maintained independently in `Cargo.toml`
   and `flake.nix`.
 - **Recommendation:** Derive the Nix package version from `Cargo.toml` or add a
   check that requires both values to match.
-- **Resolution:** Treat `Cargo.toml` as the single source of truth and derive
-  the Nix package version from `package.version` using Nix's TOML parser.
+- **Resolution:** `Cargo.toml` is the single source of truth; the flake derives
+  production and E2E package versions from `package.version` using Nix's TOML
+  parser.
