@@ -62,6 +62,22 @@ impl App {
         } else {
             Color::from_rgba8(255, 255, 255, 0.75)
         };
+        let session_selector: Element<'_, Message> = if interactive {
+            pick_list(
+                self.sessions.as_slice(),
+                Some(&self.selected_session),
+                Message::SelectSession,
+            )
+            .width(Length::Fixed(220.0))
+            .into()
+        } else {
+            container(text(self.selected_session.to_string()).size(16))
+                .width(Length::Fixed(220.0))
+                .height(Length::Fixed(32.0))
+                .padding([0, 12])
+                .align_y(Alignment::Center)
+                .into()
+        };
 
         let login_panel = container(
             column![
@@ -69,12 +85,7 @@ impl App {
                 text(&self.display_name).size(26).color(Color::WHITE),
                 auth_row,
                 text(status).size(14).color(status_color),
-                pick_list(
-                    self.sessions.as_slice(),
-                    Some(&self.selected_session),
-                    Message::SelectSession
-                )
-                .width(Length::Fixed(220.0)),
+                session_selector,
             ]
             .spacing(14)
             .align_x(Alignment::Center),
