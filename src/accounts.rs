@@ -1,6 +1,7 @@
 use std::fmt;
 
 use thiserror::Error;
+use unicode_general_category::{get_general_category, GeneralCategory};
 use zbus::zvariant::OwnedObjectPath;
 
 const MAX_LABEL_CHARS: usize = 80;
@@ -81,16 +82,7 @@ pub(crate) fn presentation_label(value: &str) -> Option<String> {
 }
 
 fn is_format_control(character: char) -> bool {
-    matches!(
-        character,
-        '\u{00ad}'
-            | '\u{061c}'
-            | '\u{180e}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{206f}'
-            | '\u{feff}'
-    )
+    get_general_category(character) == GeneralCategory::Format
 }
 
 async fn load_properties(
@@ -219,6 +211,6 @@ mod tests {
 
     #[test]
     fn rejects_labels_containing_only_format_controls() {
-        assert_eq!(presentation_label("\u{202e}\u{200b}"), None);
+        assert_eq!(presentation_label("\u{0600}\u{202e}\u{200b}"), None);
     }
 }

@@ -87,9 +87,9 @@ mod tests {
             "--username",
             "operator",
             "--display-name",
-            "\u{202e}\u{200b}",
+            "\u{0600}\u{202e}\u{200b}",
         ])
         .is_err());
-        assert!(Arguments::try_parse_from(["genkan", "--username", "user\u{202e}"]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "--username", "user\u{0600}"]).is_err());
     }
 }

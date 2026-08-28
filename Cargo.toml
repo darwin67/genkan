@@ -8,7 +8,7 @@ license = "MIT"
 [features]
 default = ["gui"]
 e2e = ["tokio/macros", "tokio/rt"]
-gui = ["dep:chrono", "dep:iced", "dep:rclip-desktop-entry", "dep:rustix", "dep:zbus"]
+gui = ["dep:chrono", "dep:iced", "dep:rclip-desktop-entry", "dep:rustix", "dep:unicode-general-category", "dep:zbus"]
 
 [[bin]]
 name = "genkan"
@@ -29,6 +29,7 @@ rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true
 rustix = { version = "1.1.4", features = ["fs"], optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "time"] }
+unicode-general-category = { version = "1.1.0", optional = true }
 zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }
 
 [dev-dependencies]
