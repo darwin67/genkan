@@ -133,6 +133,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn creates_wayland_environment() {
+        let session = Session {
+            name: "River".into(),
+            command: vec!["river".into()],
+            desktop: "river".into(),
+        };
+
+        assert_eq!(
+            session.environment(),
+            [
+                "XDG_SESSION_TYPE=wayland",
+                "XDG_CURRENT_DESKTOP=river",
+                "XDG_SESSION_DESKTOP=river",
+            ]
+        );
+    }
+
+    #[test]
     fn parses_wayland_session() {
         let directory = std::env::temp_dir().join(format!("genkan-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
@@ -147,6 +165,33 @@ mod tests {
         assert_eq!(parsed.name, "Sway Desktop");
         assert_eq!(parsed.command, ["sway", "--unsupported-gpu"]);
         assert_eq!(parsed.desktop, "sway");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn ignores_hidden_sessions() {
+        let directory = std::env::temp_dir().join(format!("genkan-hidden-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("hidden.desktop");
+        fs::write(
+            &path,
+            "[Desktop Entry]\nName=Hidden\nExec=hidden-session\nHidden=true\n",
+        )
+        .unwrap();
+
+        assert_eq!(parse_desktop_entry(&path), None);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn uses_file_name_as_desktop_when_desktop_names_is_missing() {
+        let directory = std::env::temp_dir().join(format!("genkan-desktop-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("niri.desktop");
+        fs::write(&path, "[Desktop Entry]\nName=Niri\nExec=niri --session\n").unwrap();
+
+        let parsed = parse_desktop_entry(&path).unwrap();
+        assert_eq!(parsed.desktop, "niri");
         fs::remove_dir_all(directory).unwrap();
     }
 }
