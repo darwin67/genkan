@@ -11,19 +11,6 @@ Allowed decision states:
 - **Deferred**: valid finding intentionally postponed, with rationale.
 - **Rejected**: recommendation will not be implemented, with rationale.
 
-## 2. Model session and desktop identities separately
-
-- **Severity:** High
-- **Decision:** Accepted. Store the desktop-file session ID separately from all
-  `DesktopNames` values. Set `XDG_SESSION_DESKTOP` from the filename and
-  colon-join desktop names for `XDG_CURRENT_DESKTOP`; omit the latter when no
-  names are declared. Explicit fallback sessions must define both identities.
-- **Finding:** `XDG_SESSION_DESKTOP` and `XDG_CURRENT_DESKTOP` are populated
-  from the same first `DesktopNames` value instead of their distinct sources.
-- **Recommendation:** Derive the session ID from the desktop filename and
-  colon-join all `DesktopNames` values for `XDG_CURRENT_DESKTOP`.
-- **Resolution:** Not started.
-
 ## 4. Parse Desktop Entry `Exec` according to the specification
 
 - **Severity:** Medium
