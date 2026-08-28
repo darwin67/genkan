@@ -56,7 +56,7 @@ Allowed decision states:
 ## 3. Pin third-party CI actions
 
 - **Severity:** High
-- **Decision:** Accepted. Pin the Nix installer and Conventional Commit
+- **Decision:** Addressed. Pin the Nix installer and Conventional Commit
   validator to reviewed full commit SHAs with adjacent version comments.
   Future action updates remain explicit dependency changes. Dependabot may be
   added later but is not required to address this finding.
@@ -64,7 +64,9 @@ Allowed decision states:
   mutable branch or version references.
 - **Recommendation:** Pin every third-party action to an audited full commit
   SHA and retain a version comment for update tooling and reviewers.
-- **Resolution:** Not started.
+- **Resolution:** All workflow actions are pinned to full commit SHAs with
+  adjacent release comments. The Nix jobs use the fixed-installer Determinate
+  action rather than selecting the latest installer at runtime.
 
 ## 4. Parse Desktop Entry `Exec` according to the specification
 
