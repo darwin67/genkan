@@ -18,8 +18,9 @@ Allowed decision states:
 - **Decision:** Addressed. Power failures preserve authentication state;
   voluntarily abandoned attempts and graceful window exits cancel active
   greetd sessions; retries recover stale sessions; attempt IDs prevent late
-  responses from mutating newer state. A server-returned
-  `AuthError` does not require cancellation because greetd invalidates it.
+  responses from mutating newer state. Treat a server-returned `AuthError` as
+  requiring cancellation because stock greetd 0.10.3 retains its configuring
+  session despite the protocol documentation stating otherwise.
 - **Finding:** Active greetd sessions can be dropped without `CancelSession`,
   potentially leaving greetd unable to accept another login attempt. Late
   asynchronous responses can also update an abandoned attempt.
@@ -30,11 +31,14 @@ Allowed decision states:
 - **Resolution:** Authentication tasks carry monotonic attempt IDs, and the UI
   ignores responses from superseded attempts. Retrying explicitly cancels the
   retained client session and falls back to stale-session recovery over a new
-  connection. Graceful window closure waits for `CancelSession`, including
-  creation requests already in flight. Power errors now update only their
-  status message, while greetd `AuthError` responses start a fresh attempt
-  without requiring explicit cancellation. Covered by state and fake-socket
-  tests.
+  connection. `AuthError` follows the same cancel-before-retry path. Graceful
+  window closure enters an explicit closing state, ignores repeated close
+  requests, and waits for `CancelSession`, including creation requests already
+  in flight. A three-second deadline force-closes a stalled shutdown so the
+  next startup can recover any stale daemon state. Power errors update only
+  their status message. State tests cover stale responses, power failures,
+  repeated and deferred closes, and shutdown timeout; fake-socket tests verify
+  stale recovery and cancel-before-retry ordering.
 
 ## 2. Model session and desktop identities separately
 
