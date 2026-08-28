@@ -28,7 +28,13 @@ A minimal flake binds Genkan as an input and passes it to the host module:
 
 ```nix
 {
-  inputs.genkan.url = "github:darwin67/genkan";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    genkan = {
+      url = "github:darwin67/genkan";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs = { nixpkgs, genkan, ... }: {
     nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
