@@ -12,6 +12,7 @@
   outputs =
     { self, nixpkgs, rust-overlay }:
     let
+      packageVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -41,9 +42,11 @@
           ];
         in
         {
+          inherit pkgs;
+
           package = rustPlatform.buildRustPackage {
             pname = "genkan";
-            version = "0.1.0";
+            version = packageVersion;
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeWrapper ];
@@ -51,6 +54,19 @@
               wrapProgram $out/bin/genkan \
                 --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries}
             '';
+          };
+
+          e2ePackage = rustPlatform.buildRustPackage {
+            pname = "genkan-greetd-e2e";
+            version = packageVersion;
+            src = self;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [
+              "--no-default-features"
+              "--features=e2e"
+              "--bin=genkan-greetd-e2e"
+            ];
+            doCheck = false;
           };
 
           devShell = pkgs.mkShell {
@@ -66,6 +82,20 @@
       packages = forAllSystems (system: {
         default = (systemConfig system).package;
       });
+      checks = forAllSystems (
+        system:
+        let
+          config = systemConfig system;
+        in
+        {
+          package = config.package;
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          greetd-e2e = config.pkgs.testers.runNixOSTest (
+            import ./nix/tests/greetd.nix { genkanE2e = config.e2ePackage; }
+          );
+        }
+      );
       devShells = forAllSystems (system: {
         default = (systemConfig system).devShell;
       });

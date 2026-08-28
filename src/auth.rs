@@ -1,4 +1,5 @@
 use std::env;
+use std::path::Path;
 use std::sync::Arc;
 
 use greetd_ipc::{codec::TokioCodec, AuthMessageType, ErrorType, Request};
@@ -41,6 +42,10 @@ pub enum AuthError {
 impl Client {
     pub async fn connect() -> Result<Self, AuthError> {
         let socket = env::var_os("GREETD_SOCK").ok_or(AuthError::MissingSocket)?;
+        Self::connect_to(socket).await
+    }
+
+    async fn connect_to(socket: impl AsRef<Path>) -> Result<Self, AuthError> {
         let stream = UnixStream::connect(socket).await?;
         Ok(Self {
             stream: Arc::new(Mutex::new(stream)),
@@ -56,9 +61,62 @@ impl Client {
 }
 
 pub async fn begin(username: String) -> Result<(Client, Response), AuthError> {
-    let client = Client::connect().await?;
+    let socket = env::var_os("GREETD_SOCK").ok_or(AuthError::MissingSocket)?;
+    begin_at(Path::new(&socket), username).await
+}
+
+async fn begin_at(socket: &Path, username: String) -> Result<(Client, Response), AuthError> {
+    let client = Client::connect_to(socket).await?;
     let response = client.exchange(Request::CreateSession { username }).await?;
     Ok((client, response))
+}
+
+pub async fn recover_and_begin(username: String) -> Result<(Client, Response), AuthError> {
+    let socket = env::var_os("GREETD_SOCK").ok_or(AuthError::MissingSocket)?;
+    recover_and_begin_at(Path::new(&socket), username).await
+}
+
+async fn recover_and_begin_at(
+    socket: &Path,
+    username: String,
+) -> Result<(Client, Response), AuthError> {
+    if let Ok(client) = Client::connect_to(socket).await {
+        let _ = client.exchange(Request::CancelSession).await;
+    }
+    begin_at(socket, username).await
+}
+
+pub async fn restart(
+    client: Option<Client>,
+    username: String,
+) -> Result<(Client, Response), AuthError> {
+    let socket = env::var_os("GREETD_SOCK").ok_or(AuthError::MissingSocket)?;
+    restart_at(client, Path::new(&socket), username).await
+}
+
+async fn restart_at(
+    client: Option<Client>,
+    socket: &Path,
+    username: String,
+) -> Result<(Client, Response), AuthError> {
+    let cancelled = match client {
+        Some(client) => cancel(Some(client)).await.is_ok(),
+        None => false,
+    };
+    if cancelled {
+        begin_at(socket, username).await
+    } else {
+        recover_and_begin_at(socket, username).await
+    }
+}
+
+pub async fn cancel(client: Option<Client>) -> Result<(), AuthError> {
+    let client = match client {
+        Some(client) => client,
+        None => Client::connect().await?,
+    };
+    let _ = client.exchange(Request::CancelSession).await?;
+    Ok(())
 }
 
 impl From<greetd_ipc::Response> for Response {
@@ -92,6 +150,8 @@ impl From<greetd_ipc::Response> for Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use greetd_ipc::codec::TokioCodec;
+    use tokio::net::UnixListener;
 
     #[test]
     fn normalizes_visible_and_secret_prompts() {
@@ -172,5 +232,156 @@ mod tests {
                 description: "session unavailable".into(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn recovery_cancels_a_stale_session_before_creating_one() {
+        let socket = std::env::temp_dir().join(format!("genkan-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).expect("bind fake greetd socket");
+        let server = tokio::spawn(async move {
+            let (mut recovery, _) = listener.accept().await.expect("accept recovery client");
+            assert!(matches!(
+                Request::read_from(&mut recovery).await.unwrap(),
+                Request::CancelSession
+            ));
+            greetd_ipc::Response::Success
+                .write_to(&mut recovery)
+                .await
+                .unwrap();
+
+            let (mut authentication, _) = listener.accept().await.expect("accept auth client");
+            assert!(matches!(
+                Request::read_from(&mut authentication).await.unwrap(),
+                Request::CreateSession { username } if username == "darwin"
+            ));
+            greetd_ipc::Response::AuthMessage {
+                auth_message_type: AuthMessageType::Secret,
+                auth_message: "Password:".into(),
+            }
+            .write_to(&mut authentication)
+            .await
+            .unwrap();
+        });
+
+        let result = recover_and_begin_at(&socket, "darwin".into()).await;
+        assert!(matches!(
+            result,
+            Ok((_, Response::Prompt { secret: true, message })) if message == "Password:"
+        ));
+        server.await.unwrap();
+        std::fs::remove_file(&socket).unwrap();
+    }
+
+    #[tokio::test]
+    async fn auth_error_is_cancelled_before_creating_another_session() {
+        let socket = std::env::temp_dir().join(format!("genkan-retry-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).expect("bind fake greetd socket");
+        let client = Client::connect_to(&socket)
+            .await
+            .expect("connect active client");
+        let server = tokio::spawn(async move {
+            let (mut active, _) = listener.accept().await.expect("accept active client");
+            assert!(matches!(
+                Request::read_from(&mut active).await.unwrap(),
+                Request::PostAuthMessageResponse { .. }
+            ));
+            greetd_ipc::Response::Error {
+                error_type: ErrorType::AuthError,
+                description: "invalid credentials".into(),
+            }
+            .write_to(&mut active)
+            .await
+            .unwrap();
+            assert!(matches!(
+                Request::read_from(&mut active).await.unwrap(),
+                Request::CancelSession
+            ));
+            greetd_ipc::Response::Success
+                .write_to(&mut active)
+                .await
+                .unwrap();
+
+            let (mut authentication, _) = listener.accept().await.expect("accept retry client");
+            assert!(matches!(
+                Request::read_from(&mut authentication).await.unwrap(),
+                Request::CreateSession { username } if username == "darwin"
+            ));
+            greetd_ipc::Response::AuthMessage {
+                auth_message_type: AuthMessageType::Secret,
+                auth_message: "Password:".into(),
+            }
+            .write_to(&mut authentication)
+            .await
+            .unwrap();
+        });
+
+        let response = client
+            .exchange(Request::PostAuthMessageResponse {
+                response: Some("wrong".into()),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            response,
+            Response::Error {
+                authentication: true,
+                ..
+            }
+        ));
+        let result = restart_at(Some(client), &socket, "darwin".into()).await;
+        assert!(matches!(
+            result,
+            Ok((_, Response::Prompt { secret: true, message })) if message == "Password:"
+        ));
+        server.await.unwrap();
+        std::fs::remove_file(&socket).unwrap();
+    }
+
+    #[tokio::test]
+    async fn restart_recovers_when_active_cancellation_fails() {
+        let socket =
+            std::env::temp_dir().join(format!("genkan-fallback-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).expect("bind fake greetd socket");
+        let client = Client::connect_to(&socket)
+            .await
+            .expect("connect active client");
+        let server = tokio::spawn(async move {
+            let (active, _) = listener.accept().await.expect("accept active client");
+            drop(active);
+
+            let (mut recovery, _) = listener.accept().await.expect("accept recovery client");
+            assert!(matches!(
+                Request::read_from(&mut recovery).await.unwrap(),
+                Request::CancelSession
+            ));
+            greetd_ipc::Response::Success
+                .write_to(&mut recovery)
+                .await
+                .unwrap();
+
+            let (mut authentication, _) = listener.accept().await.expect("accept retry client");
+            assert!(matches!(
+                Request::read_from(&mut authentication).await.unwrap(),
+                Request::CreateSession { username } if username == "darwin"
+            ));
+            greetd_ipc::Response::AuthMessage {
+                auth_message_type: AuthMessageType::Secret,
+                auth_message: "Password:".into(),
+            }
+            .write_to(&mut authentication)
+            .await
+            .unwrap();
+        });
+
+        let result = restart_at(Some(client), &socket, "darwin".into()).await;
+        assert!(matches!(
+            result,
+            Ok((_, Response::Prompt { secret: true, message })) if message == "Password:"
+        ));
+        server.await.unwrap();
+        std::fs::remove_file(&socket).unwrap();
     }
 }

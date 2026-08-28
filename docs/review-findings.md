@@ -15,11 +15,12 @@ Allowed decision states:
 ## 1. Cancel abandoned greetd authentication sessions
 
 - **Severity:** High
-- **Decision:** Accepted in full. Power failures must preserve authentication
-  state; voluntarily abandoned attempts and graceful window exits must cancel
-  active greetd sessions; retries must recover stale sessions; attempt IDs
-  must prevent late responses from mutating newer state. A server-returned
-  `AuthError` does not require cancellation because greetd invalidates it.
+- **Decision:** Addressed. Power failures preserve authentication state;
+  voluntarily abandoned attempts and graceful window exits cancel active
+  greetd sessions; retries recover stale sessions; attempt IDs prevent late
+  responses from mutating newer state. Treat a server-returned `AuthError` as
+  requiring cancellation because stock greetd 0.10.3 retains its configuring
+  session despite the protocol documentation stating otherwise.
 - **Finding:** Active greetd sessions can be dropped without `CancelSession`,
   potentially leaving greetd unable to accept another login attempt. Late
   asynchronous responses can also update an abandoned attempt.
@@ -27,7 +28,17 @@ Allowed decision states:
   explicit cancellation for abandoned attempts and graceful window close;
   recover stale daemon sessions before reconnecting; identify attempts so late
   responses can be ignored.
-- **Resolution:** Not started.
+- **Resolution:** Authentication tasks carry monotonic attempt IDs, and the UI
+  ignores responses from superseded attempts. Retrying explicitly cancels the
+  retained client session and falls back to stale-session recovery over a new
+  connection. `AuthError` follows the same cancel-before-retry path. Graceful
+  window closure enters an explicit closing state, ignores repeated close
+  requests, and waits for `CancelSession`, including creation requests already
+  in flight. A three-second deadline force-closes a stalled shutdown so the
+  next startup can recover any stale daemon state. Power errors update only
+  their status message. State tests cover stale responses, power failures,
+  repeated and deferred closes, and shutdown timeout; fake-socket tests verify
+  stale recovery and cancel-before-retry ordering.
 
 ## 2. Model session and desktop identities separately
 
@@ -45,7 +56,7 @@ Allowed decision states:
 ## 3. Pin third-party CI actions
 
 - **Severity:** High
-- **Decision:** Accepted. Pin the Nix installer and Conventional Commit
+- **Decision:** Addressed. Pin the Nix installer and Conventional Commit
   validator to reviewed full commit SHAs with adjacent version comments.
   Future action updates remain explicit dependency changes. Dependabot may be
   added later but is not required to address this finding.
@@ -53,7 +64,9 @@ Allowed decision states:
   mutable branch or version references.
 - **Recommendation:** Pin every third-party action to an audited full commit
   SHA and retain a version comment for update tooling and reviewers.
-- **Resolution:** Not started.
+- **Resolution:** All workflow actions are pinned to full commit SHAs with
+  adjacent release comments. The Nix jobs use the fixed-installer Determinate
+  action rather than selecting the latest installer at runtime.
 
 ## 4. Parse Desktop Entry `Exec` according to the specification
 
@@ -174,7 +187,14 @@ Allowed decision states:
   serialized greetd IPC.
 - **Recommendation:** Isolate the state reducer for table-driven transition
   tests and add a fake Unix-socket greetd server for end-to-end protocol tests.
-- **Resolution:** Not started.
+- **Resolution:** Partially started. State tests now cover stale responses,
+  power failures, repeated and deferred close requests, and bounded shutdown.
+  Fake-socket tests cover framing, stale-session recovery, `AuthError`
+  cancellation ordering, and cancellation-failure fallback. A NixOS VM test
+  exercises Genkan's shared client against real greetd 0.10.3 and PAM through
+  incorrect credentials, cancellation/retry, successful authentication, and
+  `StartSession`, verifying the launched user and environment. Table-driven UI
+  transitions for both success stages and start failure remain.
 
 ## 12. Validate graphics runtime packaging
 
@@ -262,10 +282,11 @@ Allowed decision states:
 ## 18. Use one package version source
 
 - **Severity:** Low
-- **Decision:** Accepted
+- **Decision:** Addressed
 - **Finding:** The package version is maintained independently in `Cargo.toml`
   and `flake.nix`.
 - **Recommendation:** Derive the Nix package version from `Cargo.toml` or add a
   check that requires both values to match.
-- **Resolution:** Treat `Cargo.toml` as the single source of truth and derive
-  the Nix package version from `package.version` using Nix's TOML parser.
+- **Resolution:** `Cargo.toml` is the single source of truth; the flake derives
+  production and E2E package versions from `package.version` using Nix's TOML
+  parser.
