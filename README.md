@@ -65,7 +65,7 @@ files in the credential-handling process.
 Wayland sessions come exclusively from validated `wayland-sessions/*.desktop`
 entries in `XDG_DATA_DIRS`. Genkan honors directory precedence and hidden-entry
 masking, validates `Type`, visibility, `TryExec`, and executable availability,
-requires absolute slash-containing executable paths, and applies Desktop Entry
+requires slash-containing executable paths to be absolute, and applies Desktop Entry
 quoting and field-code rules without invoking a shell. If AccountsService,
 session data, or another runtime dependency is unavailable, the greeter reports
 a configuration error instead of supplying a host-specific fallback.

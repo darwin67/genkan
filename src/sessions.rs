@@ -115,6 +115,7 @@ fn parse_desktop_entry_with_locale(
 ) -> Option<ParsedEntry> {
     let contents = fs::read(path).ok()?;
     let file = parse(&contents).ok()?;
+    strict_desktop_file(&contents)?;
     let entry = file.desktop_entry()?;
 
     let hidden = entry.boolean("Hidden").transpose().ok()?.unwrap_or(false);
@@ -166,11 +167,13 @@ fn expand_exec(
     name: &str,
 ) -> Option<Vec<String>> {
     let exec = file.exec()?;
+    strict_exec(exec.raw())?;
     exec.validate().ok()?;
     let mut command = Vec::new();
 
     for argument in exec.args() {
         let argument = argument.ok()?;
+        let keep_empty = argument.quoted() && argument.raw().is_empty();
         let mut expanded = String::new();
         for piece in argument.pieces() {
             match piece.ok()? {
@@ -190,7 +193,7 @@ fn expand_exec(
                 _ => return None,
             }
         }
-        if !expanded.is_empty() {
+        if !expanded.is_empty() || keep_empty {
             command.push(expanded);
         }
     }
@@ -203,6 +206,113 @@ fn expand_exec(
     } else {
         None
     }
+}
+
+fn strict_desktop_file(contents: &[u8]) -> Option<()> {
+    let source = std::str::from_utf8(contents).ok()?;
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let mut groups = BTreeSet::new();
+    let mut keys = BTreeSet::new();
+
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(group) = line
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+        {
+            if !groups.insert(group) {
+                return None;
+            }
+            keys.clear();
+            continue;
+        }
+        let key = raw_line.split_once('=')?.0.trim();
+        if !keys.insert(key) {
+            return None;
+        }
+    }
+    Some(())
+}
+
+fn strict_exec(raw: &str) -> Option<()> {
+    let mut units = Vec::with_capacity(raw.len());
+    let mut characters = raw.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            units.push((character, false));
+            continue;
+        }
+        let escaped = characters.next()?;
+        units.push((
+            match escaped {
+                's' => ' ',
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\\' => '\\',
+                _ => return None,
+            },
+            true,
+        ));
+    }
+
+    let mut index = 0;
+    while index < units.len() {
+        while index < units.len() && is_exec_separator(units[index].0) {
+            index += 1;
+        }
+        if index == units.len() {
+            break;
+        }
+
+        if units[index] == ('"', false) {
+            index += 1;
+            loop {
+                let (character, escaped) = *units.get(index)?;
+                if character == '"' && !escaped {
+                    index += 1;
+                    break;
+                }
+                if character == '\\' && escaped {
+                    index += 1;
+                    let escaped_character = units.get(index)?.0;
+                    if !matches!(escaped_character, '"' | '`' | '$' | '\\') {
+                        return None;
+                    }
+                } else if matches!(character, '`' | '$') {
+                    return None;
+                }
+                index += 1;
+            }
+            if index < units.len() && !is_exec_separator(units[index].0) {
+                return None;
+            }
+            continue;
+        }
+
+        while index < units.len() && !is_exec_separator(units[index].0) {
+            let character = units[index].0;
+            if character == '"' || is_unquoted_reserved(character) {
+                return None;
+            }
+            index += 1;
+        }
+    }
+    Some(())
+}
+
+fn is_exec_separator(character: char) -> bool {
+    matches!(character, ' ' | '\t' | '\n' | '\r')
+}
+
+fn is_unquoted_reserved(character: char) -> bool {
+    matches!(
+        character,
+        '\'' | '\\' | '>' | '<' | '~' | '|' | '&' | ';' | '$' | '*' | '?' | '#' | '(' | ')' | '`'
+    )
 }
 
 fn executable_available(program: &str) -> bool {
@@ -366,6 +476,19 @@ mod tests {
 
         assert!(discover_in(std::slice::from_ref(&directory)).is_empty());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_lenient_exec_grammar_and_duplicate_keys() {
+        assert!(strict_exec(r#""/tmp/session\q""#).is_none());
+        assert!(strict_exec(r#""/bin/session"adjacent"#).is_none());
+        assert!(strict_exec(r#""/bin/session" "a\\\\b" "cost \\$5""#).is_some());
+
+        let duplicate_key =
+            b"[Desktop Entry]\nType=Application\nName=First\nExec=/bin/true\nExec=/bin/false\n";
+        let duplicate_group = b"[Desktop Entry]\nType=Application\nName=First\nExec=/bin/true\n[Desktop Entry]\nType=Application\nName=Second\nExec=/bin/false\n";
+        assert!(strict_desktop_file(duplicate_key).is_none());
+        assert!(strict_desktop_file(duplicate_group).is_none());
     }
 
     #[test]
