@@ -15,10 +15,10 @@ Allowed decision states:
 ## 1. Cancel abandoned greetd authentication sessions
 
 - **Severity:** High
-- **Decision:** Accepted in full. Power failures must preserve authentication
-  state; voluntarily abandoned attempts and graceful window exits must cancel
-  active greetd sessions; retries must recover stale sessions; attempt IDs
-  must prevent late responses from mutating newer state. A server-returned
+- **Decision:** Addressed. Power failures preserve authentication state;
+  voluntarily abandoned attempts and graceful window exits cancel active
+  greetd sessions; retries recover stale sessions; attempt IDs prevent late
+  responses from mutating newer state. A server-returned
   `AuthError` does not require cancellation because greetd invalidates it.
 - **Finding:** Active greetd sessions can be dropped without `CancelSession`,
   potentially leaving greetd unable to accept another login attempt. Late
@@ -27,7 +27,14 @@ Allowed decision states:
   explicit cancellation for abandoned attempts and graceful window close;
   recover stale daemon sessions before reconnecting; identify attempts so late
   responses can be ignored.
-- **Resolution:** Not started.
+- **Resolution:** Authentication tasks carry monotonic attempt IDs, and the UI
+  ignores responses from superseded attempts. Retrying explicitly cancels the
+  retained client session and falls back to stale-session recovery over a new
+  connection. Graceful window closure waits for `CancelSession`, including
+  creation requests already in flight. Power errors now update only their
+  status message, while greetd `AuthError` responses start a fresh attempt
+  without requiring explicit cancellation. Covered by state and fake-socket
+  tests.
 
 ## 2. Model session and desktop identities separately
 
