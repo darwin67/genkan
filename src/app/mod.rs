@@ -16,13 +16,12 @@ use crate::sessions::{self, Session};
 enum Closing {
     WaitingForClient(window::Id),
     Cancelling(window::Id),
+    Dispatching(window::Id),
 }
 
 impl Closing {
-    fn window(self) -> window::Id {
-        match self {
-            Self::WaitingForClient(window) | Self::Cancelling(window) => window,
-        }
+    fn is_cleaning(self, window: window::Id) -> bool {
+        matches!(self, Self::WaitingForClient(id) | Self::Cancelling(id) if id == window)
     }
 }
 
@@ -116,6 +115,27 @@ impl App {
     }
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        if let Some(closing) = self.closing {
+            let allowed = match closing {
+                Closing::WaitingForClient(_) => matches!(
+                    &message,
+                    Message::AuthResult { .. }
+                        | Message::SessionCancelled(_)
+                        | Message::CloseTimeout(_)
+                ),
+                Closing::Cancelling(_) => {
+                    matches!(
+                        &message,
+                        Message::SessionCancelled(_) | Message::CloseTimeout(_)
+                    )
+                }
+                Closing::Dispatching(_) => false,
+            };
+            if !allowed {
+                return Task::none();
+            }
+        }
+
         match message {
             Message::Tick => {
                 self.now = Local::now();
@@ -177,7 +197,6 @@ impl App {
                 self.message_is_error = true;
                 Task::none()
             }
-            Message::CloseRequested(_) if self.closing.is_some() => Task::none(),
             Message::CloseRequested(window) if self.client.is_some() => {
                 self.attempt.advance();
                 self.closing = Some(Closing::Cancelling(window));
@@ -190,22 +209,29 @@ impl App {
                 self.closing = Some(Closing::WaitingForClient(window));
                 auth_flow::close_timeout(window)
             }
-            Message::CloseRequested(window) => window::close(window),
+            Message::CloseRequested(window) => {
+                self.attempt.advance();
+                self.closing = Some(Closing::Cancelling(window));
+                Task::batch([
+                    auth_flow::cancel_for_close(None, window),
+                    auth_flow::close_timeout(window),
+                ])
+            }
             Message::SessionCancelled(window)
                 if self
                     .closing
-                    .is_some_and(|closing| closing.window() == window) =>
+                    .is_some_and(|closing| closing.is_cleaning(window)) =>
             {
-                self.closing = None;
+                self.closing = Some(Closing::Dispatching(window));
                 window::close(window)
             }
             Message::CloseTimeout(window)
                 if self
                     .closing
-                    .is_some_and(|closing| closing.window() == window) =>
+                    .is_some_and(|closing| closing.is_cleaning(window)) =>
             {
                 self.attempt.advance();
-                self.closing = None;
+                self.closing = Some(Closing::Dispatching(window));
                 window::close(window)
             }
             Message::SessionCancelled(_) | Message::CloseTimeout(_) => Task::none(),
@@ -320,7 +346,7 @@ mod tests {
         app.closing = Some(Closing::WaitingForClient(window));
 
         let _ = app.update(Message::CloseTimeout(window));
-        assert_eq!(app.closing, None);
+        assert_eq!(app.closing, Some(Closing::Dispatching(window)));
         assert_ne!(app.attempt, old_attempt);
 
         let _ = app.update(Message::AuthResult {
@@ -336,5 +362,43 @@ mod tests {
 
         assert_eq!(app.phase, Phase::CreatingSession);
         assert_eq!(app.prompt, "Password");
+    }
+
+    #[test]
+    fn idle_close_without_a_client_enters_bounded_cleanup() {
+        let mut app = app();
+        let window = window::Id::unique();
+        let old_attempt = app.attempt;
+        app.phase = Phase::Idle;
+
+        let _ = app.update(Message::CloseRequested(window));
+
+        assert_eq!(app.closing, Some(Closing::Cancelling(window)));
+        assert_ne!(app.attempt, old_attempt);
+        let closing_attempt = app.attempt;
+
+        let _ = app.update(Message::Submit);
+
+        assert_eq!(app.phase, Phase::Idle);
+        assert_eq!(app.attempt, closing_attempt);
+        assert_eq!(app.closing, Some(Closing::Cancelling(window)));
+    }
+
+    #[test]
+    fn retry_is_ignored_after_cancellation_dispatches_close() {
+        let mut app = app();
+        let window = window::Id::unique();
+        let attempt = app.attempt;
+        app.phase = Phase::Idle;
+        app.closing = Some(Closing::Cancelling(window));
+
+        let _ = app.update(Message::SessionCancelled(window));
+        assert_eq!(app.closing, Some(Closing::Dispatching(window)));
+
+        let _ = app.update(Message::Submit);
+
+        assert_eq!(app.phase, Phase::Idle);
+        assert_eq!(app.attempt, attempt);
+        assert_eq!(app.closing, Some(Closing::Dispatching(window)));
     }
 }

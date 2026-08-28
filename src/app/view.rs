@@ -39,16 +39,17 @@ impl App {
             ..Default::default()
         });
 
+        let interactive = self.closing.is_none();
         let input = text_input(&self.prompt, &self.input)
-            .on_input(Message::InputChanged)
-            .on_submit(Message::Submit)
+            .on_input_maybe(interactive.then_some(Message::InputChanged))
+            .on_submit_maybe(interactive.then_some(Message::Submit))
             .secure(self.secret)
             .padding([12, 18])
             .size(18)
             .style(theme::input);
         let submit = button(text("→").size(22))
             .on_press_maybe(
-                matches!(self.phase, Phase::Idle | Phase::WaitingForInput)
+                (interactive && matches!(self.phase, Phase::Idle | Phase::WaitingForInput))
                     .then_some(Message::Submit),
             )
             .padding([10, 16])
@@ -82,9 +83,9 @@ impl App {
         .style(theme::panel);
 
         let power_buttons = row![
-            power_button(PowerAction::Suspend),
-            power_button(PowerAction::Reboot),
-            power_button(PowerAction::PowerOff),
+            power_button(PowerAction::Suspend, interactive),
+            power_button(PowerAction::Reboot, interactive),
+            power_button(PowerAction::PowerOff, interactive),
         ]
         .spacing(14);
 
@@ -132,9 +133,9 @@ impl App {
     }
 }
 
-fn power_button(action: PowerAction) -> Element<'static, Message> {
+fn power_button(action: PowerAction, interactive: bool) -> Element<'static, Message> {
     button(text(action.label()).size(14))
-        .on_press(Message::AskPower(action))
+        .on_press_maybe(interactive.then_some(Message::AskPower(action)))
         .padding([10, 18])
         .style(theme::translucent_button)
         .into()
