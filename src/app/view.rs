@@ -1,7 +1,5 @@
-use iced::widget::{
-    button, column, container, image, pick_list, row, stack, text, text_input, Space,
-};
-use iced::{Alignment, Color, ContentFit, Element, Fill, Length};
+use iced::widget::{button, column, container, pick_list, row, stack, text, text_input, Space};
+use iced::{Alignment, Color, Element, Fill, Length};
 
 use crate::accounts::Account;
 use crate::power::Action as PowerAction;
@@ -21,14 +19,10 @@ impl App {
             .size(22)
             .color(Color::from_rgba8(255, 255, 255, 0.85));
 
-        let avatar_content: Element<'_, Message> = if let Some(avatar) = &self.avatar {
-            image(avatar).content_fit(ContentFit::Cover).into()
-        } else {
-            text(initials(&self.display_name))
-                .size(38)
-                .color(Color::WHITE)
-                .into()
-        };
+        let avatar_content: Element<'_, Message> = text(initials(&self.display_name))
+            .size(38)
+            .color(Color::WHITE)
+            .into();
         let avatar = container(avatar_content)
             .width(Length::Fixed(92.0))
             .height(Length::Fixed(92.0))

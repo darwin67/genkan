@@ -21,12 +21,7 @@ struct Arguments {
 }
 
 fn parse_username(value: &str) -> Result<String, String> {
-    if value.is_empty()
-        || value.chars().count() > 256
-        || value
-            .chars()
-            .any(|character| character.is_control() || character.is_whitespace())
-    {
+    if !accounts::valid_username(value) {
         Err("username must be 1–256 characters without whitespace or control characters".into())
     } else {
         Ok(value.into())
@@ -34,12 +29,8 @@ fn parse_username(value: &str) -> Result<String, String> {
 }
 
 fn parse_display_name(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().any(char::is_control) {
-        Err("display name must not be empty or contain control characters".into())
-    } else {
-        Ok(value.into())
-    }
+    accounts::presentation_label(value)
+        .ok_or_else(|| "display name must contain visible characters".into())
 }
 
 pub fn main() -> iced::Result {
@@ -91,5 +82,14 @@ mod tests {
             " \n ",
         ])
         .is_err());
+        assert!(Arguments::try_parse_from([
+            "genkan",
+            "--username",
+            "operator",
+            "--display-name",
+            "\u{202e}\u{200b}",
+        ])
+        .is_err());
+        assert!(Arguments::try_parse_from(["genkan", "--username", "user\u{202e}"]).is_err());
     }
 }

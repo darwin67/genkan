@@ -58,9 +58,9 @@ attempt intact and display the logind error.
 Genkan discovers cached, unlocked, non-system login users through
 AccountsService. It automatically selects a sole account and presents a
 selector when multiple accounts are available. `--username` and
-`--display-name` remain optional administrative overrides. Account avatars are
-accepted only as bounded PNG or JPEG data and decoded into fixed-size
-thumbnails before display.
+`--display-name` remain optional administrative overrides. The greeter renders
+initials from bounded account labels rather than decoding user-controlled icon
+files in the credential-handling process.
 
 Wayland sessions come exclusively from validated `wayland-sessions/*.desktop`
 entries in `XDG_DATA_DIRS`. Genkan honors directory precedence and hidden-entry

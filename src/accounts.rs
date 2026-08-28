@@ -1,38 +1,22 @@
 use std::fmt;
-use std::fs;
-use std::io::{Cursor, Read};
-use std::path::PathBuf;
 
-use image::io::{Limits, Reader as ImageReader};
-use image::ImageFormat;
 use thiserror::Error;
 use zbus::zvariant::OwnedObjectPath;
 
 const MAX_LABEL_CHARS: usize = 80;
-const MAX_ICON_BYTES: u64 = 1024 * 1024;
-const MAX_ICON_DIMENSION: u32 = 1024;
-const AVATAR_DIMENSION: u32 = 184;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Avatar {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     pub username: String,
     pub display_name: String,
-    pub avatar: Option<Avatar>,
 }
 
 impl Account {
     pub fn override_account(username: String, display_name: Option<String>) -> Self {
         Self {
-            display_name: presentation_label(display_name.as_deref().unwrap_or(&username)),
+            display_name: presentation_label(display_name.as_deref().unwrap_or(&username))
+                .unwrap_or_else(|| username.clone()),
             username,
-            avatar: None,
         }
     }
 
@@ -43,20 +27,11 @@ impl Account {
         let display_name = if properties.real_name.is_empty() {
             properties.username.clone()
         } else {
-            presentation_label(&properties.real_name)
+            presentation_label(&properties.real_name).unwrap_or_else(|| properties.username.clone())
         };
-        let display_name = if display_name.is_empty() {
-            properties.username.clone()
-        } else {
-            display_name
-        };
-        let avatar = (!properties.icon_file.is_empty())
-            .then(|| PathBuf::from(properties.icon_file))
-            .and_then(|path| load_avatar(&path));
         Some(Self {
             username: properties.username,
             display_name,
-            avatar,
         })
     }
 }
@@ -75,7 +50,6 @@ impl fmt::Display for Account {
 struct Properties {
     username: String,
     real_name: String,
-    icon_file: String,
     system_account: bool,
     locked: bool,
 }
@@ -86,70 +60,37 @@ pub enum AccountError {
     Bus(#[from] zbus::Error),
 }
 
-fn valid_username(username: &str) -> bool {
+pub(crate) fn valid_username(username: &str) -> bool {
     !username.is_empty()
         && username.chars().count() <= 256
         && !username.chars().any(|character| {
-            character.is_control() || character.is_whitespace() || is_directional_control(character)
+            character.is_control() || character.is_whitespace() || is_format_control(character)
         })
 }
 
-fn presentation_label(value: &str) -> String {
+pub(crate) fn presentation_label(value: &str) -> Option<String> {
     let label = value
         .split_whitespace()
         .flat_map(|word| [word, " "])
         .flat_map(str::chars)
-        .filter(|character| !character.is_control() && !is_directional_control(*character))
+        .filter(|character| !character.is_control() && !is_format_control(*character))
         .take(MAX_LABEL_CHARS)
         .collect::<String>();
-    label.trim_end().to_owned()
+    let label = label.trim_end();
+    (!label.is_empty()).then(|| label.to_owned())
 }
 
-fn is_directional_control(character: char) -> bool {
+fn is_format_control(character: char) -> bool {
     matches!(
         character,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{feff}'
     )
-}
-
-fn load_avatar(path: &std::path::Path) -> Option<Avatar> {
-    let metadata = fs::metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_ICON_BYTES {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    fs::File::open(path)
-        .ok()?
-        .take(MAX_ICON_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_ICON_BYTES {
-        return None;
-    }
-    decode_avatar(&bytes)
-}
-
-fn decode_avatar(bytes: &[u8]) -> Option<Avatar> {
-    let mut reader = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    if !matches!(reader.format(), Some(ImageFormat::Png | ImageFormat::Jpeg)) {
-        return None;
-    }
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(MAX_ICON_DIMENSION);
-    limits.max_image_height = Some(MAX_ICON_DIMENSION);
-    limits.max_alloc = Some(16 * 1024 * 1024);
-    reader.limits(limits);
-    let image = reader.decode().ok()?;
-    let thumbnail = image
-        .thumbnail(AVATAR_DIMENSION, AVATAR_DIMENSION)
-        .to_rgba8();
-    Some(Avatar {
-        width: thumbnail.width(),
-        height: thumbnail.height(),
-        rgba: thumbnail.into_raw(),
-    })
 }
 
 async fn load_properties(
@@ -166,7 +107,6 @@ async fn load_properties(
     Ok(Properties {
         username: user.get_property("UserName").await?,
         real_name: user.get_property("RealName").await?,
-        icon_file: user.get_property("IconFile").await?,
         system_account: user.get_property("SystemAccount").await?,
         locked: user.get_property("Locked").await?,
     })
@@ -222,7 +162,6 @@ mod tests {
         Properties {
             username: "alice".into(),
             real_name: "Alice Example".into(),
-            icon_file: String::new(),
             system_account: false,
             locked: false,
         }
@@ -254,7 +193,6 @@ mod tests {
     fn administrative_override_defaults_to_username() {
         let account = Account::override_account("operator".into(), None);
         assert_eq!(account.display_name, "operator");
-        assert_eq!(account.avatar, None);
     }
 
     #[test]
@@ -280,31 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_and_oversized_avatars() {
-        assert_eq!(decode_avatar(b"not an image"), None);
-
-        let valid = image::DynamicImage::new_rgb8(2, 3);
-        let mut valid_encoded = Cursor::new(Vec::new());
-        valid
-            .write_to(&mut valid_encoded, ImageFormat::Png)
-            .unwrap();
-        let avatar = decode_avatar(valid_encoded.get_ref()).unwrap();
-        assert!(avatar.width <= AVATAR_DIMENSION);
-        assert!(avatar.height <= AVATAR_DIMENSION);
-        assert_eq!(
-            avatar.rgba.len(),
-            (avatar.width * avatar.height * 4) as usize
-        );
-
-        let image = image::DynamicImage::new_rgb8(MAX_ICON_DIMENSION + 1, 1);
-        let mut encoded = Cursor::new(Vec::new());
-        image.write_to(&mut encoded, ImageFormat::Png).unwrap();
-        assert_eq!(decode_avatar(encoded.get_ref()), None);
-
-        let path =
-            std::env::temp_dir().join(format!("genkan-oversized-avatar-{}", std::process::id()));
-        fs::write(&path, vec![0; (MAX_ICON_BYTES + 1) as usize]).unwrap();
-        assert_eq!(load_avatar(&path), None);
-        fs::remove_file(path).unwrap();
+    fn rejects_labels_containing_only_format_controls() {
+        assert_eq!(presentation_label("\u{202e}\u{200b}"), None);
     }
 }
