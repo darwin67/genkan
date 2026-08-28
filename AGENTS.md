@@ -20,7 +20,11 @@ PAM authentication and launching the selected desktop session.
 
 ## Architecture
 
-- `src/main.rs`: iced application and authentication state machine.
+- `src/main.rs`: CLI parsing and iced application startup.
+- `src/app/mod.rs`: application state, messages, and event orchestration.
+- `src/app/auth_flow.rs`: authentication transitions, attempt lifecycle, and
+  greetd tasks.
+- `src/app/view.rs`: greeter rendering and presentation helpers.
 - `src/auth.rs`: greetd IPC transport and response normalization.
 - `src/sessions.rs`: Wayland desktop-session discovery and environment setup.
 - `src/power.rs`: logind power operations over D-Bus.
