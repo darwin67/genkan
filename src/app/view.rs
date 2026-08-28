@@ -165,17 +165,20 @@ impl App {
         ]
         .spacing(14);
 
-        let main_content = column![
-            column![clock, date].align_x(Alignment::Center).spacing(0),
-            Space::new(Fill, Length::Fixed(36.0)),
-            login_panel,
-            Space::new(Fill, Length::Fixed(28.0)),
-            power_buttons,
-        ]
+        let main_content = scrollable(
+            column![
+                column![clock, date].align_x(Alignment::Center).spacing(0),
+                Space::new(Fill, Length::Fixed(36.0)),
+                login_panel,
+                Space::new(Fill, Length::Fixed(28.0)),
+                power_buttons,
+            ]
+            .width(Fill)
+            .align_x(Alignment::Center)
+            .padding([44, 20]),
+        )
         .width(Fill)
-        .height(Fill)
-        .align_x(Alignment::Center)
-        .padding([44, 20]);
+        .height(Fill);
 
         let content: Element<'_, Message> = match self.power_state {
             PowerState::Confirming(action) => {
