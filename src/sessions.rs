@@ -238,6 +238,9 @@ fn strict_desktop_file(contents: &[u8]) -> Option<()> {
 }
 
 fn strict_exec(raw: &str) -> Option<()> {
+    if !raw.is_ascii() || raw.bytes().any(|byte| byte.is_ascii_control()) {
+        return None;
+    }
     let mut units = Vec::with_capacity(raw.len());
     let mut characters = raw.chars();
     while let Some(character) = characters.next() {
@@ -393,7 +396,7 @@ mod tests {
             &directory,
             "river",
             &format!(
-                "Name=River Session\nExec=\"{}\" \"two words\" 100%% %c %k\nDesktopNames=River;wlroots;\n",
+                "Name=River Session\nExec=\"{}\" \"two words\" \"\" 100%% %c %k\nDesktopNames=River;wlroots;\n",
                 program.display()
             ),
         );
@@ -405,6 +408,7 @@ mod tests {
             [
                 program.to_string_lossy().as_ref(),
                 "two words",
+                "",
                 "100%",
                 "River Session",
                 directory.join("river.desktop").to_string_lossy().as_ref(),
@@ -480,8 +484,16 @@ mod tests {
 
     #[test]
     fn rejects_lenient_exec_grammar_and_duplicate_keys() {
-        assert!(strict_exec(r#""/tmp/session\q""#).is_none());
-        assert!(strict_exec(r#""/bin/session"adjacent"#).is_none());
+        for invalid in [
+            r#""/tmp/session\q""#,
+            r#""/bin/session"adjacent"#,
+            "/bin/session \"é\"",
+            "/bin/session \"bell\u{7}\"",
+            "/bin/session unquoted#value",
+            "/bin/session \"unterminated",
+        ] {
+            assert!(strict_exec(invalid).is_none(), "accepted {invalid:?}");
+        }
         assert!(strict_exec(r#""/bin/session" "a\\\\b" "cost \\$5""#).is_some());
 
         let duplicate_key =
