@@ -39,6 +39,7 @@ pub fn main() -> iced::Result {
             decorations: windowed,
             ..Default::default()
         })
+        .exit_on_close_request(false)
         .antialiasing(true)
         .run_with(|| App::new(arguments))
 }
@@ -68,6 +69,8 @@ struct App {
     started_at: Instant,
     now: chrono::DateTime<Local>,
     confirmation: Option<PowerAction>,
+    attempt: u64,
+    closing: Option<window::Id>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,12 +78,17 @@ enum Message {
     Tick,
     InputChanged(String),
     Submit,
-    AuthResult(Result<(Option<Client>, auth::Response), String>),
+    AuthResult {
+        attempt: u64,
+        result: Result<(Option<Client>, auth::Response), String>,
+    },
     SelectSession(Session),
     AskPower(PowerAction),
     CancelPower,
     ConfirmPower(PowerAction),
     PowerResult(Result<(), String>),
+    CloseRequested(window::Id),
+    SessionCancelled(window::Id),
 }
 
 impl App {
@@ -112,13 +120,18 @@ impl App {
             started_at: Instant::now(),
             now: Local::now(),
             confirmation: None,
+            attempt: 1,
+            closing: None,
         };
-        let task = begin_authentication(app.username.clone());
+        let task = begin_authentication(app.username.clone(), app.attempt, true);
         (app, task)
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        time::every(Duration::from_millis(50)).map(|_| Message::Tick)
+        Subscription::batch([
+            time::every(Duration::from_millis(50)).map(|_| Message::Tick),
+            window::close_requests().map(Message::CloseRequested),
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -141,7 +154,9 @@ impl App {
             Message::Submit if self.phase == Phase::Idle => {
                 self.message = None;
                 self.phase = Phase::CreatingSession;
-                begin_authentication(self.username.clone())
+                let client = self.client.take();
+                let attempt = self.next_attempt();
+                restart_authentication(client, self.username.clone(), attempt)
             }
             Message::Submit if self.phase == Phase::WaitingForInput => {
                 let Some(client) = self.client.clone() else {
@@ -149,31 +164,37 @@ impl App {
                 };
                 let response = std::mem::take(&mut self.input);
                 self.phase = Phase::Authenticating;
-                Task::perform(
-                    async move {
-                        client
-                            .exchange(Request::PostAuthMessageResponse {
-                                response: Some(response),
-                            })
-                            .await
+                exchange(
+                    client,
+                    Request::PostAuthMessageResponse {
+                        response: Some(response),
                     },
-                    |result| {
-                        Message::AuthResult(
-                            result
-                                .map(|response| (None, response))
-                                .map_err(|error| error.to_string()),
-                        )
-                    },
+                    self.attempt,
                 )
             }
             Message::Submit => Task::none(),
-            Message::AuthResult(Ok((client, response))) => {
-                if let Some(client) = client {
-                    self.client = Some(client);
+            Message::AuthResult { attempt, result } => {
+                if attempt != self.attempt {
+                    return Task::none();
                 }
-                self.handle_auth_response(response)
+                if let Some(window) = self.closing.take() {
+                    let client = match result {
+                        Ok((client, _)) => client,
+                        Err(_) => None,
+                    };
+                    self.next_attempt();
+                    return cancel_and_close(client, window);
+                }
+                match result {
+                    Ok((client, response)) => {
+                        if let Some(client) = client {
+                            self.client = Some(client);
+                        }
+                        self.handle_auth_response(response)
+                    }
+                    Err(error) => self.fail(error),
+                }
             }
-            Message::AuthResult(Err(error)) => self.fail(error),
             Message::AskPower(action) => {
                 self.confirmation = Some(action);
                 Task::none()
@@ -191,7 +212,21 @@ impl App {
                 })
             }
             Message::PowerResult(Ok(())) => Task::none(),
-            Message::PowerResult(Err(error)) => self.fail(error),
+            Message::PowerResult(Err(error)) => {
+                self.message = Some(error);
+                self.message_is_error = true;
+                Task::none()
+            }
+            Message::CloseRequested(window) if self.client.is_some() => {
+                self.next_attempt();
+                cancel_and_close(self.client.take(), window)
+            }
+            Message::CloseRequested(window) if self.phase == Phase::CreatingSession => {
+                self.closing = Some(window);
+                Task::none()
+            }
+            Message::CloseRequested(window) => window::close(window),
+            Message::SessionCancelled(window) => window::close(window),
         }
     }
 
@@ -210,19 +245,10 @@ impl App {
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                Task::perform(
-                    async move {
-                        client
-                            .exchange(Request::PostAuthMessageResponse { response: None })
-                            .await
-                    },
-                    |result| {
-                        Message::AuthResult(
-                            result
-                                .map(|response| (None, response))
-                                .map_err(|error| error.to_string()),
-                        )
-                    },
+                exchange(
+                    client,
+                    Request::PostAuthMessageResponse { response: None },
+                    self.attempt,
                 )
             }
             auth::Response::Success if self.phase == Phase::StartingSession => iced::exit(),
@@ -233,6 +259,7 @@ impl App {
                 self.phase = Phase::StartingSession;
                 self.message = Some("Starting session…".into());
                 let session = self.selected_session.clone();
+                let attempt = self.attempt;
                 Task::perform(
                     async move {
                         let environment = session.environment();
@@ -243,12 +270,11 @@ impl App {
                             })
                             .await
                     },
-                    |result| {
-                        Message::AuthResult(
-                            result
-                                .map(|response| (None, response))
-                                .map_err(|error| error.to_string()),
-                        )
+                    move |result| Message::AuthResult {
+                        attempt,
+                        result: result
+                            .map(|response| (None, response))
+                            .map_err(|error| error.to_string()),
                     },
                 )
             }
@@ -264,7 +290,8 @@ impl App {
                     self.secret = true;
                     self.message = Some("Authentication failed".into());
                     self.message_is_error = true;
-                    begin_authentication(self.username.clone())
+                    let attempt = self.next_attempt();
+                    begin_authentication(self.username.clone(), attempt, false)
                 } else {
                     self.fail(description)
                 }
@@ -273,7 +300,6 @@ impl App {
     }
 
     fn fail(&mut self, message: String) -> Task<Message> {
-        self.client = None;
         self.phase = Phase::Idle;
         self.input.clear();
         self.prompt = "Password".into();
@@ -281,6 +307,11 @@ impl App {
         self.message = Some(message);
         self.message_is_error = true;
         Task::none()
+    }
+
+    fn next_attempt(&mut self) -> u64 {
+        self.attempt = self.attempt.wrapping_add(1);
+        self.attempt
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -407,13 +438,61 @@ impl App {
     }
 }
 
-fn begin_authentication(username: String) -> Task<Message> {
-    Task::perform(auth::begin(username), |result| {
-        Message::AuthResult(
-            result
+fn begin_authentication(username: String, attempt: u64, recover: bool) -> Task<Message> {
+    Task::perform(
+        async move {
+            if recover {
+                auth::recover_and_begin(username).await
+            } else {
+                auth::begin(username).await
+            }
+        },
+        move |result| Message::AuthResult {
+            attempt,
+            result: result
                 .map(|(client, response)| (Some(client), response))
                 .map_err(|error| error.to_string()),
-        )
+        },
+    )
+}
+
+fn restart_authentication(client: Option<Client>, username: String, attempt: u64) -> Task<Message> {
+    Task::perform(
+        async move {
+            let needs_recovery = match client {
+                Some(client) => auth::cancel(Some(client)).await.is_err(),
+                None => true,
+            };
+            if needs_recovery {
+                auth::recover_and_begin(username).await
+            } else {
+                auth::begin(username).await
+            }
+        },
+        move |result| Message::AuthResult {
+            attempt,
+            result: result
+                .map(|(client, response)| (Some(client), response))
+                .map_err(|error| error.to_string()),
+        },
+    )
+}
+
+fn exchange(client: Client, request: Request, attempt: u64) -> Task<Message> {
+    Task::perform(
+        async move { client.exchange(request).await },
+        move |result| Message::AuthResult {
+            attempt,
+            result: result
+                .map(|response| (None, response))
+                .map_err(|error| error.to_string()),
+        },
+    )
+}
+
+fn cancel_and_close(client: Option<Client>, window: window::Id) -> Task<Message> {
+    Task::perform(auth::cancel(client), move |_| {
+        Message::SessionCancelled(window)
     })
 }
 
@@ -446,6 +525,27 @@ fn initials(name: &str) -> String {
 mod tests {
     use super::*;
 
+    fn app() -> App {
+        App {
+            username: "darwin".into(),
+            display_name: "Darwin".into(),
+            input: "secret".into(),
+            prompt: "Password".into(),
+            message: Some("Keep this message".into()),
+            message_is_error: false,
+            secret: true,
+            phase: Phase::WaitingForInput,
+            client: None,
+            sessions: vec![Session::sway(vec!["sway".into()])],
+            selected_session: Session::sway(vec!["sway".into()]),
+            started_at: Instant::now(),
+            now: Local::now(),
+            confirmation: None,
+            attempt: 2,
+            closing: None,
+        }
+    }
+
     #[test]
     fn normalizes_pam_prompts() {
         assert_eq!(clean_prompt("Password: "), "Password");
@@ -456,5 +556,35 @@ mod tests {
     fn creates_initials() {
         assert_eq!(initials("Darwin Wu"), "DW");
         assert_eq!(initials("Darwin"), "D");
+    }
+
+    #[test]
+    fn ignores_responses_from_abandoned_attempts() {
+        let mut app = app();
+        let _ = app.update(Message::AuthResult {
+            attempt: 1,
+            result: Ok((
+                None,
+                auth::Response::Error {
+                    authentication: false,
+                    description: "late failure".into(),
+                },
+            )),
+        });
+
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.input, "secret");
+        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+    }
+
+    #[test]
+    fn power_failures_preserve_authentication_state() {
+        let mut app = app();
+        let _ = app.update(Message::PowerResult(Err("not authorized".into())));
+
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.input, "secret");
+        assert_eq!(app.message.as_deref(), Some("not authorized"));
+        assert!(app.message_is_error);
     }
 }
