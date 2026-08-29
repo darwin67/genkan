@@ -20,29 +20,29 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Interaction model
 
-- [ ] Represent account selection and selected-account authentication as clear
+- [X] Represent account selection and selected-account authentication as clear
   presentation states derived from the existing authentication lifecycle.
-- [ ] Load AccountsService ~LoginTime~ and directly select the unique most
+- [X] Load AccountsService ~LoginTime~ and directly select the unique most
   recently logged-in eligible account, falling back to the sole eligible account
   or account selection when recency is unavailable, zero, or tied; treat a
   ~LoginTime~ read failure as unknown recency rather than an ineligible account.
 - [ ] Test override precedence, unique recency, tied/zero/unknown recency, a sole
   account, and deterministic account ordering without persisting a second
   last-user record.
-- [ ] Preserve cached, valid, unlocked, non-system account eligibility and
+- [X] Preserve cached, valid, unlocked, non-system account eligibility and
   partial object-failure behavior.
 - [ ] Present eligible identities in a wrapped, scrollable avatar grid with a
   visible username and unique accessible name for every tile.
 - [ ] Keep the selected identity prominent during authentication and provide a
   Change User action whenever another eligible identity can safely be selected.
-- [ ] Make Change User immediately invalidate the attempt, clear the response,
+- [X] Make Change User immediately invalidate the attempt, clear the response,
   and display account selection while a noninteractive state cancels greetd.
-- [ ] Disable tile activation until cancellation succeeds; on slow cancellation
+- [X] Disable tile activation until cancellation succeeds; on slow cancellation
   show stable progress, and on failure offer retry without calling
   ~CreateSession~ or resurrecting the invalidated attempt.
 - [ ] Test exact ~CancelSession~ before ~CreateSession~ request ordering,
   cancellation failure and retry, repeated Change User, and stale responses.
-- [ ] Preserve direct selected-account startup for administrative username
+- [X] Preserve direct selected-account startup for administrative username
   overrides without AccountsService discovery or Change User, and preserve the
   safe development preview.
 
@@ -107,7 +107,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [ ] Run ~make verify~ on x86_64-linux and the packaged graphics smoke check on
   both x86_64-linux and aarch64-linux; do not treat ARM graphics smoke as full
   ARM verification.
-- [ ] Run ~make e2e~ to verify real greetd/PAM failure recovery, successful
+- [X] Run ~make e2e~ to verify real greetd/PAM failure recovery, successful
   authentication, and session environment behavior after lifecycle changes.
 - [ ] Run ~make hardware-smoke~ on available connected AMD/NVIDIA outputs for
   physical presentation evidence; retain host suspend/resume as an independent

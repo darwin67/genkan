@@ -7,13 +7,16 @@ use genkan::auth::{self, Client};
 use super::{App, Closing, Message};
 
 const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const USER_SELECTION_CANCEL_PROGRESS_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 const MAX_AUTH_TEXT_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
     Failed,
     DiscoveringUsers,
+    CancellingForUserSelection,
     SelectingUser,
+    UserSelectionCancellationFailed,
     CreatingSession,
     WaitingForInput,
     Authenticating,
@@ -236,6 +239,25 @@ pub(super) fn cancel_for_close(client: Option<Client>, window: window::Id) -> Ta
     Task::perform(auth::cancel(client), move |_| {
         Message::SessionCancelled(window)
     })
+}
+
+pub(super) fn cancel_for_user_selection(client: Option<Client>, attempt: Attempt) -> Task<Message> {
+    Task::batch([
+        Task::perform(
+            async move {
+                auth::cancel(client)
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            move |result| Message::UserSelectionCancelled { attempt, result },
+        ),
+        Task::perform(
+            async {
+                tokio::time::sleep(USER_SELECTION_CANCEL_PROGRESS_DELAY).await;
+            },
+            move |()| Message::UserSelectionCancellationSlow { attempt },
+        ),
+    ])
 }
 
 pub(super) fn close_timeout(window: window::Id) -> Task<Message> {

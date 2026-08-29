@@ -5,7 +5,7 @@ mod power;
 mod sessions;
 mod theme;
 
-use app::{App, Config};
+use app::{App, Config, PreviewFixture};
 use clap::Parser;
 use iced::{window, Theme};
 
@@ -18,8 +18,14 @@ struct Arguments {
     display_name: Option<String>,
     #[arg(long)]
     windowed: bool,
-    #[arg(long, requires_all = ["windowed", "username"])]
-    preview: bool,
+    #[arg(
+        long,
+        value_enum,
+        requires = "windowed",
+        num_args = 0..=1,
+        default_missing_value = "selected"
+    )]
+    preview: Option<PreviewFixture>,
 }
 
 fn parse_username(value: &str) -> Result<String, String> {
@@ -66,13 +72,15 @@ mod tests {
         let arguments = Arguments::try_parse_from(["genkan"]).unwrap();
         assert_eq!(arguments.username, None);
         assert_eq!(arguments.display_name, None);
-        assert!(!arguments.preview);
+        assert_eq!(arguments.preview, None);
     }
 
     #[test]
     fn preview_requires_a_window() {
         assert!(Arguments::try_parse_from(["genkan", "--preview"]).is_err());
-        assert!(Arguments::try_parse_from(["genkan", "--windowed", "--preview"]).is_err());
+        let arguments = Arguments::try_parse_from(["genkan", "--windowed", "--preview"])
+            .expect("preview has a safe default fixture");
+        assert_eq!(arguments.preview, Some(PreviewFixture::Selected));
         assert!(Arguments::try_parse_from([
             "genkan",
             "--windowed",
@@ -81,6 +89,16 @@ mod tests {
             "preview",
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn preview_accepts_named_fixtures() {
+        let arguments =
+            Arguments::try_parse_from(["genkan", "--windowed", "--preview", "users"]).unwrap();
+        assert_eq!(arguments.preview, Some(PreviewFixture::Users));
+        assert!(
+            Arguments::try_parse_from(["genkan", "--windowed", "--preview", "unknown",]).is_err()
+        );
     }
 
     #[test]
