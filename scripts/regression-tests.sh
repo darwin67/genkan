@@ -139,9 +139,12 @@ EOF
 make_presentation_stubs() {
   local fixture=$1
   rm -rf "$fixture/drm/card0/device/drm/renderD128"
-  mkdir -p "$fixture/drm/card1-DP-1"
-  printf 'connected\n' > "$fixture/drm/card1-DP-1/status"
-  : > "$fixture/dri/card1"
+  mkdir -p \
+    "$fixture/drm/card2/device/drm/renderD130" \
+    "$fixture/drm/card2-DP-1"
+  printf '0x1002\n' > "$fixture/drm/card2/device/vendor"
+  printf 'connected\n' > "$fixture/drm/card2-DP-1/status"
+  : > "$fixture/dri/card2"
 
   cat > "$fixture/bin/vulkaninfo" <<'EOF'
 #!/usr/bin/env bash
@@ -152,11 +155,16 @@ EOF
 for argument in "$@"; do
   command=$argument
 done
-exec "$command"
+echo $$ > "$GENKAN_TEST_STATE/leader.pid"
+"$command" &
+child=$!
+echo "$child" > "$GENKAN_TEST_STATE/child.pid"
+trap 'wait "$child" 2>/dev/null || true; exit 0' TERM
+wait "$child"
 EOF
   cat > "$fixture/bin/genkan" <<'EOF'
 #!/usr/bin/env bash
-exec 9< "$GENKAN_TEST_DRI/card1"
+exec 9< "$GENKAN_TEST_DRI/card2"
 sleep 30
 EOF
   cat > "$fixture/bin/swaymsg" <<'EOF'
@@ -202,11 +210,13 @@ run_presentation_fixture() {
 
 assert_fixture_process_stopped() {
   local fixture=$1
-  local pid
-  pid=$(<"$fixture/state/pid")
-  if kill -0 "$pid" 2>/dev/null; then
-    fail "hardware fixture left process $pid running"
-  fi
+  local pid_file pid
+  for pid_file in leader.pid child.pid; do
+    pid=$(<"$fixture/state/$pid_file")
+    if kill -0 "$pid" 2>/dev/null; then
+      fail "hardware fixture left $pid_file process $pid running"
+    fi
+  done
 }
 
 test_representative_selection_placement_and_cleanup() {
@@ -216,7 +226,8 @@ test_representative_selection_placement_and_cleanup() {
   make_presentation_stubs "$fixture"
 
   run_presentation_fixture "$fixture" > "$tmp_dir/presentation.log"
-  grep -Fq 'Testing radeon-card1' "$tmp_dir/presentation.log"
+  grep -Fq 'Skipping card0; it has no render node' "$tmp_dir/presentation.log"
+  grep -Fq 'Testing radeon-card2' "$tmp_dir/presentation.log"
   grep -Fq 'presentation on DP-1' "$tmp_dir/presentation.log"
   assert_fixture_process_stopped "$fixture"
 
