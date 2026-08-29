@@ -36,6 +36,8 @@ PAM authentication and launching the selected desktop session.
 - `nix/tests/greetd.nix`: real greetd and PAM NixOS VM test.
 - `nix/tests/graphics-smoke.nix`: packaged-binary launch under nested Cage and
   headless Weston with software Vulkan rendering.
+- `scripts/hardware-smoke.sh`: opt-in AMD/NVIDIA and connected-display smoke
+  test for a physical Wayland workstation.
 - `flake.nix`: pinned Rust toolchain, package, and development shell for Linux.
 
 ## Development
@@ -67,6 +69,10 @@ For authentication protocol or lifecycle changes, also run:
 ```sh
 make e2e
 ```
+
+Physical graphics changes can be checked from a Wayland session with
+`make hardware-smoke`. This is opt-in and is not part of `make verify` because
+it requires local DRM devices.
 
 ## Security and Behavior
 

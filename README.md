@@ -109,9 +109,29 @@ the Mesa or NVIDIA driver selected by the NixOS `hardware.graphics`
 configuration; it does not bundle or activate a vendor driver. Cage and the
 host graphics stack must also support the selected hardware. CI launches the
 packaged x86_64 and aarch64 binaries under nested Cage and headless Weston with
-Mesa software Vulkan. Physical AMD and NVIDIA GPUs, external displays, and an
-ARM device still require manual validation; the software smoke does not claim
-coverage of those hardware paths.
+Mesa software Vulkan. Physical hardware is intentionally opt-in because hosted
+CI has no DRM devices:
+
+```sh
+make hardware-smoke
+```
+
+Run it from a Wayland session. It tests every local AMD and NVIDIA Vulkan ICD,
+launches the packaged Genkan under Vulkan-rendered nested Cage on each
+display-connected adapter, and checks that an AMD-only run does not load or
+open the NVIDIA driver. On Sway, this stricter invocation also moves Cage to
+every active output and requires both GPU vendors and an external display:
+
+```sh
+GENKAN_REQUIRE_GPU_VENDORS='1002 10de' \
+GENKAN_REQUIRE_EXTERNAL_DISPLAY=1 \
+GENKAN_EXERCISE_SWAY_OUTPUTS=1 \
+make hardware-smoke
+```
+
+A disconnected hybrid GPU can validate its physical Vulkan driver but cannot
+exercise presentation. Physical ARM hardware remains a manual coverage gap;
+aarch64 CI uses software rendering.
 
 ## Validation
 
@@ -134,5 +154,6 @@ session environment. It does not exercise iced rendering or input automation.
 `make smoke` runs the packaged-binary graphics check used by both architecture
 jobs in CI. It starts headless Weston, nests Cage with its pixman renderer, and
 launches Genkan using Mesa's software Vulkan driver. Genkan must remain alive
-until the check's controlled timeout; early compositor, loader, or application
-failure fails the derivation.
+until the check's controlled timeout; `ICED_BACKEND=wgpu` prevents a successful
+tiny-skia fallback from masking Vulkan failure. Early compositor, loader, or
+application failure fails the derivation.
