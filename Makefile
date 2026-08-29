@@ -1,7 +1,9 @@
+PREVIEW ?= selected
+
 .PHONY: dev check fmt fmt-fix lint test scripts-test check-rfds smoke hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
-	cargo run --bin genkan -- --windowed --preview --username "$${USER:-preview}"
+	cargo run --bin genkan -- --windowed --preview "$(PREVIEW)" --username "$${USER:-preview}"
 
 check:
 	cargo check

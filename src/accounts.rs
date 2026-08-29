@@ -93,7 +93,10 @@ pub(crate) fn preferred_account(accounts: &[Account]) -> Option<&Account> {
     if accounts.len() == 1 {
         return accounts.first();
     }
-    let latest = accounts.iter().filter_map(|account| account.last_login).max()?;
+    let latest = accounts
+        .iter()
+        .filter_map(|account| account.last_login)
+        .max()?;
     let mut matches = accounts
         .iter()
         .filter(|account| account.last_login == Some(latest));

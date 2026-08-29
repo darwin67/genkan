@@ -12,12 +12,24 @@ runs the user session itself.
 make dev
 ```
 
-The preview uses `$USER` as a synthetic account and accepts password input
-without sending it anywhere. Authentication submission and all power actions
-are simulated, so testing the UI cannot suspend, restart, or shut down the
-development machine. Installed Wayland session entries still populate the
-session selector. To exercise real AccountsService, greetd, and logind behavior,
-run the binary directly without `--preview` in the intended greeter environment.
+The default preview uses `$USER` as a synthetic account and accepts password
+input without sending it anywhere. Authentication submission and all power
+actions are simulated, so testing the UI cannot suspend, restart, or shut down
+the development machine. Preview also uses a synthetic Wayland session and does
+not contact AccountsService, greetd, or logind.
+
+Select deterministic fixtures with `PREVIEW`, for example:
+
+```sh
+PREVIEW=users make dev
+PREVIEW=visible-prompt make dev
+PREVIEW=authentication-failure make dev
+PREVIEW=power-confirmation make dev
+```
+
+Run `cargo run --bin genkan -- --help` to list every fixture. To exercise real
+AccountsService, greetd, and logind behavior, run the binary directly without
+`--preview` in the intended greeter environment.
 
 The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `smoke`,
 `e2e`, `build`, `package`, `verify`, `changelog`, `next-version`, and `clean`

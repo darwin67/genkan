@@ -1,4 +1,5 @@
 mod auth_flow;
+mod preview;
 mod view;
 
 use std::time::{Duration, Instant};
@@ -13,6 +14,8 @@ use crate::accounts::{self, Account};
 use crate::power::{self, Action as PowerAction};
 use crate::sessions::{self, Session};
 use genkan::auth::{self, Client};
+
+pub(crate) use preview::Fixture as PreviewFixture;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Closing {
@@ -37,7 +40,7 @@ impl Closing {
 pub(crate) struct Config {
     pub(crate) username: Option<String>,
     pub(crate) display_name: Option<String>,
-    pub(crate) preview: bool,
+    pub(crate) preview: Option<PreviewFixture>,
 }
 
 #[derive(Debug)]
@@ -87,6 +90,9 @@ pub(crate) enum Message {
 
 impl App {
     pub(crate) fn new(config: Config) -> (Self, Task<Message>) {
+        if let Some(fixture) = config.preview {
+            return preview::build(fixture, config.username, config.display_name);
+        }
         let sessions = sessions::discover();
         let selected_session = sessions.first().cloned();
         let account = config
@@ -94,7 +100,6 @@ impl App {
             .map(|username| Account::override_account(username, config.display_name));
         let accounts = account.iter().cloned().collect();
         let configured = selected_session.is_some() && account.is_some();
-        let preview = config.preview && account.is_some();
         let discovering = selected_session.is_some() && account.is_none();
         let attempt = Attempt::initial();
 
@@ -111,18 +116,12 @@ impl App {
             input: String::new(),
             input_id: text_input::Id::new("authentication-input"),
             prompt: "Password".into(),
-            message: if preview {
-                Some("Preview mode: authentication and power actions are simulated".into())
-            } else {
-                selected_session
-                    .is_none()
-                    .then(|| "No valid Wayland sessions are installed".into())
-            },
-            message_is_error: !preview && selected_session.is_none(),
+            message: selected_session
+                .is_none()
+                .then(|| "No valid Wayland sessions are installed".into()),
+            message_is_error: selected_session.is_none(),
             secret: true,
-            phase: if preview {
-                Phase::WaitingForInput
-            } else if configured {
+            phase: if configured {
                 Phase::CreatingSession
             } else if discovering {
                 Phase::DiscoveringUsers
@@ -137,11 +136,9 @@ impl App {
             power_state: PowerState::Idle,
             attempt,
             closing: None,
-            preview,
+            preview: false,
         };
-        let task = if preview {
-            text_input::focus(app.input_id.clone())
-        } else if configured {
+        let task = if configured {
             auth_flow::begin(app.username.clone(), attempt, true)
         } else if discovering {
             discover_accounts()
@@ -240,6 +237,11 @@ impl App {
             }
             Message::SelectSession(_) => Task::none(),
             Message::Retry if self.phase == Phase::Failed && self.selected_session.is_none() => {
+                if self.preview {
+                    self.message = Some("Preview: retry was not sent".into());
+                    self.message_is_error = false;
+                    return Task::none();
+                }
                 self.sessions = sessions::discover();
                 self.selected_session = self.sessions.first().cloned();
                 if self.selected_session.is_none() {
@@ -256,9 +258,19 @@ impl App {
                 }
             }
             Message::Retry if self.phase == Phase::Failed && self.username.is_empty() => {
+                if self.preview {
+                    self.message = Some("Preview: retry was not sent".into());
+                    self.message_is_error = false;
+                    return Task::none();
+                }
                 self.phase = Phase::DiscoveringUsers;
                 self.message = None;
                 discover_accounts()
+            }
+            Message::Retry if self.phase == Phase::Failed && self.preview => {
+                self.message = Some("Preview: retry was not sent".into());
+                self.message_is_error = false;
+                Task::none()
             }
             Message::Retry if self.phase == Phase::Failed => self.retry_authentication(),
             Message::Retry => Task::none(),
@@ -342,6 +354,7 @@ impl App {
                     Task::none()
                 }
             }
+            Message::CloseRequested(window) if self.preview => window::close(window),
             Message::CloseRequested(window) if self.client.is_some() => {
                 self.attempt.advance();
                 self.closing = Some(Closing::Cancelling(window));
@@ -392,7 +405,11 @@ impl App {
         self.message_is_error = false;
         self.phase = Phase::CreatingSession;
         let attempt = self.attempt.advance();
-        if replacing_account {
+        if self.preview {
+            self.phase = Phase::WaitingForInput;
+            self.message = Some("Preview mode: credentials and power actions are simulated".into());
+            text_input::focus(self.input_id.clone())
+        } else if replacing_account {
             auth_flow::restart(self.client.take(), self.username.clone(), attempt)
         } else {
             auth_flow::begin(self.username.clone(), attempt, true)

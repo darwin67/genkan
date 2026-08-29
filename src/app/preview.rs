@@ -1,0 +1,238 @@
+use std::time::Instant;
+
+use chrono::Local;
+use clap::ValueEnum;
+use iced::widget::text_input;
+use iced::Task;
+
+use crate::accounts::Account;
+use crate::power::Action as PowerAction;
+use crate::sessions::Session;
+
+use super::auth_flow::{Attempt, Phase};
+use super::{App, Message, PowerState};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Fixture {
+    Selected,
+    Users,
+    DuplicateNames,
+    LargeAccountSet,
+    VisiblePrompt,
+    InformationalMessage,
+    AuthenticationFailure,
+    DiscoveryFailure,
+    SessionFailure,
+    PowerFailure,
+    PowerConfirmation,
+}
+
+struct State {
+    accounts: Vec<Account>,
+    selected: Option<Account>,
+    prompt: String,
+    message: String,
+    message_is_error: bool,
+    secret: bool,
+    phase: Phase,
+    session: Option<Session>,
+    power_state: PowerState,
+}
+
+pub(super) fn build(
+    fixture: Fixture,
+    username: Option<String>,
+    display_name: Option<String>,
+) -> (App, Task<Message>) {
+    let input_id = text_input::Id::new("authentication-input");
+    let state = State::new(fixture, username, display_name);
+    let selected_session = state.session.clone();
+    let sessions = state.session.into_iter().collect();
+    let (username, display_name) = state
+        .selected
+        .as_ref()
+        .map(|account| (account.username.clone(), account.display_name.clone()))
+        .unwrap_or_else(|| (String::new(), "Select account".into()));
+    let focus_input = state.phase == Phase::WaitingForInput;
+    let app = App {
+        username,
+        display_name,
+        accounts: state.accounts,
+        input: String::new(),
+        input_id: input_id.clone(),
+        prompt: state.prompt,
+        message: Some(state.message),
+        message_is_error: state.message_is_error,
+        secret: state.secret,
+        phase: state.phase,
+        client: None,
+        sessions,
+        selected_session,
+        started_at: Instant::now(),
+        now: Local::now(),
+        power_state: state.power_state,
+        attempt: Attempt::initial(),
+        closing: None,
+        preview: true,
+    };
+    let task = if focus_input {
+        text_input::focus(input_id)
+    } else {
+        Task::none()
+    };
+    (app, task)
+}
+
+impl State {
+    fn new(fixture: Fixture, username: Option<String>, display_name: Option<String>) -> Self {
+        let synthetic_identity = username.is_none();
+        let username = username.unwrap_or_else(|| "preview".into());
+        let selected = Account::override_account(
+            username,
+            display_name.or_else(|| synthetic_identity.then(|| "Preview User".into())),
+        );
+        let session = preview_session();
+        let message = "Preview mode: credentials and power actions are simulated".to_owned();
+        let mut state = Self {
+            accounts: vec![selected.clone()],
+            selected: Some(selected),
+            prompt: "Password".into(),
+            message,
+            message_is_error: false,
+            secret: true,
+            phase: Phase::WaitingForInput,
+            session: Some(session),
+            power_state: PowerState::Idle,
+        };
+
+        match fixture {
+            Fixture::Selected => {}
+            Fixture::Users => state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")])),
+            Fixture::DuplicateNames => state.select_accounts(accounts([
+                ("alex", "Alex Morgan"),
+                ("amorgan", "Alex Morgan"),
+            ])),
+            Fixture::LargeAccountSet => state.select_accounts(
+                (1..=24)
+                    .map(|number| {
+                        Account::override_account(
+                            format!("user{number:02}"),
+                            Some(format!("Preview User {number:02}")),
+                        )
+                    })
+                    .collect(),
+            ),
+            Fixture::VisiblePrompt => {
+                state.prompt = "Verification code".into();
+                state.secret = false;
+            }
+            Fixture::InformationalMessage => {
+                state.message = "Touch the security key, then enter your password".into();
+            }
+            Fixture::AuthenticationFailure => {
+                state.phase = Phase::Failed;
+                state.message = "Authentication failed".into();
+                state.message_is_error = true;
+            }
+            Fixture::DiscoveryFailure => {
+                state.select_accounts(Vec::new());
+                state.phase = Phase::Failed;
+                state.message = "AccountsService found no unlocked non-system users".into();
+                state.message_is_error = true;
+            }
+            Fixture::SessionFailure => {
+                state.session = None;
+                state.phase = Phase::Failed;
+                state.message = "No valid Wayland sessions are installed".into();
+                state.message_is_error = true;
+            }
+            Fixture::PowerFailure => {
+                state.message = "Power action was not authorized".into();
+                state.message_is_error = true;
+            }
+            Fixture::PowerConfirmation => {
+                state.power_state = PowerState::Confirming(PowerAction::PowerOff);
+            }
+        }
+        state
+    }
+
+    fn select_accounts(&mut self, accounts: Vec<Account>) {
+        self.accounts = accounts;
+        self.selected = None;
+        self.phase = Phase::SelectingUser;
+        self.message = "Select an account".into();
+    }
+}
+
+fn accounts<const N: usize>(values: [(&str, &str); N]) -> Vec<Account> {
+    values
+        .into_iter()
+        .map(|(username, display_name)| {
+            Account::override_account(username.into(), Some(display_name.into()))
+        })
+        .collect()
+}
+
+fn preview_session() -> Session {
+    Session {
+        name: "Preview Wayland".into(),
+        command: vec!["preview-session".into()],
+        session_id: "preview".into(),
+        desktop_names: vec!["Preview".into()],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixtures_are_deterministic_and_service_free() {
+        for fixture in Fixture::value_variants() {
+            let (app, _) = build(*fixture, None, None);
+            assert!(app.preview, "fixture {fixture:?}");
+            assert!(app.client.is_none(), "fixture {fixture:?}");
+        }
+    }
+
+    #[test]
+    fn account_fixtures_cover_cardinality_and_collisions() {
+        let (users, _) = build(Fixture::Users, None, None);
+        assert_eq!(users.accounts.len(), 2);
+        assert_eq!(users.phase, Phase::SelectingUser);
+
+        let (duplicates, _) = build(Fixture::DuplicateNames, None, None);
+        assert_eq!(
+            duplicates.accounts[0].display_name,
+            duplicates.accounts[1].display_name
+        );
+        assert_ne!(
+            duplicates.accounts[0].username,
+            duplicates.accounts[1].username
+        );
+
+        let (large, _) = build(Fixture::LargeAccountSet, None, None);
+        assert_eq!(large.accounts.len(), 24);
+
+        let (empty, _) = build(Fixture::DiscoveryFailure, None, None);
+        assert!(empty.accounts.is_empty());
+    }
+
+    #[test]
+    fn prompt_and_failure_fixtures_expose_expected_states() {
+        let (visible, _) = build(Fixture::VisiblePrompt, None, None);
+        assert_eq!(visible.phase, Phase::WaitingForInput);
+        assert!(!visible.secret);
+
+        let (authentication, _) = build(Fixture::AuthenticationFailure, None, None);
+        assert_eq!(authentication.phase, Phase::Failed);
+        assert!(authentication.message_is_error);
+
+        let (power, _) = build(Fixture::PowerConfirmation, None, None);
+        assert_eq!(
+            power.power_state,
+            PowerState::Confirming(PowerAction::PowerOff)
+        );
+    }
+}
