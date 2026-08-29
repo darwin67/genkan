@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: discussion
+:state: published
 :discussion: https://github.com/darwin67/genkan/pull/5
 :labels: greeter, authentication, interaction, visual-design, accessibility
 
