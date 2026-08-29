@@ -34,6 +34,12 @@ PAM authentication and launching the selected desktop session.
 - `src/power.rs`: logind power operations over D-Bus.
 - `src/background.rs` and `src/theme.rs`: presentation and animation.
 - `nix/tests/greetd.nix`: real greetd and PAM NixOS VM test.
+- `nix/tests/graphics-smoke.nix`: packaged-binary launch under nested Cage and
+  headless Weston with software Vulkan rendering.
+- `scripts/hardware-smoke.sh`: opt-in AMD/NVIDIA and connected-display smoke
+  test for a physical Wayland workstation.
+- `scripts/regression-tests.sh`: fixture tests for repository shell tooling and
+  hardware-smoke failure modes.
 - `flake.nix`: pinned Rust toolchain, package, and development shell for Linux.
 
 ## Development
@@ -43,6 +49,9 @@ allowed types are `feat`, `fix`, `doc`, `docs`, `test`, `ci`, `refactor`,
 `perf`, `chore`, `revert`, `style`, and `security`. Use `!` before the colon or
 a `BREAKING CHANGE:` footer for breaking changes. Keep pull request titles,
 `.github/workflows/commits.yml`, and `cliff.toml` aligned.
+CI validates every non-merge commit introduced by a pull request. Merge commits
+are exempt because their generated subjects are controlled by the hosting
+platform; pull request titles remain authoritative for squash merges.
 
 Enter the pinned Rust environment before running Cargo commands:
 
@@ -62,6 +71,10 @@ For authentication protocol or lifecycle changes, also run:
 ```sh
 make e2e
 ```
+
+Physical graphics changes can be checked from a Wayland session with
+`make hardware-smoke`. This is opt-in and is not part of `make verify` because
+it requires local DRM devices.
 
 ## Security and Behavior
 

@@ -300,7 +300,7 @@ impl App {
             Message::PowerResult(Ok(())) => Task::none(),
             Message::PowerResult(Err(error)) => {
                 self.power_state = PowerState::Idle;
-                self.message = Some(error);
+                self.message = Some(auth_flow::bounded_auth_text(&error));
                 self.message_is_error = true;
                 if self.phase == Phase::WaitingForInput {
                     text_input::focus(self.input_id.clone())
@@ -551,6 +551,45 @@ mod tests {
         let _ = app.update(Message::Retry);
         assert_eq!(app.phase, Phase::CreatingSession);
         assert_ne!(app.attempt, attempt);
+    }
+
+    #[test]
+    fn prompt_sequences_replace_and_clear_the_previous_response() {
+        let mut app = app();
+        app.input = "previous response".into();
+
+        let _ = app.handle_auth_response(auth::Response::Prompt {
+            secret: false,
+            message: "Login code:".into(),
+        });
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.prompt, "Login code");
+        assert!(!app.secret);
+        assert!(app.input.is_empty());
+
+        app.input = "123456".into();
+        let _ = app.handle_auth_response(auth::Response::Prompt {
+            secret: true,
+            message: "Password:".into(),
+        });
+        assert_eq!(app.prompt, "Password");
+        assert!(app.secret);
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn session_start_transport_failure_enters_failed_state() {
+        let mut app = app();
+        app.phase = Phase::StartingSession;
+
+        let _ = app.update(Message::AuthResult {
+            attempt: app.attempt,
+            result: Err("greetd closed the socket".into()),
+        });
+
+        assert_eq!(app.phase, Phase::Failed);
+        assert_eq!(app.message.as_deref(), Some("greetd closed the socket"));
+        assert!(app.message_is_error);
     }
 
     #[test]

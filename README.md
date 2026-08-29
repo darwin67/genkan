@@ -17,27 +17,55 @@ entries. Pass `--username "$USER"` to bypass account discovery. Once an account
 and session are available, authentication begins immediately and reports that
 `GREETD_SOCK` is missing, as expected outside greetd.
 
-The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `e2e`,
-`build`, `package`, `verify`, `changelog`, `next-version`, and `clean` targets.
-Enter `nix develop` manually if direnv has not already loaded the flake
-environment.
+The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `smoke`,
+`e2e`, `build`, `package`, `verify`, `changelog`, `next-version`, and `clean`
+targets. Enter `nix develop` manually if direnv has not already loaded the
+flake environment.
 
 ## greetd configuration
 
-A minimal NixOS integration looks like:
+A minimal flake binds Genkan as an input and passes it to the host module:
 
 ```nix
-{ config, pkgs, ... }:
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    genkan = {
+      url = "github:darwin67/genkan";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { nixpkgs, genkan, ... }: {
+    nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux"; # or aarch64-linux
+      specialArgs = { inherit genkan; };
+      modules = [ ./configuration.nix ];
+    };
+  };
+}
+```
+
+The corresponding `configuration.nix` can run the package fullscreen under
+Cage:
+
+```nix
+{ config, genkan, pkgs, ... }:
+
+let
+  genkanPackage = genkan.packages.${pkgs.stdenv.hostPlatform.system}.default;
+in
 
 services.greetd = {
   enable = true;
   settings.default_session = {
     user = "greeter";
-    command = "${pkgs.cage}/bin/cage -- ${genkan}/bin/genkan";
+    command = "${pkgs.cage}/bin/cage -- ${genkanPackage}/bin/genkan";
   };
 };
 
 services.accounts-daemon.enable = true;
+hardware.graphics.enable = true;
 
 # Install at least one Wayland session and expose its generated desktop entry
 # to the pre-authentication greetd service.
@@ -52,8 +80,10 @@ systemd.services.greetd.restartIfChanged = false;
 greetd supplies `GREETD_SOCK`. Genkan handles every PAM prompt in sequence,
 then requests the selected session with the Wayland XDG environment. Power
 buttons call logind over the system D-Bus; sleep, restart, and shutdown all
-require confirmation. Authorization failures leave the active authentication
-attempt intact and display the logind error.
+require confirmation. The calls do not request interactive polkit
+authentication, so the greeter user must already be authorized by system
+policy. A denial or unavailable system bus leaves the active authentication
+attempt intact and displays the logind error.
 
 Genkan discovers cached, unlocked, non-system login users through
 AccountsService. It automatically selects a sole account and presents a
@@ -65,10 +95,44 @@ files in the credential-handling process.
 Wayland sessions come exclusively from validated `wayland-sessions/*.desktop`
 entries in `XDG_DATA_DIRS`. Genkan honors directory precedence and hidden-entry
 masking, validates `Type`, visibility, `TryExec`, and executable availability,
-requires slash-containing executable paths to be absolute, and applies Desktop Entry
-quoting and field-code rules without invoking a shell. If AccountsService,
-session data, or another runtime dependency is unavailable, the greeter reports
-a configuration error instead of supplying a host-specific fallback.
+requires slash-containing executable paths to be absolute, and applies Desktop
+Entry quoting and field-code rules without invoking a shell. The greetd unit
+must expose the desktop-entry directory through `XDG_DATA_DIRS`, as in the
+example. If AccountsService is unavailable, no eligible cached account exists,
+no valid session is installed, or `GREETD_SOCK` is absent, the greeter reports
+the specific configuration or transport error instead of supplying a
+host-specific fallback.
+
+The Nix package adds `/run/opengl-driver/lib` to the executable's driver
+runpath and advertises the matching Vulkan ICD directory. It therefore uses
+the Mesa or NVIDIA driver selected by the NixOS `hardware.graphics`
+configuration; it does not bundle or activate a vendor driver. Cage and the
+host graphics stack must also support the selected hardware. CI launches the
+packaged x86_64 and aarch64 binaries under nested Cage and headless Weston with
+Mesa software Vulkan. Physical hardware is intentionally opt-in because hosted
+CI has no DRM devices:
+
+```sh
+make hardware-smoke
+```
+
+Run it from a Wayland session. It tests the system AMD and NVIDIA Vulkan ICD
+once per detected vendor, launches the packaged Genkan under Vulkan-rendered
+nested Cage when that vendor has a display-connected adapter, and checks that
+an AMD-only run does not load or open the NVIDIA driver. On Sway, this stricter
+invocation also moves Cage to every active output, verifies its resulting tree
+location, and requires both GPU vendors and an active external display:
+
+```sh
+GENKAN_REQUIRE_GPU_VENDORS='1002 10de' \
+GENKAN_REQUIRE_EXTERNAL_DISPLAY=1 \
+GENKAN_EXERCISE_SWAY_OUTPUTS=1 \
+make hardware-smoke
+```
+
+A disconnected hybrid GPU can validate its physical Vulkan driver but cannot
+exercise presentation. Physical ARM hardware remains a manual coverage gap;
+aarch64 CI uses software rendering.
 
 ## Validation
 
@@ -87,3 +151,11 @@ feature-gated driver using Genkan's authentication client submits an incorrect
 password, cancels and recreates the greetd session, authenticates successfully,
 and starts a marker session. The test verifies the launched user and serialized
 session environment. It does not exercise iced rendering or input automation.
+
+`make smoke` runs the packaged-binary graphics check used by both architecture
+jobs in CI. It starts headless Weston, nests Cage with its pixman renderer, and
+launches Genkan using Mesa's software Vulkan driver. Genkan must remain alive
+until the check's controlled timeout; `ICED_BACKEND=wgpu` prevents a successful
+tiny-skia fallback from masking Vulkan failure. A child PID marker and mapped
+Lavapipe library prove Cage started Genkan and iced initialized the intended
+driver. Early compositor, loader, or application failure fails the derivation.

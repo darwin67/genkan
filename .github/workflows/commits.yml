@@ -8,6 +8,16 @@ permissions:
   contents: read
 
 jobs:
+  validate-commits:
+    name: Validate commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Validate non-merge commit subjects
+        run: ./scripts/check-commits.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+
   validate-pr-title:
     name: Validate title
     runs-on: ubuntu-latest
