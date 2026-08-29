@@ -32,7 +32,10 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [X] Preserve cached, valid, unlocked, non-system account eligibility and
   partial object-failure behavior.
 - [X] Present eligible identities in a wrapped, scrollable avatar grid with a
-  visible username and unique accessible name for every tile.
+  visible username for every tile.
+- [ ] Expose a unique semantic accessible name containing display name and
+  username for every tile when the iced accessibility backend supports it;
+  visible text and application-managed keyboard focus do not satisfy this item.
 - [X] Keep the selected identity prominent during authentication and provide a
   Change User action whenever another eligible identity can safely be selected.
 - [X] Make Change User immediately invalidate the attempt, clear the response,
