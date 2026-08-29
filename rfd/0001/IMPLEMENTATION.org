@@ -10,27 +10,53 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [ ] Record reference screenshots for account selection, a secret prompt, a
   visible prompt, failed authentication, power confirmation, and narrow layout.
 - [ ] Define reviewable acceptance checks for hierarchy, focus order, wrapping,
-  and contrast without treating screenshot pixels as the behavioral contract.
+  WCAG contrast targets, and notice placement without treating screenshot
+  pixels as the behavioral contract.
+- [ ] Add deterministic preview fixtures for zero/one/many, duplicate-name, and
+  large account sets; secret/visible and consecutive informational prompts;
+  failure sources; cancellation progress; and power confirmation.
+- [ ] Prove preview never contacts AccountsService, greetd, or logind and never
+  retains a simulated response after submission or account change.
 
 * Interaction model
 
 - [ ] Represent account selection and selected-account authentication as clear
   presentation states derived from the existing authentication lifecycle.
-- [ ] Present all eligible AccountsService identities as labelled avatar tiles
-  when selection is required.
+- [ ] Load AccountsService ~LoginTime~ and directly select the unique most
+  recently logged-in eligible account, falling back to the sole eligible account
+  or account selection when recency is unavailable, zero, or tied; treat a
+  ~LoginTime~ read failure as unknown recency rather than an ineligible account.
+- [ ] Test override precedence, unique recency, tied/zero/unknown recency, a sole
+  account, and deterministic account ordering without persisting a second
+  last-user record.
+- [ ] Preserve cached, valid, unlocked, non-system account eligibility and
+  partial object-failure behavior.
+- [ ] Present eligible identities in a wrapped, scrollable avatar grid with a
+  visible username and unique accessible name for every tile.
 - [ ] Keep the selected identity prominent during authentication and provide a
   Change User action whenever another eligible identity can safely be selected.
-- [ ] Cancel the prior greetd session before starting authentication for a
-  different account, and reject stale responses from the old attempt.
+- [ ] Make Change User immediately invalidate the attempt, clear the response,
+  and display account selection while a noninteractive state cancels greetd.
+- [ ] Disable tile activation until cancellation succeeds; on slow cancellation
+  show stable progress, and on failure offer retry without calling
+  ~CreateSession~ or resurrecting the invalidated attempt.
+- [ ] Test exact ~CancelSession~ before ~CreateSession~ request ordering,
+  cancellation failure and retry, repeated Change User, and stale responses.
 - [ ] Preserve direct selected-account startup for administrative username
-  overrides and the safe development preview.
+  overrides without AccountsService discovery or Change User, and preserve the
+  safe development preview.
 
 * Authentication presentation
 
 - [ ] Render secret, visible, informational, and error PAM messages without
   assuming a single password prompt.
+- [ ] Automatically acknowledge noninteractive protocol messages while keeping
+  the latest one visible until the RFD-defined superseding event; test
+  message-to-prompt and consecutive-message sequences.
 - [ ] Keep prompt, input, submit action, progress, and inline failure feedback
   together as one compact readable unit.
+- [ ] Represent account, session, authentication, greetd transport/session,
+  power, and preview notices by source and place each according to the RFD table.
 - [ ] Preserve input focus across recoverable prompt transitions and power
   dialog cancellation without accepting input in inactive phases.
 - [ ] Verify failed authentication can retry or change account without
@@ -51,12 +77,17 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 - [ ] Define and test keyboard focus order for account selection, prompt input,
   submit, Change User, session selection, and utility actions.
+- [ ] Test state-specific initial focus, Enter/Space activation, Escape behavior,
+  modal focus containment, safe initial modal action, and focus restoration.
 - [ ] Ensure every icon action has a visible text or accessible label and no
   action depends only on hover, color, or icon recognition.
 - [ ] Exercise pointer, keyboard, and touch-equivalent account activation where
   iced and the test environment expose those paths.
 - [ ] Verify long localized prompts and bounded account labels wrap without
   hiding the current input or status.
+- [ ] Verify unique accessible account names, status announcements where iced
+  exposes them, 4.5:1 normal-text contrast, and 3:1 large-text, focus, and
+  control-boundary contrast over every packaged background.
 
 * Session and power controls
 
@@ -73,8 +104,9 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   dimensions without relying on one fixed screenshot geometry.
 - [ ] Add deterministic view-model or widget-state regressions for selection,
   authentication, account switching, disabled controls, and wrapped content.
-- [ ] Run ~make verify~ and the packaged graphics smoke checks on x86_64-linux
-  and aarch64-linux.
+- [ ] Run ~make verify~ on x86_64-linux and the packaged graphics smoke check on
+  both x86_64-linux and aarch64-linux; do not treat ARM graphics smoke as full
+  ARM verification.
 - [ ] Run ~make e2e~ to verify real greetd/PAM failure recovery, successful
   authentication, and session environment behavior after lifecycle changes.
 - [ ] Run ~make hardware-smoke~ on available connected AMD/NVIDIA outputs for

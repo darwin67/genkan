@@ -7,10 +7,11 @@
 
 == Goal
 
-Give Genkan a coherent login-window flow in which a person can identify and
-select an account before responding to authentication prompts. The interface
-uses macOS Tahoe 26 as a visual and interaction reference while preserving the
-security, protocol, session, and power boundaries of a Linux greetd frontend.
+Give Genkan a coherent login-window flow in which a person can recognize the
+selected account or choose another before responding to authentication prompts.
+The interface uses macOS Tahoe 26 as a visual and interaction reference while
+preserving the security, protocol, session, and power boundaries of a Linux
+greetd frontend.
 
 == Context and reference
 
@@ -36,12 +37,13 @@ The reference material for this direction is:
 
 == Decision
 
-Genkan uses an explicit two-stage interaction. Account selection is visibly
-available without hover-only discovery. Selecting an account establishes a
-greetd authentication attempt for that username; the second stage shows the
-selected identity and whatever prompt greetd/PAM supplies. A person can return
-to account selection while the attempt is in a safe state, which cancels the
-old greetd session before creating one for another account.
+Genkan uses two explicit presentation states without requiring an unnecessary
+selection step at every login. It initially selects the most recently logged-in
+eligible account and shows its authentication state, like the Tahoe Login
+Window. A visible Change User action enters account selection whenever another
+eligible account exists; account discovery never depends on hover. Selecting a
+tile establishes a greetd authentication attempt for that username and returns
+to the selected-account state with whatever prompt greetd/PAM supplies.
 
 The layout removes the single enclosing glass panel. Time and date remain near
 the top center. Account choices or the selected account and current prompt sit
@@ -51,21 +53,54 @@ utility area at the upper right as those capabilities become available.
 Authentication status stays adjacent to the prompt it describes.
 
 The initial implementation continues to discover identities through
-AccountsService. Administrative `--username` overrides may enter the selected
-account state directly. A sole discovered account may also be selected directly
-provided a clear Change User action remains available when another eligible
-account exists. Genkan does not infer, synthesize, or accept an arbitrary
-username when policy exposes only a list of discovered accounts.
+AccountsService. Selection precedence is an administrative `--username`
+override, then the eligible account with the unique greatest positive
+AccountsService `LoginTime`, then a sole eligible account. If login recency is
+unavailable, zero, or tied for multiple accounts, Genkan opens account selection
+instead of guessing. Genkan does not persist a second last-user record, infer or
+synthesize an identity, or accept an arbitrary username when policy exposes
+only a list of discovered accounts.
+
+An administrative username override pins that identity and does not combine it
+with AccountsService discovery or expose Change User. The remaining precedence
+rules apply only when no override is configured.
+
+`LoginTime` is ranking metadata, not an eligibility requirement. Failure to
+read it does not discard an otherwise eligible account; that account simply has
+unknown recency. Genkan never updates AccountsService login history itself.
+
+Change User immediately invalidates the active attempt, clears the response,
+and visually enters account selection. Genkan concurrently enters a
+noninteractive cancellation state and sends `CancelSession`; account tiles may
+render immediately but cannot start another attempt until cancellation
+succeeds. Normally this is imperceptible. If cancellation is slow, the selector
+shows bounded progress without moving the layout. If it fails, Genkan preserves
+the selector, reports a recoverable error, and offers retry; it must not call
+`CreateSession` for any account until cancellation succeeds. Late responses
+from the invalidated attempt cannot change presentation state.
 
 == Interaction states
 
 === Account selection
 
-The initial multi-user state presents one clearly labelled avatar tile per
-eligible account and the instruction "Select a user." Tiles use bounded display
-names and generated initials; the credential-handling process does not decode
-user-controlled avatar files. Keyboard focus, pointer activation, and touch
-activation have equivalent results.
+The account-selection state presents one clearly labelled avatar tile per
+eligible account and the instruction "Select a user." Eligible retains the
+existing AccountsService policy: a listed cached user with a valid username that
+is neither locked nor a system account. Failure to load one object does not hide
+other valid accounts; when none remain, the first discovery error is reported,
+or the empty eligible-set error is reported when discovery itself succeeded.
+
+Tiles use bounded display names and generated initials; the
+credential-handling process does not decode user-controlled avatar files. Every
+tile has a unique accessible name containing both display name and username.
+The username is also visible as secondary text whenever the display name differs
+and may be visually de-emphasized, preventing duplicate or truncated names and
+identical initials from becoming ambiguous. Keyboard focus, pointer activation,
+and touch activation have equivalent results.
+
+The tiles form a wrapped, scrollable grid for large account sets. Scrolling
+keeps the instruction and utility regions stable, preserves a visible focused
+tile, and does not push the session selector off screen.
 
 [source,text]
 ----
@@ -80,6 +115,7 @@ activation have equivalent results.
 |                    +----------+    +----------+                            |
 |                    |    DW    |    |    AE    |                            |
 |                    |  Darwin  |    |  Alice   |                            |
+|                    | darwin67 |    |  alice   |                            |
 |                    +----------+    +----------+                            |
 |                                                                            |
 |  [Session: Niri]                                                           |
@@ -88,11 +124,11 @@ activation have equivalent results.
 
 === Authentication
 
-After account selection, the identity remains visually prominent while account
-tiles give way to the current greetd prompt. The response field and submit
-action form one compact control. The prompt label, field, error, and progress
-message remain close enough to read as one unit. Change User is visible whenever
-switching is valid.
+The initially selected or newly chosen identity remains visually prominent
+while account tiles give way to the current greetd prompt. The response field
+and submit action form one compact control. The prompt label, field, error, and
+progress message remain close enough to read as one unit. Change User is visible
+whenever another eligible account exists and switching is valid.
 
 [source,text]
 ----
@@ -127,10 +163,51 @@ presented without collecting a response when the protocol does not request one.
 Only greetd validates credentials and starts the selected session; Genkan never
 validates, persists, or logs PAM responses.
 
+Protocol acknowledgement for informational and error messages remains
+automatic so Genkan does not add a non-protocol Continue step. The latest such
+message remains visible alongside the following prompt until a later message,
+successful authentication, account change, retry, or terminal failure
+supersedes it. Consecutive messages therefore remain protocol-correct without
+flashing important instructions too briefly to read.
+
 Input is accepted only while the active attempt is waiting for a response.
 Account and session changes are disabled during protocol transitions where
 changing them would race authentication or session startup. Failed
 authentication returns to a recoverable state without restarting the greeter.
+
+== Notice placement and recovery
+
+Messages belong to the operation that produced them rather than one global
+authentication status slot.
+
+[cols="1,2,2",options="header"]
+|===
+|Source |Placement |Recovery
+
+|Account discovery or cancellation
+|Within the account-selection region
+|Retry discovery or cancellation without starting another attempt
+
+|No valid Wayland session
+|Adjacent to the session selector
+|Rediscover validated entries before authentication retry
+
+|PAM prompt, information, or authentication failure
+|Within the compact authentication unit
+|Respond, retry, or use Change User when allowed
+
+|greetd transport or session-start failure
+|Within the authentication unit as a system login failure
+|Cancel any surviving attempt, then retry without restarting Genkan
+
+|logind power progress or failure
+|Within the power utility or its confirmation dialog
+|Dismiss or retry without replacing authentication status or input
+
+|Preview explanation
+|A persistent non-error preview indicator outside protocol notices
+|No recovery action
+|===
 
 == Visual and material rules
 
@@ -162,11 +239,40 @@ and utility actions must not depend on color, pointer hover, or icon recognition
 alone. Accessibility and keyboard controls should appear only when implemented;
 the interface does not show inert placeholders.
 
+Initial focus is the selected account's response field when a prompt is ready,
+the selected or first tile in account selection, and the safe Cancel action in a
+power confirmation. Tab and Shift-Tab follow visual reading order. Enter or
+Space activates focused tiles and buttons. Escape from account selection returns
+to the prior selected account only when its attempt remains valid; after Change
+User invalidates an attempt, Escape does not resurrect it. A modal traps focus,
+is announced with its action and consequence, and restores focus to its opener
+when dismissed. Status and error changes are announced where iced exposes an
+accessibility announcement mechanism.
+
+Normal text targets at least 4.5:1 contrast and large text, focus indicators,
+and meaningful control boundaries target at least 3:1 against adjacent colors.
+The dimming layer or control material must satisfy those targets over every
+packaged background, not only a representative screenshot.
+
 Suspend, restart, and shutdown remain explicit, labelled actions with a
 confirmation step. Preview mode continues to simulate them. Production actions
 remain logind requests and may expose a host kernel, firmware, or display-driver
 problem; the UI must report a failed request but cannot claim to make suspend or
 resume hardware-safe.
+
+== Safe preview fixtures
+
+Development preview is a deterministic presentation harness, not a partial live
+greeter. It provides local fixtures for zero, one, many, duplicate-name, and
+large account sets; visible and secret prompts; consecutive informational
+messages; authentication, discovery, session, and power failures; cancellation
+progress; and power confirmation. Fixture selection must not depend on the
+development machine's accounts or services.
+
+Preview never connects to AccountsService, opens `GREETD_SOCK`, sends a greetd
+exchange or restart, or calls logind power methods. It records simulated actions
+for assertions, clears simulated credential responses, and keeps all power
+actions non-destructive. Negative side-effect tests protect these invariants.
 
 == Boundaries and non-goals
 
@@ -198,7 +304,8 @@ Genkan instead adopts the hierarchy while making account selection explicit.
 === Show username and password fields for every installation
 
 This avoids account tiles but bypasses AccountsService as the normal identity
-source and weakens the clear select-then-authenticate flow requested for Genkan.
+source and weakens the clear identity-before-authentication flow requested for
+Genkan.
 Administrative username overrides remain available without becoming the normal
 interactive path.
 

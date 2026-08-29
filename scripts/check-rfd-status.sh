@@ -5,6 +5,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 rfd_root="${RFD_DIR:-${repo_root}/rfd}"
 states='prediscussion|ideation|discussion|published|committed|abandoned'
+discussion_pattern='^https?://[^/?#[:space:]]+([/?#][^[:space:]]*)?$'
 
 failures=0
 
@@ -15,7 +16,26 @@ problem() {
 
 attribute() {
   local source=$1 name=$2
-  sed -n "s/^:${name}:[[:space:]]*//p" "$source"
+  awk -v prefix=":${name}:" '
+    index($0, prefix) == 1 {
+      sub("^" prefix "[[:space:]]*", "")
+      print
+      exit
+    }
+  ' "$source"
+}
+
+valid_authors() {
+  awk -v authors="$1" 'BEGIN {
+    count = split(authors, owners, ";")
+    if (count == 0) exit 1
+    for (i = 1; i <= count; i++) {
+      owner = owners[i]
+      sub(/^[[:space:]]*/, "", owner)
+      sub(/[[:space:]]*$/, "", owner)
+      if (owner !~ /^[^<>]+[[:space:]]<[^<>]+>$/) exit 1
+    }
+  }'
 }
 
 if [[ ! -d $rfd_root ]]; then
@@ -49,29 +69,38 @@ for entry in "${entries[@]}"; do
   number=$(printf '%s\n' "$entry_name" | sed 's/^0*//')
   [[ -n $number ]] || number=0
 
-  authors=$(attribute "$source" authors)
-  state=$(attribute "$source" state)
-  labels=$(attribute "$source" labels)
-  for name in authors state labels; do
-    values=$(attribute "$source" "$name")
-    count=$(printf '%s\n' "$values" | awk 'NF { count++ } END { print count + 0 }')
+  mapfile -t header < <(head -n 6 "$source")
+  if [[ ! ${header[0]-} =~ ^:authors:[[:space:]]+.+$ ]] ||
+     [[ ! ${header[1]-} =~ ^:state:[[:space:]]+.+$ ]] ||
+     [[ ! ${header[2]-} =~ ^:discussion:[[:space:]]*.*$ ]] ||
+     [[ ! ${header[3]-} =~ ^:labels:[[:space:]]+.+$ ]] ||
+     [[ -n ${header[4]-} ]] ||
+     [[ ! ${header[5]-} =~ ^\=\ RFD\ [0-9]+\ .+$ ]]; then
+    problem "${entry_name}/README.adoc: document must start with the canonical RFD header"
+  fi
+  if head -n 4 "$source" | grep -q $'\t'; then
+    problem "${entry_name}/README.adoc: attribute values must not contain tabs"
+  fi
+
+  for name in authors state discussion labels; do
+    count=$(grep -c "^:${name}:" "$source" || true)
     if [[ $count -ne 1 ]]; then
-      problem "${entry_name}/README.adoc: document must contain exactly one non-empty ${name} attribute"
+      problem "${entry_name}/README.adoc: document must contain exactly one ${name} attribute"
     fi
   done
-  discussion_lines=$(attribute "$source" discussion)
-  discussion_count=$(grep -c '^:discussion:' "$source" || true)
-  discussion=${discussion_lines%%$'\n'*}
 
-  if [[ -n $authors && ! $authors =~ \<[^\>]+\> ]]; then
-    problem "${entry_name}/README.adoc: authors must include a name and address in angle brackets"
+  authors=$(attribute "$source" authors)
+  state=$(attribute "$source" state)
+  discussion=$(attribute "$source" discussion)
+  labels=$(attribute "$source" labels)
+
+  if ! valid_authors "$authors"; then
+    problem "${entry_name}/README.adoc: every author must include a name and address in angle brackets"
   fi
   if [[ -n $state && ! $state =~ ^($states)$ ]]; then
     problem "${entry_name}/README.adoc: invalid state: ${state}"
   fi
-  if [[ $discussion_count -ne 1 ]]; then
-    problem "${entry_name}/README.adoc: document must contain exactly one discussion attribute"
-  elif [[ -n $discussion && ! $discussion =~ ^https?:// ]]; then
+  if [[ -n $discussion && ! $discussion =~ $discussion_pattern ]]; then
     problem "${entry_name}/README.adoc: discussion must be empty or an HTTP(S) URL"
   elif [[ $state =~ ^(discussion|published|committed)$ && -z $discussion ]]; then
     problem "${entry_name}/README.adoc: state ${state} requires a discussion URL"
@@ -126,7 +155,7 @@ for entry in "${entries[@]}"; do
     fi
   fi
 
-  if grep -Eq '^\* \[[ xX]\]' "$source"; then
+  if grep -Eq '^[[:space:]]*[-+*][[:space:]]+\[[ xX]\][[:space:]]' "$source"; then
     problem "implementation checkboxes belong in a separate implementation document: ${entry_name}/README.adoc"
   fi
 

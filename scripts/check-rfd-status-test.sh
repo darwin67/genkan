@@ -97,8 +97,12 @@ rm "$rfd_root/0001/IMPLEMENTATION.org"
 run_failure "missing implementation checklist"
 
 reset_fixtures; write_valid_rfd prediscussion ""
-printf '\n* [ ] This belongs in the implementation document.\n' >> "$rfd_root/0001/README.adoc"
-run_failure "implementation checkboxes belong in a separate implementation document"
+for marker in '*' '-' '+'; do
+  printf '\n%s [ ] This belongs in the implementation document.\n' "$marker" >> "$rfd_root/0001/README.adoc"
+  run_failure "implementation checkboxes belong in a separate implementation document"
+  sed -i.bak '$d' "$rfd_root/0001/README.adoc"
+  rm "$rfd_root/0001/README.adoc.bak"
+done
 
 reset_fixtures; write_valid_rfd prediscussion ""
 printf '# RFD 0001 implementation checklist\n\nImplements [RFD 1](README.adoc).\n' > "$rfd_root/0001/IMPLEMENTATION.md"
@@ -111,16 +115,57 @@ reset_fixtures; write_valid_rfd discussion ""
 run_failure "state discussion requires a discussion URL"
 
 reset_fixtures; write_valid_rfd prediscussion ""
-sed -i.bak '1a\
-:authors: Another Author <another@example.com>
-' "$rfd_root/0001/README.adoc"
+printf '\n:authors:\n' >> "$rfd_root/0001/README.adoc"
+run_failure "exactly one authors attribute"
+
+reset_fixtures; write_valid_rfd prediscussion ""
+printf '\n:discussion:\n' >> "$rfd_root/0001/README.adoc"
+run_failure "exactly one discussion attribute"
+
+reset_fixtures; write_valid_rfd prediscussion ""
+sed -i.bak '1c\:authors: Example Author <author@example.com>; Missing Address' "$rfd_root/0001/README.adoc"
 rm "$rfd_root/0001/README.adoc.bak"
-run_failure "exactly one non-empty authors attribute"
+run_failure "every author must include a name and address in angle brackets"
 
 reset_fixtures; write_valid_rfd prediscussion ""
 sed -i.bak '/^:labels:/d' "$rfd_root/0001/README.adoc"
 rm "$rfd_root/0001/README.adoc.bak"
-run_failure "exactly one non-empty labels attribute"
+run_failure "exactly one labels attribute"
+
+reset_fixtures; write_valid_rfd prediscussion ""
+sed -i.bak $'s/:labels: /:labels:\t/' "$rfd_root/0001/README.adoc"
+rm "$rfd_root/0001/README.adoc.bak"
+run_failure "attribute values must not contain tabs"
+
+reset_fixtures; write_valid_rfd prediscussion ""
+{
+  sed -n '2p' "$rfd_root/0001/README.adoc"
+  sed -n '1p' "$rfd_root/0001/README.adoc"
+  sed -n '3,$p' "$rfd_root/0001/README.adoc"
+} > "$rfd_root/0001/README.adoc.new"
+mv "$rfd_root/0001/README.adoc.new" "$rfd_root/0001/README.adoc"
+run_failure "must start with the canonical RFD header"
+
+reset_fixtures; write_valid_rfd prediscussion ftp://example.com/discussion
+run_failure "discussion must be empty or an HTTP(S) URL"
+
+reset_fixtures; write_valid_rfd prediscussion http://
+run_failure "discussion must be empty or an HTTP(S) URL"
+
+reset_fixtures; write_valid_rfd prediscussion ""
+sed -i.bak '1s/checklist/list/' "$rfd_root/0001/IMPLEMENTATION.org"
+rm "$rfd_root/0001/IMPLEMENTATION.org.bak"
+run_failure "invalid implementation checklist heading"
+
+reset_fixtures; write_valid_rfd prediscussion ""
+sed -i.bak '/link:IMPLEMENTATION.org/d' "$rfd_root/0001/README.adoc"
+rm "$rfd_root/0001/README.adoc.bak"
+run_failure "RFD must link to its implementation checklist"
+
+reset_fixtures; write_valid_rfd prediscussion ""
+sed -i.bak 's/\[\[file:README.adoc\]/[[file:OTHER.adoc]/' "$rfd_root/0001/IMPLEMENTATION.org"
+rm "$rfd_root/0001/IMPLEMENTATION.org.bak"
+run_failure "implementation checklist must link to its RFD"
 
 reset_fixtures; write_valid_rfd prediscussion ""
 sed -i.bak 's/= RFD 1 /= RFD 2 /' "$rfd_root/0001/README.adoc"
@@ -131,5 +176,8 @@ reset_fixtures
 mkdir -p "$rfd_root/1"
 printf '= RFD 1 Invalid directory\n' > "$rfd_root/1/README.adoc"
 run_failure "invalid RFD entry"
+
+reset_fixtures
+run_failure "no RFDs found"
 
 printf 'RFD checker tests passed.\n'

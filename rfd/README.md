@@ -22,6 +22,11 @@ The document starts with canonical AsciiDoc attributes and an unpadded title:
 = RFD 7 Example title
 ```
 
+These are the first six lines in exactly this order, including the blank line
+before the title. Attribute values cannot contain tabs, and no canonical
+attribute may be repeated elsewhere in the document. Every semicolon-separated
+author must contain a name and address in angle brackets.
+
 `authors` contains semicolon-separated owners. `discussion` contains the RFD's
 pull-request URL once discussion starts. `labels` is a comma-separated set of
 searchable topics. The document is the single source of truth for this metadata;
