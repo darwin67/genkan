@@ -241,6 +241,13 @@ test_ci_watches_all_scripts() {
     fail "CI push and pull_request filters must watch scripts/**"
 }
 
+test_ci_validates_rfds() {
+  [[ $(grep -Fc '"rfd/**"' "$repo_root/.github/workflows/ci.yml") == 2 ]] || \
+    fail "CI push and pull_request filters must watch rfd/**"
+  grep -Fq 'make check-rfds' "$repo_root/.github/workflows/ci.yml" || \
+    fail "CI must run the RFD structure checks"
+}
+
 test_conventional_commit_description
 test_vendor_level_hardware_coverage
 test_vulkan_discovery_timeout
@@ -248,5 +255,6 @@ test_sway_query_failure_is_not_masked
 test_external_output_must_be_active
 test_representative_selection_placement_and_cleanup
 test_ci_watches_all_scripts
+test_ci_validates_rfds
 
 echo "Shell regression tests passed"

@@ -1,0 +1,208 @@
+:authors: Darwin D. Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: greeter, authentication, interaction, visual-design, accessibility
+
+= RFD 1 Tahoe-inspired greeter interaction and visual design
+
+== Goal
+
+Give Genkan a coherent login-window flow in which a person can identify and
+select an account before responding to authentication prompts. The interface
+uses macOS Tahoe 26 as a visual and interaction reference while preserving the
+security, protocol, session, and power boundaries of a Linux greetd frontend.
+
+== Context and reference
+
+The current interface places the clock, identity, authentication prompt,
+session selector, status, and power controls in one large translucent panel.
+That treatment obscures the account-selection step and makes the password form
+look like a conventional application form rather than a system login window.
+
+Tahoe's Login Window provides the relevant reference, not its active-session
+Lock Screen. Its hierarchy is a full-screen wallpaper, prominent time and date,
+an identity-focused login area near the bottom center, and secondary system
+controls around the edges. Apple also supports both a list of users and
+name/password fields depending on administrator policy. Genkan adopts the
+spatial hierarchy and restrained use of translucent material rather than
+copying Apple artwork, exact geometry, hidden hover behavior, or branding.
+
+The reference material for this direction is:
+
+* https://support.apple.com/guide/mac-help/welcome/26/mac[macOS Tahoe User Guide]
+* https://support.apple.com/guide/deployment/login-window-payload-settings-dep2a822b29/web[Apple Platform Deployment: Login Window settings]
+* https://developer.apple.com/design/human-interface-guidelines/materials[Apple Human Interface Guidelines: Materials]
+* https://support.apple.com/guide/mac-help/turn-accessibility-options-login-window-mchlaa57f797/26/mac/26[Accessibility options in the login window]
+
+== Decision
+
+Genkan uses an explicit two-stage interaction. Account selection is visibly
+available without hover-only discovery. Selecting an account establishes a
+greetd authentication attempt for that username; the second stage shows the
+selected identity and whatever prompt greetd/PAM supplies. A person can return
+to account selection while the attempt is in a safe state, which cancels the
+old greetd session before creating one for another account.
+
+The layout removes the single enclosing glass panel. Time and date remain near
+the top center. Account choices or the selected account and current prompt sit
+near the bottom center. Session selection is a quiet secondary control at the
+lower left. Keyboard, accessibility, and confirmed power actions occupy a
+utility area at the upper right as those capabilities become available.
+Authentication status stays adjacent to the prompt it describes.
+
+The initial implementation continues to discover identities through
+AccountsService. Administrative `--username` overrides may enter the selected
+account state directly. A sole discovered account may also be selected directly
+provided a clear Change User action remains available when another eligible
+account exists. Genkan does not infer, synthesize, or accept an arbitrary
+username when policy exposes only a list of discovered accounts.
+
+== Interaction states
+
+=== Account selection
+
+The initial multi-user state presents one clearly labelled avatar tile per
+eligible account and the instruction "Select a user." Tiles use bounded display
+names and generated initials; the credential-handling process does not decode
+user-controlled avatar files. Keyboard focus, pointer activation, and touch
+activation have equivalent results.
+
+[source,text]
+----
++--------------------------------------------------------------------------+
+|                            09:41                         [Utilities]       |
+|                      Saturday, August 29                                   |
+|                                                                            |
+|                                                                            |
+|                                                                            |
+|                         Select a user                                      |
+|                                                                            |
+|                    +----------+    +----------+                            |
+|                    |    DW    |    |    AE    |                            |
+|                    |  Darwin  |    |  Alice   |                            |
+|                    +----------+    +----------+                            |
+|                                                                            |
+|  [Session: Niri]                                                           |
++--------------------------------------------------------------------------+
+----
+
+=== Authentication
+
+After account selection, the identity remains visually prominent while account
+tiles give way to the current greetd prompt. The response field and submit
+action form one compact control. The prompt label, field, error, and progress
+message remain close enough to read as one unit. Change User is visible whenever
+switching is valid.
+
+[source,text]
+----
++--------------------------------------------------------------------------+
+|                            09:41                         [Utilities]       |
+|                      Saturday, August 29                                   |
+|                                                                            |
+|                                                                            |
+|                              +------+                                      |
+|                              |  DW  |                                      |
+|                              +------+                                      |
+|                            Darwin D. Wu                                    |
+|                                                                            |
+|                         Password                                           |
+|                    [________________________] [->]                         |
+|                       Authentication failed                               |
+|                          [Change User]                                     |
+|                                                                            |
+|  [Session: Niri]                                                           |
++--------------------------------------------------------------------------+
+----
+
+The sketches communicate hierarchy and state transitions, not exact copy,
+dimensions, iconography, colors, or widget styling.
+
+== Authentication behavior
+
+The password state is only an example. Genkan renders every greetd prompt in
+sequence, including visible and secret responses, and does not assume one
+password exchange. Informational and error messages remain bounded and are
+presented without collecting a response when the protocol does not request one.
+Only greetd validates credentials and starts the selected session; Genkan never
+validates, persists, or logs PAM responses.
+
+Input is accepted only while the active attempt is waiting for a response.
+Account and session changes are disabled during protocol transitions where
+changing them would race authentication or session startup. Failed
+authentication returns to a recoverable state without restarting the greeter.
+
+== Visual and material rules
+
+The background fills the display and establishes contrast for the foreground.
+It may be generated artwork or a packaged wallpaper with explicit provenance
+and redistribution rights; Genkan does not ship Apple imagery. Rich backgrounds
+may receive a uniform darkening layer so controls remain readable.
+
+Translucent or glass-like material belongs to small functional controls and
+focused surfaces. It must not become a large decorative content panel behind
+the entire login flow. Account tiles, inputs, menus, dialogs, and utility
+controls share one restrained radius, border, shadow, and focus language.
+Legibility and visible focus take precedence over transparency.
+
+The layout should preserve hierarchy across common laptop and external-display
+sizes instead of reproducing one screenshot's pixel coordinates. Long localized
+prompts, bounded account labels, and status messages must wrap without pushing
+the active input off screen.
+
+== Session, accessibility, and power controls
+
+The selected Wayland session remains visible but secondary. It can change only
+while the authentication state permits it, and the selected validated desktop
+entry remains the sole source of the command passed to greetd.
+
+All interactive controls require visible keyboard focus and predictable tab
+order. Account selection, prompt response, submit, Change User, session choice,
+and utility actions must not depend on color, pointer hover, or icon recognition
+alone. Accessibility and keyboard controls should appear only when implemented;
+the interface does not show inert placeholders.
+
+Suspend, restart, and shutdown remain explicit, labelled actions with a
+confirmation step. Preview mode continues to simulate them. Production actions
+remain logind requests and may expose a host kernel, firmware, or display-driver
+problem; the UI must report a failed request but cannot claim to make suspend or
+resume hardware-safe.
+
+== Boundaries and non-goals
+
+This RFD defines a boot greeter, not a desktop lock screen, fast-user-switching
+service, or session locker. It does not copy macOS assets, promise exact visual
+parity with Apple, hide required controls behind hover, introduce arbitrary
+shell commands, or move authentication ownership out of greetd/PAM.
+
+It also does not choose final wallpaper artwork or require account photographs.
+Those assets require a separate provenance and packaging review. Exact spacing,
+animation timing, and icon design remain implementation details provided they
+preserve the interaction hierarchy and accessibility rules above.
+
+== Alternatives considered
+
+=== Keep the single application-style panel
+
+This minimizes code movement but keeps account selection visually subordinate,
+groups unrelated system controls together, and conflicts with the chosen
+login-window hierarchy.
+
+=== Reproduce Tahoe behavior exactly
+
+Exact reproduction would import assumptions from Apple's lock-screen and
+account-policy environment, including controls revealed by hover and behavior
+not provided by greetd. It would also invite unlicensed visual imitation.
+Genkan instead adopts the hierarchy while making account selection explicit.
+
+=== Show username and password fields for every installation
+
+This avoids account tiles but bypasses AccountsService as the normal identity
+source and weakens the clear select-then-authenticate flow requested for Genkan.
+Administrative username overrides remain available without becoming the normal
+interactive path.
+
+== Implementation
+
+Phased work and verification are tracked in
+link:IMPLEMENTATION.org[RFD 1 implementation checklist].

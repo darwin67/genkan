@@ -1,0 +1,82 @@
+#+TITLE: RFD 0001 implementation checklist
+#+STARTUP: showall
+
+Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and visual design]].
+
+* Baseline and acceptance evidence
+
+- [ ] Capture the current preview at representative laptop and external-display
+  sizes before changing layout.
+- [ ] Record reference screenshots for account selection, a secret prompt, a
+  visible prompt, failed authentication, power confirmation, and narrow layout.
+- [ ] Define reviewable acceptance checks for hierarchy, focus order, wrapping,
+  and contrast without treating screenshot pixels as the behavioral contract.
+
+* Interaction model
+
+- [ ] Represent account selection and selected-account authentication as clear
+  presentation states derived from the existing authentication lifecycle.
+- [ ] Present all eligible AccountsService identities as labelled avatar tiles
+  when selection is required.
+- [ ] Keep the selected identity prominent during authentication and provide a
+  Change User action whenever another eligible identity can safely be selected.
+- [ ] Cancel the prior greetd session before starting authentication for a
+  different account, and reject stale responses from the old attempt.
+- [ ] Preserve direct selected-account startup for administrative username
+  overrides and the safe development preview.
+
+* Authentication presentation
+
+- [ ] Render secret, visible, informational, and error PAM messages without
+  assuming a single password prompt.
+- [ ] Keep prompt, input, submit action, progress, and inline failure feedback
+  together as one compact readable unit.
+- [ ] Preserve input focus across recoverable prompt transitions and power
+  dialog cancellation without accepting input in inactive phases.
+- [ ] Verify failed authentication can retry or change account without
+  restarting Genkan.
+
+* Visual hierarchy
+
+- [ ] Remove the enclosing login panel and place time/date, identity flow,
+  session choice, and utilities in the RFD hierarchy.
+- [ ] Establish shared styling for avatar tiles, compact prompt controls,
+  selectors, utility actions, focus rings, and confirmation dialogs.
+- [ ] Use translucent material only for functional controls and focused
+  surfaces, with a contrast-preserving background treatment.
+- [ ] Select or create any packaged wallpaper only after recording its source,
+  license, generated variants, and packaging behavior.
+
+* Input and accessibility
+
+- [ ] Define and test keyboard focus order for account selection, prompt input,
+  submit, Change User, session selection, and utility actions.
+- [ ] Ensure every icon action has a visible text or accessible label and no
+  action depends only on hover, color, or icon recognition.
+- [ ] Exercise pointer, keyboard, and touch-equivalent account activation where
+  iced and the test environment expose those paths.
+- [ ] Verify long localized prompts and bounded account labels wrap without
+  hiding the current input or status.
+
+* Session and power controls
+
+- [ ] Move the validated Wayland session selector to the lower-left secondary
+  position without changing its command-validation boundary.
+- [ ] Add only implemented keyboard and accessibility utility controls; do not
+  render placeholders.
+- [ ] Place labelled power actions in the utility area and preserve explicit
+  confirmation, logind error reporting, and preview simulation.
+
+* Responsive and graphics verification
+
+- [ ] Verify the composition at common laptop, 16:9, ultrawide, and narrow
+  dimensions without relying on one fixed screenshot geometry.
+- [ ] Add deterministic view-model or widget-state regressions for selection,
+  authentication, account switching, disabled controls, and wrapped content.
+- [ ] Run ~make verify~ and the packaged graphics smoke checks on x86_64-linux
+  and aarch64-linux.
+- [ ] Run ~make e2e~ to verify real greetd/PAM failure recovery, successful
+  authentication, and session environment behavior after lifecycle changes.
+- [ ] Run ~make hardware-smoke~ on available connected AMD/NVIDIA outputs for
+  physical presentation evidence; retain host suspend/resume as an independent
+  kernel and display-stack concern.

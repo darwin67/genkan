@@ -1,4 +1,4 @@
-.PHONY: dev check fmt fmt-fix lint test scripts-test smoke hardware-smoke e2e build package verify changelog next-version clean
+.PHONY: dev check fmt fmt-fix lint test scripts-test check-rfds smoke hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
 	cargo run --bin genkan -- --windowed --preview --username "$${USER:-preview}"
@@ -22,6 +22,10 @@ test: scripts-test
 scripts-test:
 	bash scripts/regression-tests.sh
 
+check-rfds:
+	@./scripts/check-rfd-status.sh
+	@./scripts/check-rfd-status-test.sh
+
 smoke:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).graphics-smoke --print-build-logs
 
@@ -37,7 +41,7 @@ build:
 package:
 	nix build
 
-verify: fmt lint test package smoke
+verify: fmt lint test check-rfds package smoke
 
 changelog:
 	git cliff --output CHANGELOG.md
