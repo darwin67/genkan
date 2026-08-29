@@ -1,4 +1,4 @@
-.PHONY: dev check fmt fmt-fix lint test smoke hardware-smoke e2e build package verify changelog next-version clean
+.PHONY: dev check fmt fmt-fix lint test scripts-test smoke hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
 	cargo run --bin genkan -- --windowed
@@ -16,8 +16,11 @@ lint:
 	cargo clippy --all-targets -- -D warnings
 	cargo clippy --no-default-features --features e2e --bin genkan-greetd-e2e -- -D warnings
 
-test:
+test: scripts-test
 	cargo test
+
+scripts-test:
+	bash scripts/regression-tests.sh
 
 smoke:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).graphics-smoke --print-build-logs

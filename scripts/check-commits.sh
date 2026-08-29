@@ -8,7 +8,7 @@ fi
 
 base=$1
 head=$2
-pattern='^(feat|fix|doc|docs|test|ci|refactor|perf|chore|revert|style|security)(\([A-Za-z0-9._/-]+\))?(!)?: .+'
+pattern='^(feat|fix|doc|docs|test|ci|refactor|perf|chore|revert|style|security)(\([A-Za-z0-9._/-]+\))?(!)?: .*[^[:space:]].*$'
 invalid=0
 
 for commit in $(git rev-list --no-merges "$base..$head"); do

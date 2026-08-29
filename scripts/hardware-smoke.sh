@@ -4,7 +4,11 @@ set -euo pipefail
 
 : "${GENKAN_BIN:?GENKAN_BIN must point to the packaged Genkan binary}"
 
-if [[ ! -d /sys/class/drm || ! -d /dev/dri ]]; then
+drm_root=${GENKAN_DRM_SYSFS_ROOT:-/sys/class/drm}
+dri_root=${GENKAN_DRI_ROOT:-/dev/dri}
+icd_root=${GENKAN_VULKAN_ICD_ROOT:-/run/opengl-driver/share/vulkan/icd.d}
+
+if [[ ! -d $drm_root || ! -d $dri_root ]]; then
   echo "No DRM devices are available" >&2
   exit 1
 fi
@@ -51,11 +55,11 @@ EOF
 connected=0
 external=0
 echo "Connected DRM outputs:"
-for status_file in /sys/class/drm/card*-*/status; do
+for status_file in "$drm_root"/card*-*/status; do
   [[ -e $status_file ]] || continue
   [[ $(<"$status_file") == connected ]] || continue
 
-  output=${status_file#/sys/class/drm/}
+  output=${status_file#"$drm_root"/}
   output=${output%/status}
   echo "  $output"
   ((connected += 1))
@@ -73,6 +77,35 @@ fi
 if [[ ${GENKAN_REQUIRE_EXTERNAL_DISPLAY:-0} == 1 ]] && ((external == 0)); then
   echo "No connected external display was found" >&2
   exit 1
+fi
+
+compositor_outputs=()
+if [[ ${GENKAN_EXERCISE_SWAY_OUTPUTS:-0} == 1 ]]; then
+  if [[ -z ${SWAYSOCK:-} ]]; then
+    echo "GENKAN_EXERCISE_SWAY_OUTPUTS requires a Sway session" >&2
+    exit 1
+  fi
+  if ! outputs_json=$(swaymsg -t get_outputs -r); then
+    echo "Failed to query Sway outputs" >&2
+    exit 1
+  fi
+  if ! outputs_text=$(jq -er '.[] | select(.active) | .name' <<<"$outputs_json"); then
+    echo "Sway has no active outputs" >&2
+    exit 1
+  fi
+  mapfile -t compositor_outputs <<<"$outputs_text"
+
+  active_external=0
+  for output_name in "${compositor_outputs[@]}"; do
+    case $output_name in
+      eDP-* | LVDS-* | DSI-*) ;;
+      *) ((active_external += 1)) ;;
+    esac
+  done
+  if [[ ${GENKAN_REQUIRE_EXTERNAL_DISPLAY:-0} == 1 ]] && ((active_external == 0)); then
+    echo "No active external Sway output was found" >&2
+    exit 1
+  fi
 fi
 
 run_adapter() {
@@ -94,8 +127,13 @@ exec "$GENKAN_BIN" --username smoke
 EOF
   chmod +x "$run_dir/run-genkan"
 
-  echo "Testing $label through /dev/dri/$render_node with $icd"
-  VK_DRIVER_FILES="$icd" vulkaninfo --summary > "$run_dir/vulkan.log" 2>&1
+  echo "Testing $label through $dri_root/$render_node with $icd"
+  if ! VK_DRIVER_FILES="$icd" timeout --kill-after=2s "${GENKAN_VULKANINFO_TIMEOUT:-10s}" \
+    vulkaninfo --summary > "$run_dir/vulkan.log" 2>&1; then
+    cat "$run_dir/vulkan.log"
+    echo "Vulkan discovery failed or timed out for $label" >&2
+    exit 1
+  fi
   grep -Eiq "vendorID[[:space:]]*=[[:space:]]*0x0*${vendor}" "$run_dir/vulkan.log"
   if ((display_connected == 0)); then
     echo "Passed Vulkan discovery for $label; no display is connected to this adapter"
@@ -133,12 +171,6 @@ EOF
   done
 
   if [[ ${GENKAN_EXERCISE_SWAY_OUTPUTS:-0} == 1 ]]; then
-    if [[ -z ${SWAYSOCK:-} ]]; then
-      echo "GENKAN_EXERCISE_SWAY_OUTPUTS requires a Sway session" >&2
-      exit 1
-    fi
-    mapfile -t compositor_outputs < <(swaymsg -t get_outputs -r | jq -r '.[] | select(.active) | .name')
-    ((${#compositor_outputs[@]} > 0))
     for output_name in "${compositor_outputs[@]}"; do
       swaymsg -r "[pid=$cage_pid] move container to output $output_name" | jq -e 'all(.success)' >/dev/null
       sleep 0.5
@@ -147,12 +179,20 @@ EOF
         echo "Genkan exited after moving Cage to $output_name" >&2
         exit 1
       fi
+      if ! tree_json=$(swaymsg -t get_tree -r) || ! jq -e \
+        --arg output "$output_name" \
+        --argjson pid "$cage_pid" \
+        '[.. | objects | select(.type? == "output" and .name? == $output) | .. | objects | .pid?] | any(. == $pid)' \
+        <<<"$tree_json" >/dev/null; then
+        echo "Cage was not found on Sway output $output_name after moving it" >&2
+        exit 1
+      fi
       echo "Passed $label presentation on $output_name"
     done
   fi
 
-  expected_render="/dev/dri/$render_node"
-  expected_card="/dev/dri/$card"
+  expected_render="$dri_root/$render_node"
+  expected_card="$dri_root/$card"
   found_expected=0
   found_nvidia=0
   for fd in /proc/"$genkan_pid"/fd/*; do
@@ -181,7 +221,7 @@ EOF
 tested_vendors=""
 tested_adapters=0
 rendered_adapters=0
-for card_path in /sys/class/drm/card[0-9]*; do
+for card_path in "$drm_root"/card[0-9]*; do
   [[ -e $card_path/device/vendor ]] || continue
   vendor=$(<"$card_path/device/vendor")
   vendor=${vendor#0x}
@@ -190,6 +230,10 @@ for card_path in /sys/class/drm/card[0-9]*; do
     10de) driver=nvidia ;;
     *) continue ;;
   esac
+  if [[ " $tested_vendors " == *" $vendor "* ]]; then
+    echo "Skipping $(basename "$card_path"); vendor 0x$vendor was already tested through its shared ICD"
+    continue
+  fi
 
   render_node=""
   for render_path in "$card_path/device/drm"/renderD*; do
@@ -204,10 +248,10 @@ for card_path in /sys/class/drm/card[0-9]*; do
 
   arch=$(uname -m)
   if [[ $driver == radeon ]]; then
-    icd=/run/opengl-driver/share/vulkan/icd.d/radeon_icd.${arch}.json
+    icd=$icd_root/radeon_icd.${arch}.json
     driver_library=libvulkan_radeon
   else
-    icd=/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json
+    icd=$icd_root/nvidia_icd.json
     driver_library=libGLX_nvidia
   fi
   if [[ ! -f $icd ]]; then
@@ -242,4 +286,4 @@ for required in ${GENKAN_REQUIRE_GPU_VENDORS:-}; do
   fi
 done
 
-echo "Hardware smoke passed for $tested_adapters Vulkan adapter(s), $rendered_adapters display adapter(s), $connected connected output(s), and $external external output(s)"
+echo "Hardware smoke passed for $tested_adapters Vulkan vendor(s), $rendered_adapters display vendor(s), $connected connected output(s), and $external external output(s)"

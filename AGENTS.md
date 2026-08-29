@@ -38,6 +38,8 @@ PAM authentication and launching the selected desktop session.
   headless Weston with software Vulkan rendering.
 - `scripts/hardware-smoke.sh`: opt-in AMD/NVIDIA and connected-display smoke
   test for a physical Wayland workstation.
+- `scripts/regression-tests.sh`: fixture tests for repository shell tooling and
+  hardware-smoke failure modes.
 - `flake.nix`: pinned Rust toolchain, package, and development shell for Linux.
 
 ## Development
