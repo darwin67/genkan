@@ -20,6 +20,8 @@ pub(crate) enum Fixture {
     LargeAccountSet,
     VisiblePrompt,
     InformationalMessage,
+    CancellationProgress,
+    CancellationFailure,
     AuthenticationFailure,
     DiscoveryFailure,
     SessionFailure,
@@ -72,6 +74,7 @@ pub(super) fn build(
         now: Local::now(),
         power_state: state.power_state,
         attempt: Attempt::initial(),
+        selection_session_cancelled: false,
         closing: None,
         preview: true,
     };
@@ -128,6 +131,17 @@ impl State {
             }
             Fixture::InformationalMessage => {
                 state.message = "Touch the security key, then enter your password".into();
+            }
+            Fixture::CancellationProgress => {
+                state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")]));
+                state.phase = Phase::CancellingForUserSelection;
+                state.message = "Changing user…".into();
+            }
+            Fixture::CancellationFailure => {
+                state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")]));
+                state.phase = Phase::UserSelectionCancellationFailed;
+                state.message = "Could not cancel the previous login attempt".into();
+                state.message_is_error = true;
             }
             Fixture::AuthenticationFailure => {
                 state.phase = Phase::Failed;
@@ -228,6 +242,17 @@ mod tests {
         let (authentication, _) = build(Fixture::AuthenticationFailure, None, None);
         assert_eq!(authentication.phase, Phase::Failed);
         assert!(authentication.message_is_error);
+
+        let (cancellation, _) = build(Fixture::CancellationProgress, None, None);
+        assert_eq!(cancellation.phase, Phase::CancellingForUserSelection);
+        assert!(!cancellation.can_select_account());
+
+        let (cancellation_failure, _) = build(Fixture::CancellationFailure, None, None);
+        assert_eq!(
+            cancellation_failure.phase,
+            Phase::UserSelectionCancellationFailed
+        );
+        assert!(cancellation_failure.message_is_error);
 
         let (power, _) = build(Fixture::PowerConfirmation, None, None);
         assert_eq!(

@@ -37,6 +37,10 @@ pub enum AuthError {
     Io(#[from] std::io::Error),
     #[error("invalid greetd message: {0}")]
     Protocol(#[from] greetd_ipc::codec::Error),
+    #[error("greetd rejected session cancellation: {0}")]
+    CancellationRejected(String),
+    #[error("greetd returned an unexpected response to session cancellation")]
+    UnexpectedCancellationResponse,
 }
 
 impl Client {
@@ -115,8 +119,13 @@ pub async fn cancel(client: Option<Client>) -> Result<(), AuthError> {
         Some(client) => client,
         None => Client::connect().await?,
     };
-    let _ = client.exchange(Request::CancelSession).await?;
-    Ok(())
+    match client.exchange(Request::CancelSession).await? {
+        Response::Success => Ok(()),
+        Response::Error { description, .. } => Err(AuthError::CancellationRejected(description)),
+        Response::Prompt { .. } | Response::Message { .. } => {
+            Err(AuthError::UnexpectedCancellationResponse)
+        }
+    }
 }
 
 impl From<greetd_ipc::Response> for Response {
@@ -268,6 +277,38 @@ mod tests {
         assert!(matches!(
             result,
             Ok((_, Response::Prompt { secret: true, message })) if message == "Password:"
+        ));
+        server.await.unwrap();
+        std::fs::remove_file(&socket).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_requires_a_success_response() {
+        let socket =
+            std::env::temp_dir().join(format!("genkan-cancel-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).expect("bind fake greetd socket");
+        let client = Client::connect_to(&socket)
+            .await
+            .expect("connect cancellation client");
+        let server = tokio::spawn(async move {
+            let (mut active, _) = listener.accept().await.expect("accept cancellation client");
+            assert!(matches!(
+                Request::read_from(&mut active).await.unwrap(),
+                Request::CancelSession
+            ));
+            greetd_ipc::Response::Error {
+                error_type: ErrorType::Error,
+                description: "no active session".into(),
+            }
+            .write_to(&mut active)
+            .await
+            .unwrap();
+        });
+
+        assert!(matches!(
+            cancel(Some(client)).await,
+            Err(AuthError::CancellationRejected(description)) if description == "no active session"
         ));
         server.await.unwrap();
         std::fs::remove_file(&socket).unwrap();

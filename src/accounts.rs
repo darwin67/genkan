@@ -226,6 +226,24 @@ mod tests {
     }
 
     #[test]
+    fn orders_accounts_deterministically() {
+        let mut bob = properties();
+        bob.username = "bob".into();
+        bob.real_name = "Shared Name".into();
+        let mut alice = properties();
+        alice.real_name = "Shared Name".into();
+
+        let accounts = collect_accounts([Ok::<_, ()>(bob), Ok(alice)]).unwrap();
+        assert_eq!(
+            accounts
+                .iter()
+                .map(|account| account.username.as_str())
+                .collect::<Vec<_>>(),
+            ["alice", "bob"]
+        );
+    }
+
+    #[test]
     fn selects_only_a_unique_most_recent_account() {
         let mut alice = Account::from_properties(properties()).unwrap();
         alice.last_login = Some(10);

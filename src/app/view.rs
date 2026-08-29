@@ -47,7 +47,13 @@ impl App {
             .accounts
             .iter()
             .find(|account| account.username == self.username);
-        let account_selector: Element<'_, Message> = if self.can_select_account() {
+        let selecting_account = matches!(
+            self.phase,
+            Phase::SelectingUser
+                | Phase::CancellingForUserSelection
+                | Phase::UserSelectionCancellationFailed
+        );
+        let account_selector: Element<'_, Message> = if selecting_account {
             pick_list(
                 self.accounts.as_slice(),
                 selected_account,
@@ -70,6 +76,15 @@ impl App {
             .style(theme::selection)
             .into()
         };
+        let change_user: Element<'_, Message> = if self.can_change_user() {
+            button(text("Change User").size(14))
+                .on_press(Message::ChangeUser)
+                .padding([8, 14])
+                .style(theme::translucent_button)
+                .into()
+        } else {
+            Space::new(Length::Shrink, Length::Fixed(0.0)).into()
+        };
         let prompt = text(&self.prompt)
             .size(15)
             .width(Fill)
@@ -88,7 +103,12 @@ impl App {
             .size(18)
             .width(Fill)
             .style(theme::input);
-        let submit = if self.phase == Phase::Failed {
+        let submit = if self.phase == Phase::UserSelectionCancellationFailed {
+            button(text("Retry").size(16))
+                .on_press_maybe(interactive.then_some(Message::RetryUserSelectionCancellation))
+                .padding([12, 16])
+                .style(theme::translucent_button)
+        } else if self.phase == Phase::Failed {
             button(text("Retry").size(16))
                 .on_press_maybe(interactive.then_some(Message::Retry))
                 .padding([12, 16])
@@ -151,6 +171,7 @@ impl App {
             column![
                 avatar,
                 account_selector,
+                change_user,
                 prompt,
                 auth_row,
                 status,

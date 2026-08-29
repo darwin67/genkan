@@ -62,6 +62,7 @@ pub(crate) struct App {
     now: chrono::DateTime<Local>,
     power_state: PowerState,
     attempt: Attempt,
+    selection_session_cancelled: bool,
     closing: Option<Closing>,
     preview: bool,
 }
@@ -77,6 +78,9 @@ pub(crate) enum Message {
         result: Result<(Option<Client>, auth::Response), String>,
     },
     AccountsResult(Result<Vec<Account>, String>),
+    ChangeUser,
+    UserSelectionCancelled(Result<(), String>),
+    RetryUserSelectionCancellation,
     SelectAccount(Account),
     SelectSession(Session),
     AskPower(PowerAction),
@@ -135,6 +139,7 @@ impl App {
             now: Local::now(),
             power_state: PowerState::Idle,
             attempt,
+            selection_session_cancelled: false,
             closing: None,
             preview: false,
         };
@@ -225,6 +230,39 @@ impl App {
                 }
             }
             Message::AccountsResult(Err(error)) => self.fail(error),
+            Message::ChangeUser if self.can_change_user() => self.change_user(),
+            Message::ChangeUser => Task::none(),
+            Message::UserSelectionCancelled(Ok(()))
+                if self.phase == Phase::CancellingForUserSelection =>
+            {
+                self.phase = Phase::SelectingUser;
+                self.selection_session_cancelled = true;
+                self.message = Some("Select an account".into());
+                self.message_is_error = false;
+                Task::none()
+            }
+            Message::UserSelectionCancelled(Err(error))
+                if self.phase == Phase::CancellingForUserSelection =>
+            {
+                self.phase = Phase::UserSelectionCancellationFailed;
+                self.message = Some(auth_flow::bounded_auth_text(&error));
+                self.message_is_error = true;
+                Task::none()
+            }
+            Message::RetryUserSelectionCancellation
+                if self.phase == Phase::UserSelectionCancellationFailed =>
+            {
+                self.phase = Phase::CancellingForUserSelection;
+                self.message = Some("Changing user…".into());
+                self.message_is_error = false;
+                if self.preview {
+                    return self.finish_preview_user_selection();
+                }
+                auth_flow::cancel_for_user_selection(None)
+            }
+            Message::UserSelectionCancelled(_) | Message::RetryUserSelectionCancellation => {
+                Task::none()
+            }
             Message::SelectAccount(account)
                 if self.can_select_account() && account.username != self.username =>
             {
@@ -405,6 +443,8 @@ impl App {
         self.message_is_error = false;
         self.phase = Phase::CreatingSession;
         let attempt = self.attempt.advance();
+        let recover = !self.selection_session_cancelled;
+        self.selection_session_cancelled = false;
         if self.preview {
             self.phase = Phase::WaitingForInput;
             self.message = Some("Preview mode: credentials and power actions are simulated".into());
@@ -412,7 +452,7 @@ impl App {
         } else if replacing_account {
             auth_flow::restart(self.client.take(), self.username.clone(), attempt)
         } else {
-            auth_flow::begin(self.username.clone(), attempt, true)
+            auth_flow::begin(self.username.clone(), attempt, recover)
         }
     }
 
@@ -425,6 +465,29 @@ impl App {
         auth_flow::restart(client, self.username.clone(), attempt)
     }
 
+    fn change_user(&mut self) -> Task<Message> {
+        let client = self.client.take();
+        self.attempt.advance();
+        self.username.clear();
+        self.display_name = "Select account".into();
+        self.input.clear();
+        self.selection_session_cancelled = false;
+        self.phase = Phase::CancellingForUserSelection;
+        self.message = Some("Changing user…".into());
+        self.message_is_error = false;
+        if self.preview {
+            self.finish_preview_user_selection()
+        } else {
+            auth_flow::cancel_for_user_selection(client)
+        }
+    }
+
+    fn finish_preview_user_selection(&mut self) -> Task<Message> {
+        self.phase = Phase::SelectingUser;
+        self.message = Some("Select an account".into());
+        Task::none()
+    }
+
     fn power_dialog_interactive(&self) -> bool {
         self.closing.is_none() && matches!(self.power_state, PowerState::Confirming(_))
     }
@@ -434,8 +497,18 @@ impl App {
             && self.power_state == PowerState::Idle
             && matches!(
                 self.phase,
-                Phase::WaitingForInput | Phase::Failed | Phase::SelectingUser
+                Phase::WaitingForInput
+                    | Phase::Failed
+                    | Phase::SelectingUser
+                    | Phase::UserSelectionCancellationFailed
             )
+    }
+
+    fn can_change_user(&self) -> bool {
+        self.closing.is_none()
+            && self.power_state == PowerState::Idle
+            && self.accounts.len() > 1
+            && matches!(self.phase, Phase::WaitingForInput | Phase::Failed)
     }
 
     fn can_select_session(&self) -> bool {
@@ -447,10 +520,7 @@ impl App {
     fn can_select_account(&self) -> bool {
         self.closing.is_none()
             && self.power_state == PowerState::Idle
-            && matches!(
-                self.phase,
-                Phase::SelectingUser | Phase::WaitingForInput | Phase::Failed
-            )
+            && self.phase == Phase::SelectingUser
     }
 }
 
@@ -494,6 +564,7 @@ mod tests {
             now: Local::now(),
             power_state: PowerState::Idle,
             attempt,
+            selection_session_cancelled: false,
             closing: None,
             preview: false,
         }
@@ -570,9 +641,26 @@ mod tests {
     }
 
     #[test]
-    fn selecting_another_account_restarts_authentication() {
+    fn change_user_waits_for_cancellation_before_selecting_an_account() {
         let mut app = app();
         app.accounts = vec![account("darwin"), account("alice")];
+        let attempt = app.attempt;
+
+        let _ = app.update(Message::ChangeUser);
+
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+        assert!(app.username.is_empty());
+        assert!(app.input.is_empty());
+        assert_ne!(app.attempt, attempt);
+        assert!(!app.can_select_account());
+
+        let _ = app.update(Message::SelectAccount(account("alice")));
+        assert!(app.username.is_empty());
+
+        let _ = app.update(Message::UserSelectionCancelled(Ok(())));
+        assert_eq!(app.phase, Phase::SelectingUser);
+        assert!(app.can_select_account());
+        assert!(app.selection_session_cancelled);
 
         let _ = app.update(Message::SelectAccount(account("alice")));
 
@@ -581,6 +669,43 @@ mod tests {
         assert_eq!(app.display_name, "ALICE");
         assert!(app.input.is_empty());
         assert!(app.message.is_none());
+        assert!(!app.selection_session_cancelled);
+    }
+
+    #[test]
+    fn cancellation_failure_keeps_account_selection_safe_and_retryable() {
+        let mut app = app();
+        app.accounts = vec![account("darwin"), account("alice")];
+
+        let _ = app.update(Message::ChangeUser);
+        let _ = app.update(Message::UserSelectionCancelled(Err(
+            "greetd unavailable".into()
+        )));
+
+        assert_eq!(app.phase, Phase::UserSelectionCancellationFailed);
+        assert_eq!(app.message.as_deref(), Some("greetd unavailable"));
+        assert!(app.message_is_error);
+        assert!(!app.can_select_account());
+
+        let _ = app.update(Message::SelectAccount(account("alice")));
+        assert!(app.username.is_empty());
+
+        let _ = app.update(Message::RetryUserSelectionCancellation);
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+        assert_eq!(app.message.as_deref(), Some("Changing user…"));
+    }
+
+    #[test]
+    fn preview_change_user_is_immediate_and_does_not_dispatch_cancellation() {
+        let mut app = app();
+        app.preview = true;
+        app.accounts = vec![account("darwin"), account("alice")];
+
+        let _ = app.update(Message::ChangeUser);
+
+        assert_eq!(app.phase, Phase::SelectingUser);
+        assert!(app.username.is_empty());
+        assert_eq!(app.message.as_deref(), Some("Select an account"));
     }
 
     #[test]
