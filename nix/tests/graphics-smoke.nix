@@ -74,6 +74,7 @@ pkgs.runCommand "genkan-graphics-smoke"
 
     set +e
     WAYLAND_DISPLAY=wayland-genkan \
+      ICED_BACKEND=wgpu \
       WLR_RENDERER=pixman \
       WGPU_BACKEND=vulkan \
       VK_DRIVER_FILES=${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.parsed.cpu.name}.json \

@@ -1,4 +1,4 @@
-.PHONY: dev check fmt fmt-fix lint test smoke e2e build package verify changelog next-version clean
+.PHONY: dev check fmt fmt-fix lint test smoke hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
 	cargo run --bin genkan -- --windowed
@@ -21,6 +21,9 @@ test:
 
 smoke:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).graphics-smoke --print-build-logs
+
+hardware-smoke:
+	nix run .#hardware-smoke
 
 e2e:
 	nix build .#checks.x86_64-linux.greetd-e2e --print-build-logs

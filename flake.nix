@@ -89,6 +89,37 @@
       packages = forAllSystems (system: {
         default = (systemConfig system).package;
       });
+      apps = forAllSystems (
+        system:
+        let
+          config = systemConfig system;
+          hardwareSmoke = config.pkgs.writeShellApplication {
+            name = "genkan-hardware-smoke";
+            runtimeInputs = with config.pkgs; [
+              cage
+              coreutils
+              gnugrep
+              jq
+              sway
+              util-linux
+              vulkan-tools
+            ];
+            text = ''
+              export GENKAN_BIN=${config.package}/bin/genkan
+              export FONTCONFIG_FILE=${
+                config.pkgs.makeFontsConf { fontDirectories = [ config.pkgs.dejavu_fonts ]; }
+              }
+              ${builtins.readFile ./scripts/hardware-smoke.sh}
+            '';
+          };
+        in
+        {
+          hardware-smoke = {
+            type = "app";
+            program = "${hardwareSmoke}/bin/genkan-hardware-smoke";
+          };
+        }
+      );
       checks = forAllSystems (
         system:
         let
