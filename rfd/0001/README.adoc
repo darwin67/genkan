@@ -1,6 +1,6 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: prediscussion
-:discussion:
+:state: discussion
+:discussion: https://github.com/darwin67/genkan/pull/5
 :labels: greeter, authentication, interaction, visual-design, accessibility
 
 = RFD 1 Tahoe-inspired greeter interaction and visual design
