@@ -24,7 +24,7 @@ required-features = ["e2e"]
 chrono = { version = "0.4.38", default-features = false, features = ["clock"], optional = true }
 clap = { version = "4.5.23", features = ["derive"] }
 greetd_ipc = { version = "0.10.3", features = ["tokio-codec"] }
-iced = { version = "0.13.1", features = ["canvas", "tokio"], optional = true }
+iced = { version = "0.13.1", features = ["canvas", "lazy", "tokio"], optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
 rustix = { version = "1.1.4", features = ["fs"], optional = true }
 thiserror = "2.0.9"

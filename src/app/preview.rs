@@ -54,7 +54,7 @@ pub(super) fn build(
         .selected
         .as_ref()
         .map(|account| (account.username.clone(), account.display_name.clone()))
-        .unwrap_or_else(|| (String::new(), "Select account".into()));
+        .unwrap_or_else(|| (String::new(), "Select a user".into()));
     let focus_input = state.phase == Phase::WaitingForInput;
     let app = App {
         username,
@@ -175,7 +175,7 @@ impl State {
         self.accounts = accounts;
         self.selected = None;
         self.phase = Phase::SelectingUser;
-        self.message = "Select an account".into();
+        self.message = "Select a user".into();
     }
 }
 

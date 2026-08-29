@@ -1,14 +1,19 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    button, column, container, pick_list, row, scrollable, stack, text, text_input, Space,
+    button, column, container, responsive, row, scrollable, stack, text, text_input, Space,
 };
 use iced::{Alignment, Color, Element, Fill, Length};
 
+use crate::accounts::Account;
 use crate::power::Action as PowerAction;
 use crate::{background, theme};
 
 use super::auth_flow::Phase;
 use super::{App, Message, PowerState};
+
+const ACCOUNT_TILE_WIDTH: f32 = 148.0;
+const ACCOUNT_GRID_GAP: f32 = 18.0;
+const MAX_ACCOUNT_COLUMNS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AccountSelectorState {
@@ -20,176 +25,37 @@ enum AccountSelectorState {
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let background = background::Background::new(self.background_elapsed()).view();
-        let clock = text(self.now.format("%-I:%M").to_string())
-            .size(80)
-            .color(Color::WHITE);
-        let date = text(self.now.format("%A, %B %-d").to_string())
-            .size(22)
-            .color(Color::from_rgba8(255, 255, 255, 0.85));
+        let clock = column![
+            text(self.now.format("%-I:%M").to_string())
+                .size(80)
+                .color(Color::WHITE),
+            text(self.now.format("%A, %B %-d").to_string())
+                .size(22)
+                .color(Color::from_rgba8(255, 255, 255, 0.85)),
+        ]
+        .align_x(Alignment::Center)
+        .spacing(0);
 
-        let avatar_content: Element<'_, Message> = text(initials(&self.display_name))
-            .size(38)
-            .color(Color::WHITE)
-            .into();
-        let avatar = container(avatar_content)
-            .width(Length::Fixed(92.0))
-            .height(Length::Fixed(92.0))
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center)
-            .style(|_| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgba8(
-                    255, 255, 255, 0.18,
-                ))),
-                border: iced::Border {
-                    color: Color::from_rgba8(255, 255, 255, 0.45),
-                    width: 2.0,
-                    radius: 46.0.into(),
-                },
-                ..Default::default()
-            });
+        let selector_state = account_selector_state(
+            self.phase,
+            self.can_select_account(),
+            !self.username.is_empty(),
+        );
+        let identity: Element<'_, Message> = match selector_state {
+            AccountSelectorState::Interactive => self.account_selection(true),
+            AccountSelectorState::Disabled => self.account_selection(false),
+            AccountSelectorState::Hidden => self.authentication(),
+        };
 
-        let interactive = self.closing.is_none() && self.power_state == PowerState::Idle;
-        let selected_account = self
-            .accounts
-            .iter()
-            .find(|account| account.username == self.username);
-        let account_selector: Element<'_, Message> =
-            match account_selector_state(self.phase, self.can_select_account()) {
-                AccountSelectorState::Interactive => pick_list(
-                    self.accounts.as_slice(),
-                    selected_account,
-                    Message::SelectAccount,
-                )
-                .placeholder("Select account")
-                .padding([10, 16])
-                .style(theme::selector)
-                .menu_style(theme::selector_menu)
-                .width(Length::Fixed(260.0))
-                .into(),
-                AccountSelectorState::Disabled => container(text("Select account"))
-                    .width(Length::Fixed(260.0))
-                    .padding([10, 16])
-                    .style(theme::selection)
-                    .into(),
-                AccountSelectorState::Hidden => container(text(
-                    selected_account
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| self.display_name.clone()),
-                ))
-                .width(Length::Fixed(260.0))
-                .padding([10, 16])
-                .style(theme::selection)
-                .into(),
-            };
-        let change_user: Element<'_, Message> = if self.can_change_user() {
-            button(text("Change User").size(14))
-                .on_press(Message::ChangeUser)
-                .padding([8, 14])
-                .style(theme::translucent_button)
-                .into()
-        } else {
-            Space::new(Length::Shrink, Length::Fixed(0.0)).into()
-        };
-        let prompt = text(&self.prompt)
-            .size(15)
-            .width(Fill)
-            .wrapping(Wrapping::WordOrGlyph);
-        let input = text_input("", &self.input)
-            .id(self.input_id.clone())
-            .on_input_maybe(
-                (interactive && self.phase == Phase::WaitingForInput)
-                    .then_some(Message::InputChanged),
-            )
-            .on_submit_maybe(
-                (interactive && self.phase == Phase::WaitingForInput).then_some(Message::Submit),
-            )
-            .secure(self.secret)
-            .padding([12, 18])
-            .size(18)
-            .width(Fill)
-            .style(theme::input);
-        let submit = if self.phase == Phase::UserSelectionCancellationFailed {
-            button(text("Retry").size(16))
-                .on_press_maybe(interactive.then_some(Message::RetryUserSelectionCancellation))
-                .padding([12, 16])
-                .style(theme::translucent_button)
-        } else if self.phase == Phase::Failed {
-            button(text("Retry").size(16))
-                .on_press_maybe(interactive.then_some(Message::Retry))
-                .padding([12, 16])
-                .style(theme::translucent_button)
-        } else {
-            button(text("→").size(22))
-                .on_press_maybe(
-                    (interactive && self.phase == Phase::WaitingForInput)
-                        .then_some(Message::Submit),
-                )
-                .padding([10, 16])
-                .style(theme::translucent_button)
-        };
-        let auth_row = row![input, submit].spacing(8).width(Fill);
-
-        let status = self.message.as_deref().unwrap_or(" ");
-        let status_color = if self.message_is_error {
-            Color::from_rgb8(255, 151, 151)
-        } else {
-            Color::from_rgba8(255, 255, 255, 0.75)
-        };
-        let status = scrollable(
-            text(status)
-                .size(14)
-                .color(status_color)
+        let center = container(
+            column![clock, Space::new(Fill, Fill), identity]
                 .width(Fill)
-                .wrapping(Wrapping::WordOrGlyph),
+                .height(Fill)
+                .align_x(Alignment::Center),
         )
         .width(Fill)
-        .height(Length::Fixed(52.0));
-        let session_selector: Element<'_, Message> = if self.can_select_session() {
-            pick_list(
-                self.sessions.as_slice(),
-                self.selected_session.as_ref(),
-                Message::SelectSession,
-            )
-            .padding([10, 16])
-            .style(theme::selector)
-            .menu_style(theme::selector_menu)
-            .width(Length::Fixed(220.0))
-            .into()
-        } else {
-            container(
-                text(
-                    self.selected_session
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "No session available".into()),
-                )
-                .size(16),
-            )
-            .width(Length::Fixed(220.0))
-            .height(Length::Fixed(32.0))
-            .padding([0, 12])
-            .align_y(Alignment::Center)
-            .into()
-        };
-
-        let login_panel = container(
-            column![
-                avatar,
-                account_selector,
-                change_user,
-                prompt,
-                auth_row,
-                status,
-                session_selector,
-            ]
-            .spacing(14)
-            .width(Fill)
-            .align_x(Alignment::Center),
-        )
-        .width(Fill)
-        .max_width(420)
-        .padding([28, 36])
-        .style(theme::panel);
+        .height(Fill)
+        .padding([42, 24]);
 
         let power_interactive = self.can_request_power();
         let power_buttons = row![
@@ -197,23 +63,22 @@ impl App {
             power_button(PowerAction::Reboot, power_interactive),
             power_button(PowerAction::PowerOff, power_interactive),
         ]
-        .spacing(14);
-
-        let main_content = scrollable(
-            column![
-                column![clock, date].align_x(Alignment::Center).spacing(0),
-                Space::new(Fill, Length::Fixed(36.0)),
-                login_panel,
-                Space::new(Fill, Length::Fixed(28.0)),
-                power_buttons,
-            ]
+        .spacing(10);
+        let utilities = container(power_buttons)
             .width(Fill)
-            .align_x(Alignment::Center)
-            .padding([44, 20]),
-        )
-        .width(Fill)
-        .height(Fill);
+            .height(Fill)
+            .align_x(Alignment::End)
+            .align_y(Alignment::Start)
+            .padding([28, 30]);
 
+        let session = container(self.session_selector())
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Start)
+            .align_y(Alignment::End)
+            .padding([28, 30]);
+
+        let main_content = stack![center, utilities, session];
         let content: Element<'_, Message> = match self.power_state {
             PowerState::Confirming(action) => {
                 let dialog_interactive = self.power_dialog_interactive();
@@ -249,14 +114,274 @@ impl App {
 
         stack![background, content].into()
     }
+
+    fn account_selection(&self, interactive: bool) -> Element<'_, Message> {
+        let status = self.status_for(
+            self.message
+                .as_deref()
+                .filter(|message| *message != "Select a user"),
+        );
+        let retry: Element<'_, Message> = if self.phase == Phase::UserSelectionCancellationFailed
+            || (self.phase == Phase::Failed && self.username.is_empty())
+        {
+            let (label, message) = if self.phase == Phase::UserSelectionCancellationFailed {
+                (
+                    "Retry changing user",
+                    Message::RetryUserSelectionCancellation,
+                )
+            } else {
+                ("Retry account discovery", Message::Retry)
+            };
+            button(text(label).size(15))
+                .on_press_maybe(
+                    (self.closing.is_none() && self.power_state == PowerState::Idle)
+                        .then_some(message),
+                )
+                .padding([10, 18])
+                .style(theme::translucent_button)
+                .into()
+        } else {
+            Space::new(Length::Shrink, Length::Fixed(0.0)).into()
+        };
+
+        container(
+            column![
+                text("Select a user").size(28).color(Color::WHITE),
+                account_grid(&self.accounts, interactive),
+                status,
+                retry,
+            ]
+            .width(Fill)
+            .align_x(Alignment::Center)
+            .spacing(14),
+        )
+        .width(Fill)
+        .max_width(780)
+        .into()
+    }
+
+    fn authentication(&self) -> Element<'_, Message> {
+        let interactive = self.closing.is_none() && self.power_state == PowerState::Idle;
+        let selected_account = self
+            .accounts
+            .iter()
+            .find(|account| account.username == self.username);
+        let username = selected_account
+            .map(|account| format!("@{}", account.username))
+            .unwrap_or_else(|| format!("@{}", self.username));
+        let prompt = text(&self.prompt)
+            .size(15)
+            .width(Fill)
+            .wrapping(Wrapping::WordOrGlyph);
+        let input = text_input("", &self.input)
+            .id(self.input_id.clone())
+            .on_input_maybe(
+                (interactive && self.phase == Phase::WaitingForInput)
+                    .then_some(Message::InputChanged),
+            )
+            .on_submit_maybe(
+                (interactive && self.phase == Phase::WaitingForInput).then_some(Message::Submit),
+            )
+            .secure(self.secret)
+            .padding([12, 18])
+            .size(18)
+            .width(Fill)
+            .style(theme::input);
+        let submit = if self.phase == Phase::Failed {
+            button(text("Retry").size(16))
+                .on_press_maybe(interactive.then_some(Message::Retry))
+                .padding([12, 18])
+                .style(theme::primary_button)
+        } else {
+            button(text("Log In").size(16))
+                .on_press_maybe(
+                    (interactive && self.phase == Phase::WaitingForInput)
+                        .then_some(Message::Submit),
+                )
+                .padding([12, 18])
+                .style(theme::primary_button)
+        };
+        let change_user: Element<'_, Message> = if self.can_change_user() {
+            button(text("Change User").size(14))
+                .on_press(Message::ChangeUser)
+                .padding([8, 14])
+                .style(theme::translucent_button)
+                .into()
+        } else {
+            Space::new(Length::Shrink, Length::Fixed(0.0)).into()
+        };
+
+        container(
+            column![
+                avatar(&self.display_name, 100.0, 38),
+                column![
+                    text(&self.display_name).size(28).color(Color::WHITE),
+                    text(username)
+                        .size(14)
+                        .color(Color::from_rgba8(255, 255, 255, 0.68)),
+                ]
+                .align_x(Alignment::Center)
+                .spacing(2),
+                column![
+                    prompt,
+                    row![input, submit].spacing(8).width(Fill),
+                    self.status_for(self.message.as_deref())
+                ]
+                .width(Fill)
+                .spacing(8),
+                change_user,
+            ]
+            .width(Fill)
+            .align_x(Alignment::Center)
+            .spacing(14),
+        )
+        .width(Fill)
+        .max_width(430)
+        .into()
+    }
+
+    fn status_for<'a>(&'a self, message: Option<&'a str>) -> Element<'a, Message> {
+        let status = message.unwrap_or(" ");
+        let color = if self.message_is_error {
+            Color::from_rgb8(255, 171, 171)
+        } else {
+            Color::from_rgba8(255, 255, 255, 0.78)
+        };
+        container(
+            text(status)
+                .size(14)
+                .color(color)
+                .width(Fill)
+                .wrapping(Wrapping::WordOrGlyph),
+        )
+        .width(Fill)
+        .height(Length::Fixed(40.0))
+        .align_x(Alignment::Center)
+        .into()
+    }
+
+    fn session_selector(&self) -> Element<'_, Message> {
+        let selector: Element<'_, Message> = if self.can_select_session() {
+            iced::widget::pick_list(
+                self.sessions.as_slice(),
+                self.selected_session.as_ref(),
+                Message::SelectSession,
+            )
+            .padding([9, 14])
+            .style(theme::selector)
+            .menu_style(theme::selector_menu)
+            .width(Length::Fixed(210.0))
+            .into()
+        } else {
+            container(
+                text(
+                    self.selected_session
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "No session available".into()),
+                )
+                .size(15),
+            )
+            .width(Length::Fixed(210.0))
+            .padding([9, 14])
+            .style(theme::selection)
+            .into()
+        };
+        column![
+            text("Session")
+                .size(13)
+                .color(Color::from_rgba8(255, 255, 255, 0.72)),
+            selector,
+        ]
+        .spacing(6)
+        .into()
+    }
 }
 
-fn account_selector_state(phase: Phase, interactive: bool) -> AccountSelectorState {
+fn account_grid<'a>(accounts: &'a [Account], interactive: bool) -> Element<'a, Message> {
+    container(responsive(move |size| {
+        let columns = account_grid_columns(size.width);
+        let rows = accounts
+            .chunks(columns)
+            .map(|accounts| {
+                row(accounts
+                    .iter()
+                    .map(|account| account_tile(account, interactive)))
+                .spacing(ACCOUNT_GRID_GAP)
+                .align_y(Alignment::Start)
+            })
+            .map(Element::from)
+            .collect::<Vec<_>>();
+
+        scrollable(
+            column(rows)
+                .width(Fill)
+                .align_x(Alignment::Center)
+                .spacing(ACCOUNT_GRID_GAP),
+        )
+        .width(Fill)
+        .height(Fill)
+        .into()
+    }))
+    .width(Fill)
+    .height(Length::Fixed(292.0))
+    .into()
+}
+
+fn account_tile<'a>(account: &'a Account, interactive: bool) -> Element<'a, Message> {
+    button(
+        column![
+            avatar(&account.display_name, 76.0, 28),
+            text(&account.display_name)
+                .size(16)
+                .width(Fill)
+                .align_x(Alignment::Center)
+                .wrapping(Wrapping::WordOrGlyph),
+            text(format!("@{}", account.username))
+                .size(13)
+                .color(Color::from_rgba8(255, 255, 255, 0.68))
+                .width(Fill)
+                .align_x(Alignment::Center)
+                .wrapping(Wrapping::WordOrGlyph),
+        ]
+        .width(Fill)
+        .align_x(Alignment::Center)
+        .spacing(7),
+    )
+    .on_press_maybe(interactive.then(|| Message::SelectAccount(account.clone())))
+    .width(Length::Fixed(ACCOUNT_TILE_WIDTH))
+    .height(Length::Fixed(164.0))
+    .padding([12, 10])
+    .style(theme::account_tile)
+    .into()
+}
+
+fn avatar<'a>(name: &str, diameter: f32, text_size: u16) -> Element<'a, Message> {
+    container(text(initials(name)).size(text_size).color(Color::WHITE))
+        .width(Length::Fixed(diameter))
+        .height(Length::Fixed(diameter))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(move |_| theme::avatar(diameter / 2.0))
+        .into()
+}
+
+fn account_grid_columns(width: f32) -> usize {
+    (((width + ACCOUNT_GRID_GAP) / (ACCOUNT_TILE_WIDTH + ACCOUNT_GRID_GAP)) as usize)
+        .clamp(1, MAX_ACCOUNT_COLUMNS)
+}
+
+fn account_selector_state(
+    phase: Phase,
+    interactive: bool,
+    has_identity: bool,
+) -> AccountSelectorState {
     match phase {
         Phase::SelectingUser if interactive => AccountSelectorState::Interactive,
         Phase::SelectingUser
         | Phase::CancellingForUserSelection
         | Phase::UserSelectionCancellationFailed => AccountSelectorState::Disabled,
+        Phase::Failed if !has_identity => AccountSelectorState::Disabled,
         _ => AccountSelectorState::Hidden,
     }
 }
@@ -279,7 +404,7 @@ fn modal<'a>(
 fn power_button(action: PowerAction, interactive: bool) -> Element<'static, Message> {
     button(text(action.label()).size(14))
         .on_press_maybe(interactive.then_some(Message::AskPower(action)))
-        .padding([10, 18])
+        .padding([9, 15])
         .style(theme::translucent_button)
         .into()
 }
@@ -299,21 +424,33 @@ mod tests {
     #[test]
     fn account_selector_is_disabled_until_cancellation_succeeds() {
         assert_eq!(
-            account_selector_state(Phase::CancellingForUserSelection, false),
+            account_selector_state(Phase::CancellingForUserSelection, false, false),
             AccountSelectorState::Disabled
         );
         assert_eq!(
-            account_selector_state(Phase::UserSelectionCancellationFailed, false),
+            account_selector_state(Phase::UserSelectionCancellationFailed, false, false),
             AccountSelectorState::Disabled
         );
         assert_eq!(
-            account_selector_state(Phase::SelectingUser, true),
+            account_selector_state(Phase::SelectingUser, true, false),
             AccountSelectorState::Interactive
         );
         assert_eq!(
-            account_selector_state(Phase::WaitingForInput, false),
+            account_selector_state(Phase::WaitingForInput, false, true),
             AccountSelectorState::Hidden
         );
+        assert_eq!(
+            account_selector_state(Phase::Failed, false, false),
+            AccountSelectorState::Disabled
+        );
+    }
+
+    #[test]
+    fn account_grid_wraps_at_narrow_and_wide_sizes() {
+        assert_eq!(account_grid_columns(140.0), 1);
+        assert_eq!(account_grid_columns(320.0), 2);
+        assert_eq!(account_grid_columns(520.0), 3);
+        assert_eq!(account_grid_columns(900.0), MAX_ACCOUNT_COLUMNS);
     }
 
     #[test]

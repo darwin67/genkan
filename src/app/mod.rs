@@ -128,7 +128,7 @@ impl App {
             display_name: account
                 .as_ref()
                 .map(|account| account.display_name.clone())
-                .unwrap_or_else(|| "Select account".into()),
+                .unwrap_or_else(|| "Select a user".into()),
             accounts,
             input: String::new(),
             input_id: text_input::Id::new("authentication-input"),
@@ -242,7 +242,7 @@ impl App {
                     self.select_account(account)
                 } else {
                     self.phase = Phase::SelectingUser;
-                    self.message = Some("Select an account".into());
+                    self.message = Some("Select a user".into());
                     self.message_is_error = false;
                     Task::none()
                 }
@@ -270,7 +270,7 @@ impl App {
             } if attempt == self.attempt && self.phase == Phase::CancellingForUserSelection => {
                 self.phase = Phase::SelectingUser;
                 self.selection_session_cancelled = true;
-                self.message = Some("Select an account".into());
+                self.message = Some("Select a user".into());
                 self.message_is_error = false;
                 Task::none()
             }
@@ -519,7 +519,7 @@ impl App {
         let client = self.client.take();
         let attempt = self.attempt.advance();
         self.username.clear();
-        self.display_name = "Select account".into();
+        self.display_name = "Select a user".into();
         self.input.clear();
         self.selection_session_cancelled = false;
         self.phase = Phase::CancellingForUserSelection;
@@ -534,7 +534,7 @@ impl App {
 
     fn finish_preview_user_selection(&mut self) -> Task<Message> {
         self.phase = Phase::SelectingUser;
-        self.message = Some("Select an account".into());
+        self.message = Some("Select a user".into());
         Task::none()
     }
 
@@ -695,7 +695,7 @@ mod tests {
 
         assert_eq!(app.phase, Phase::SelectingUser);
         assert_eq!(app.accounts.len(), 2);
-        assert_eq!(app.message.as_deref(), Some("Select an account"));
+        assert_eq!(app.message.as_deref(), Some("Select a user"));
     }
 
     #[test]
@@ -815,7 +815,7 @@ mod tests {
 
         assert_eq!(app.phase, Phase::SelectingUser);
         assert!(app.username.is_empty());
-        assert_eq!(app.message.as_deref(), Some("Select an account"));
+        assert_eq!(app.message.as_deref(), Some("Select a user"));
     }
 
     #[test]
