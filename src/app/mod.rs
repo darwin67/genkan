@@ -37,6 +37,7 @@ impl Closing {
 pub(crate) struct Config {
     pub(crate) username: Option<String>,
     pub(crate) display_name: Option<String>,
+    pub(crate) preview: bool,
 }
 
 #[derive(Debug)]
@@ -59,6 +60,7 @@ pub(crate) struct App {
     power_state: PowerState,
     attempt: Attempt,
     closing: Option<Closing>,
+    preview: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +93,7 @@ impl App {
             .username
             .map(|username| Account::override_account(username, config.display_name));
         let configured = selected_session.is_some() && account.is_some();
+        let preview = config.preview && account.is_some();
         let discovering = selected_session.is_some() && account.is_none();
         let attempt = Attempt::initial();
 
@@ -107,12 +110,18 @@ impl App {
             input: String::new(),
             input_id: text_input::Id::new("authentication-input"),
             prompt: "Password".into(),
-            message: selected_session
-                .is_none()
-                .then(|| "No valid Wayland sessions are installed".into()),
-            message_is_error: selected_session.is_none(),
+            message: if preview {
+                Some("Preview mode: authentication and power actions are simulated".into())
+            } else {
+                selected_session
+                    .is_none()
+                    .then(|| "No valid Wayland sessions are installed".into())
+            },
+            message_is_error: !preview && selected_session.is_none(),
             secret: true,
-            phase: if configured {
+            phase: if preview {
+                Phase::WaitingForInput
+            } else if configured {
                 Phase::CreatingSession
             } else if discovering {
                 Phase::DiscoveringUsers
@@ -127,8 +136,11 @@ impl App {
             power_state: PowerState::Idle,
             attempt,
             closing: None,
+            preview,
         };
-        let task = if configured {
+        let task = if preview {
+            text_input::focus(app.input_id.clone())
+        } else if configured {
             auth_flow::begin(app.username.clone(), attempt, true)
         } else if discovering {
             discover_accounts()
@@ -248,6 +260,12 @@ impl App {
             Message::Retry if self.phase == Phase::Failed => self.retry_authentication(),
             Message::Retry => Task::none(),
             Message::Submit if self.phase == Phase::WaitingForInput => {
+                if self.preview {
+                    self.input.clear();
+                    self.message = Some("Preview: credentials were not sent".into());
+                    self.message_is_error = false;
+                    return text_input::focus(self.input_id.clone());
+                }
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
@@ -278,6 +296,19 @@ impl App {
             }
             Message::CancelPower => Task::none(),
             Message::ConfirmPower(action) if self.power_state == PowerState::Confirming(action) => {
+                if self.preview {
+                    self.power_state = PowerState::Idle;
+                    self.message = Some(format!(
+                        "Preview: {} was not requested",
+                        action.label().to_lowercase()
+                    ));
+                    self.message_is_error = false;
+                    return if self.phase == Phase::WaitingForInput {
+                        text_input::focus(self.input_id.clone())
+                    } else {
+                        Task::none()
+                    };
+                }
                 self.power_state = PowerState::Executing(action);
                 self.message = Some(format!("Requesting {}…", action.label().to_lowercase()));
                 self.message_is_error = false;
@@ -429,11 +460,50 @@ mod tests {
             power_state: PowerState::Idle,
             attempt,
             closing: None,
+            preview: false,
         }
     }
 
     fn account(username: &str) -> Account {
         Account::override_account(username.into(), Some(username.to_uppercase()))
+    }
+
+    #[test]
+    fn preview_accepts_input_without_sending_credentials() {
+        let mut app = app();
+        app.preview = true;
+
+        let _ = app.update(Message::InputChanged("not-a-real-password".into()));
+        assert_eq!(app.input, "not-a-real-password");
+
+        let _ = app.update(Message::Submit);
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert!(app.input.is_empty());
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Preview: credentials were not sent")
+        );
+        assert!(!app.message_is_error);
+    }
+
+    #[test]
+    fn preview_never_dispatches_power_actions() {
+        let mut app = app();
+        app.preview = true;
+
+        let _ = app.update(Message::AskPower(PowerAction::Suspend));
+        assert_eq!(
+            app.power_state,
+            PowerState::Confirming(PowerAction::Suspend)
+        );
+
+        let _ = app.update(Message::ConfirmPower(PowerAction::Suspend));
+        assert_eq!(app.power_state, PowerState::Idle);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Preview: sleep was not requested")
+        );
+        assert!(!app.message_is_error);
     }
 
     #[test]

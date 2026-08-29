@@ -1,7 +1,7 @@
 .PHONY: dev check fmt fmt-fix lint test scripts-test smoke hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
-	cargo run --bin genkan -- --windowed
+	cargo run --bin genkan -- --windowed --preview --username "$${USER:-preview}"
 
 check:
 	cargo check
