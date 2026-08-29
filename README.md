@@ -104,7 +104,8 @@ Genkan discovers cached, unlocked, non-system login users through
 AccountsService. Selection precedence is an administrative `--username`
 override, the uniquely most recent eligible account when every eligible
 account has usable login recency, and then a sole eligible account. Genkan
-presents account selection when recency is missing, zero, or tied.
+presents account selection when multiple eligible accounts have missing or
+zero recency, or when the greatest recency is tied.
 `--display-name` remains an optional companion to `--username`. The greeter
 renders initials from bounded account labels rather than decoding
 user-controlled icon files in the credential-handling process.
