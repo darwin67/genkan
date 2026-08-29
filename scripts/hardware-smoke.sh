@@ -218,9 +218,10 @@ EOF
   echo "Passed $label"
 }
 
-tested_vendors=""
-tested_adapters=0
-rendered_adapters=0
+declare -A vendor_card=()
+declare -A vendor_render=()
+declare -A vendor_connected=()
+
 for card_path in "$drm_root"/card[0-9]*; do
   [[ -e $card_path/device/vendor ]] || continue
   vendor=$(<"$card_path/device/vendor")
@@ -230,11 +231,6 @@ for card_path in "$drm_root"/card[0-9]*; do
     10de) driver=nvidia ;;
     *) continue ;;
   esac
-  if [[ " $tested_vendors " == *" $vendor "* ]]; then
-    echo "Skipping $(basename "$card_path"); vendor 0x$vendor was already tested through its shared ICD"
-    continue
-  fi
-
   render_node=""
   for render_path in "$card_path/device/drm"/renderD*; do
     [[ -e $render_path ]] || continue
@@ -242,21 +238,8 @@ for card_path in "$drm_root"/card[0-9]*; do
     break
   done
   if [[ -z $render_node ]]; then
-    echo "No render node found for $(basename "$card_path")" >&2
-    exit 1
-  fi
-
-  arch=$(uname -m)
-  if [[ $driver == radeon ]]; then
-    icd=$icd_root/radeon_icd.${arch}.json
-    driver_library=libvulkan_radeon
-  else
-    icd=$icd_root/nvidia_icd.json
-    driver_library=libGLX_nvidia
-  fi
-  if [[ ! -f $icd ]]; then
-    echo "Missing Vulkan ICD for $driver: $icd" >&2
-    exit 1
+    echo "Skipping $(basename "$card_path"); it has no render node"
+    continue
   fi
 
   display_connected=0
@@ -268,7 +251,43 @@ for card_path in "$drm_root"/card[0-9]*; do
     fi
   done
 
-  run_adapter "$vendor" "$(basename "$card_path")" "$render_node" "$icd" "$driver_library" "$display_connected" "$driver-$(basename "$card_path")"
+  if [[ -z ${vendor_card[$vendor]:-} ]] || {
+    ((display_connected == 1)) && ((${vendor_connected[$vendor]} == 0));
+  }; then
+    vendor_card[$vendor]=$(basename "$card_path")
+    vendor_render[$vendor]=$render_node
+    vendor_connected[$vendor]=$display_connected
+  fi
+done
+
+tested_vendors=""
+tested_adapters=0
+rendered_adapters=0
+arch=$(uname -m)
+for vendor in 1002 10de; do
+  [[ -n ${vendor_card[$vendor]:-} ]] || continue
+  if [[ $vendor == 1002 ]]; then
+    driver=radeon
+    icd=$icd_root/radeon_icd.${arch}.json
+    driver_library=libvulkan_radeon
+  else
+    driver=nvidia
+    icd=$icd_root/nvidia_icd.json
+    driver_library=libGLX_nvidia
+  fi
+  if [[ ! -f $icd ]]; then
+    echo "Missing Vulkan ICD for $driver: $icd" >&2
+    exit 1
+  fi
+
+  run_adapter \
+    "$vendor" \
+    "${vendor_card[$vendor]}" \
+    "${vendor_render[$vendor]}" \
+    "$icd" \
+    "$driver_library" \
+    "${vendor_connected[$vendor]}" \
+    "$driver-${vendor_card[$vendor]}"
   tested_vendors="$tested_vendors $vendor"
   ((tested_adapters += 1))
 done
