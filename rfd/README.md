@@ -1,0 +1,69 @@
+# Genkan Requests for Discussion
+
+Requests for Discussion (RFDs) capture ideas early enough to shape them through
+written discussion and preserve the reasoning behind decisions. An RFD is not
+authoritative merely because it exists; its `state` says how it should be read.
+
+| RFD | Topic |
+|---|---|
+| [1: Tahoe-inspired greeter interaction and visual design](0001/README.adoc) | Account selection, authentication states, visual hierarchy, and greeter controls |
+
+## Source format
+
+Each RFD lives at `rfd/NNNN/README.adoc`, where `NNNN` is a four-digit number.
+The document starts with canonical AsciiDoc attributes and an unpadded title:
+
+```asciidoc
+:authors: Name <email@example.com>
+:state: prediscussion
+:discussion:
+:labels: software, process
+
+= RFD 7 Example title
+```
+
+These are the first six lines in exactly this order, including the blank line
+before the title. Attribute values cannot contain tabs, and no canonical
+attribute may be repeated elsewhere in the document. Every semicolon-separated
+author must contain a name and address in angle brackets.
+
+`authors` contains semicolon-separated owners. `discussion` contains the RFD's
+pull-request URL once discussion starts. `labels` is a comma-separated set of
+searchable topics. The document is the single source of truth for this metadata;
+the index intentionally does not duplicate it.
+
+Implementation progress lives separately in `rfd/NNNN/IMPLEMENTATION.org` or
+`rfd/NNNN/IMPLEMENTATION.md`; an RFD must have exactly one format. The RFD and
+checklist link to each other, keeping the design and decision record stable
+while implementation tasks are checked off.
+
+Run `make check-rfds` to validate source layout, metadata, state, title, and the
+checker regression fixtures.
+
+## States
+
+- `prediscussion`: actively being written and not ready for broad review.
+- `ideation`: a narrowly scoped topic or scratchpad without active revision.
+- `discussion`: under active review in the linked pull request.
+- `published`: discussion has converged and the RFD expresses project direction.
+- `committed`: the proposal is fully implemented and describes current behavior.
+- `abandoned`: deliberately not proceeding or otherwise retained only for history.
+
+The usual path is `prediscussion` or `ideation` to `discussion`, then
+`published`, and eventually `committed`. `abandoned` is an off-ramp at any stage.
+Implementation checklist progress does not determine the RFD's state.
+
+## Lifecycle
+
+Reserve the next unused four-digit number and create `rfd/NNNN/README.adoc` and
+one implementation checklist (`IMPLEMENTATION.org` or `IMPLEMENTATION.md`) in a
+change. Cross-link the two documents. Use `prediscussion` while writing or
+`ideation` for a topic placeholder. When the document is ready for review, open
+a pull request, set the state to `discussion`, and add that pull request as the
+discussion URL.
+
+Before merging a proposal that represents project direction, move it to
+`published`. Once the described work is entirely implemented, update it to
+`committed`. Material changes to a published or committed RFD go through a new
+pull request and retain the original discussion link unless the RFD explicitly
+documents a replacement.

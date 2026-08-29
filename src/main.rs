@@ -18,6 +18,8 @@ struct Arguments {
     display_name: Option<String>,
     #[arg(long)]
     windowed: bool,
+    #[arg(long, requires_all = ["windowed", "username"])]
+    preview: bool,
 }
 
 fn parse_username(value: &str) -> Result<String, String> {
@@ -39,6 +41,7 @@ pub fn main() -> iced::Result {
     let config = Config {
         username: arguments.username,
         display_name: arguments.display_name,
+        preview: arguments.preview,
     };
 
     iced::application("Genkan", App::update, App::view)
@@ -63,6 +66,21 @@ mod tests {
         let arguments = Arguments::try_parse_from(["genkan"]).unwrap();
         assert_eq!(arguments.username, None);
         assert_eq!(arguments.display_name, None);
+        assert!(!arguments.preview);
+    }
+
+    #[test]
+    fn preview_requires_a_window() {
+        assert!(Arguments::try_parse_from(["genkan", "--preview"]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "--windowed", "--preview"]).is_err());
+        assert!(Arguments::try_parse_from([
+            "genkan",
+            "--windowed",
+            "--preview",
+            "--username",
+            "preview",
+        ])
+        .is_ok());
     }
 
     #[test]

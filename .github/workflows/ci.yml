@@ -11,6 +11,7 @@ on:
       - "flake.nix"
       - "flake.lock"
       - "nix/**"
+      - "rfd/**"
       - "scripts/**"
       - "cliff.toml"
       - ".github/workflows/ci.yml"
@@ -25,6 +26,7 @@ on:
       - "flake.nix"
       - "flake.lock"
       - "nix/**"
+      - "rfd/**"
       - "scripts/**"
       - "cliff.toml"
       - ".github/workflows/ci.yml"
@@ -107,6 +109,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - run: nix develop --command make test
+      - run: nix develop --command make check-rfds
 
   greetd-e2e:
     name: greetd E2E

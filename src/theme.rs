@@ -1,4 +1,5 @@
-use iced::widget::{button, container, text_input};
+use iced::overlay::menu;
+use iced::widget::{button, container, pick_list, text_input};
 use iced::{Background, Border, Color, Shadow, Theme};
 
 pub fn panel(_theme: &Theme) -> container::Style {
@@ -35,6 +36,56 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
         placeholder: Color::from_rgba8(255, 255, 255, 0.55),
         value: Color::WHITE,
         selection: Color::from_rgb8(65, 105, 225),
+    }
+}
+
+pub fn selector(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let highlighted = matches!(
+        status,
+        pick_list::Status::Hovered | pick_list::Status::Opened
+    );
+    pick_list::Style {
+        text_color: Color::WHITE,
+        placeholder_color: Color::from_rgba8(255, 255, 255, 0.55),
+        handle_color: Color::from_rgba8(255, 255, 255, 0.8),
+        background: Background::Color(Color::from_rgba8(
+            255,
+            255,
+            255,
+            if highlighted { 0.18 } else { 0.12 },
+        )),
+        border: Border {
+            color: Color::from_rgba8(255, 255, 255, if highlighted { 0.5 } else { 0.28 }),
+            width: 1.0,
+            radius: 18.0.into(),
+        },
+    }
+}
+
+pub fn selector_menu(_theme: &Theme) -> menu::Style {
+    menu::Style {
+        background: Background::Color(Color::from_rgba8(22, 27, 56, 0.98)),
+        border: Border {
+            color: Color::from_rgba8(255, 255, 255, 0.28),
+            width: 1.0,
+            radius: 14.0.into(),
+        },
+        text_color: Color::WHITE,
+        selected_text_color: Color::WHITE,
+        selected_background: Background::Color(Color::from_rgba8(255, 255, 255, 0.18)),
+    }
+}
+
+pub fn selection(_theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(Color::WHITE),
+        background: Some(Background::Color(Color::from_rgba8(255, 255, 255, 0.12))),
+        border: Border {
+            color: Color::from_rgba8(255, 255, 255, 0.28),
+            width: 1.0,
+            radius: 18.0.into(),
+        },
+        ..Default::default()
     }
 }
 

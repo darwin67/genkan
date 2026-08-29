@@ -12,10 +12,12 @@ runs the user session itself.
 make dev
 ```
 
-The preview uses the host's AccountsService and installed Wayland session
-entries. Pass `--username "$USER"` to bypass account discovery. Once an account
-and session are available, authentication begins immediately and reports that
-`GREETD_SOCK` is missing, as expected outside greetd.
+The preview uses `$USER` as a synthetic account and accepts password input
+without sending it anywhere. Authentication submission and all power actions
+are simulated, so testing the UI cannot suspend, restart, or shut down the
+development machine. Installed Wayland session entries still populate the
+session selector. To exercise real AccountsService, greetd, and logind behavior,
+run the binary directly without `--preview` in the intended greeter environment.
 
 The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `smoke`,
 `e2e`, `build`, `package`, `verify`, `changelog`, `next-version`, and `clean`
