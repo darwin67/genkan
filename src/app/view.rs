@@ -10,6 +10,13 @@ use crate::{background, theme};
 use super::auth_flow::Phase;
 use super::{App, Message, PowerState};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountSelectorState {
+    Interactive,
+    Disabled,
+    Hidden,
+}
+
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let background = background::Background::new(self.background_elapsed()).view();
@@ -46,35 +53,34 @@ impl App {
             .accounts
             .iter()
             .find(|account| account.username == self.username);
-        let selecting_account = matches!(
-            self.phase,
-            Phase::SelectingUser
-                | Phase::CancellingForUserSelection
-                | Phase::UserSelectionCancellationFailed
-        );
-        let account_selector: Element<'_, Message> = if selecting_account {
-            pick_list(
-                self.accounts.as_slice(),
-                selected_account,
-                Message::SelectAccount,
-            )
-            .placeholder("Select account")
-            .padding([10, 16])
-            .style(theme::selector)
-            .menu_style(theme::selector_menu)
-            .width(Length::Fixed(260.0))
-            .into()
-        } else {
-            container(text(
-                selected_account
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| self.display_name.clone()),
-            ))
-            .width(Length::Fixed(260.0))
-            .padding([10, 16])
-            .style(theme::selection)
-            .into()
-        };
+        let account_selector: Element<'_, Message> =
+            match account_selector_state(self.phase, self.can_select_account()) {
+                AccountSelectorState::Interactive => pick_list(
+                    self.accounts.as_slice(),
+                    selected_account,
+                    Message::SelectAccount,
+                )
+                .placeholder("Select account")
+                .padding([10, 16])
+                .style(theme::selector)
+                .menu_style(theme::selector_menu)
+                .width(Length::Fixed(260.0))
+                .into(),
+                AccountSelectorState::Disabled => container(text("Select account"))
+                    .width(Length::Fixed(260.0))
+                    .padding([10, 16])
+                    .style(theme::selection)
+                    .into(),
+                AccountSelectorState::Hidden => container(text(
+                    selected_account
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| self.display_name.clone()),
+                ))
+                .width(Length::Fixed(260.0))
+                .padding([10, 16])
+                .style(theme::selection)
+                .into(),
+            };
         let change_user: Element<'_, Message> = if self.can_change_user() {
             button(text("Change User").size(14))
                 .on_press(Message::ChangeUser)
@@ -245,6 +251,16 @@ impl App {
     }
 }
 
+fn account_selector_state(phase: Phase, interactive: bool) -> AccountSelectorState {
+    match phase {
+        Phase::SelectingUser if interactive => AccountSelectorState::Interactive,
+        Phase::SelectingUser
+        | Phase::CancellingForUserSelection
+        | Phase::UserSelectionCancellationFailed => AccountSelectorState::Disabled,
+        _ => AccountSelectorState::Hidden,
+    }
+}
+
 fn modal<'a>(
     main_content: impl Into<Element<'a, Message>>,
     dialog: impl Into<Element<'a, Message>>,
@@ -279,6 +295,26 @@ fn initials(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_selector_is_disabled_until_cancellation_succeeds() {
+        assert_eq!(
+            account_selector_state(Phase::CancellingForUserSelection, false),
+            AccountSelectorState::Disabled
+        );
+        assert_eq!(
+            account_selector_state(Phase::UserSelectionCancellationFailed, false),
+            AccountSelectorState::Disabled
+        );
+        assert_eq!(
+            account_selector_state(Phase::SelectingUser, true),
+            AccountSelectorState::Interactive
+        );
+        assert_eq!(
+            account_selector_state(Phase::WaitingForInput, false),
+            AccountSelectorState::Hidden
+        );
+    }
 
     #[test]
     fn creates_initials() {
