@@ -14,6 +14,7 @@ use super::{App, Message, PowerState};
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
 const ACCOUNT_GRID_GAP: f32 = 18.0;
 const MAX_ACCOUNT_COLUMNS: usize = 4;
+const AUTH_ACTION_WIDTH: f32 = 82.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AccountSelectorState {
@@ -172,6 +173,7 @@ impl App {
         let prompt = text(&self.prompt)
             .size(15)
             .width(Fill)
+            .align_x(Alignment::Center)
             .wrapping(Wrapping::WordOrGlyph);
         let input = text_input("", &self.input)
             .id(self.input_id.clone())
@@ -191,6 +193,7 @@ impl App {
             button(text("Retry").size(16))
                 .on_press_maybe(interactive.then_some(Message::Retry))
                 .padding([12, 18])
+                .width(Length::Fixed(AUTH_ACTION_WIDTH))
                 .style(theme::primary_button)
         } else {
             button(text("Log In").size(16))
@@ -199,6 +202,7 @@ impl App {
                         .then_some(Message::Submit),
                 )
                 .padding([12, 18])
+                .width(Length::Fixed(AUTH_ACTION_WIDTH))
                 .style(theme::primary_button)
         };
         let change_user: Element<'_, Message> = if self.can_change_user() {
@@ -224,7 +228,13 @@ impl App {
                 .spacing(2),
                 column![
                     prompt,
-                    row![input, submit].spacing(8).width(Fill),
+                    row![
+                        Space::new(Length::Fixed(AUTH_ACTION_WIDTH), Length::Shrink),
+                        input,
+                        submit
+                    ]
+                    .spacing(8)
+                    .width(Fill),
                     self.status_for(self.message.as_deref())
                 ]
                 .width(Fill)
@@ -236,7 +246,7 @@ impl App {
             .spacing(14),
         )
         .width(Fill)
-        .max_width(430)
+        .max_width(540)
         .into()
     }
 
@@ -252,6 +262,7 @@ impl App {
                 .size(14)
                 .color(color)
                 .width(Fill)
+                .align_x(Alignment::Center)
                 .wrapping(Wrapping::WordOrGlyph),
         )
         .width(Fill)
