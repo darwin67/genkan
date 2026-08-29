@@ -135,7 +135,7 @@ impl State {
             Fixture::CancellationProgress => {
                 state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")]));
                 state.phase = Phase::CancellingForUserSelection;
-                state.message = "Changing user…".into();
+                state.message = "Still changing user…".into();
             }
             Fixture::CancellationFailure => {
                 state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")]));

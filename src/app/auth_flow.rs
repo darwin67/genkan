@@ -7,7 +7,7 @@ use genkan::auth::{self, Client};
 use super::{App, Closing, Message};
 
 const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-const USER_SELECTION_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const USER_SELECTION_CANCEL_PROGRESS_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 const MAX_AUTH_TEXT_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,15 +242,22 @@ pub(super) fn cancel_for_close(client: Option<Client>, window: window::Id) -> Ta
 }
 
 pub(super) fn cancel_for_user_selection(client: Option<Client>) -> Task<Message> {
-    Task::perform(
-        async move {
-            tokio::time::timeout(USER_SELECTION_CANCEL_TIMEOUT, auth::cancel(client))
-                .await
-                .map_err(|_| "Timed out while changing user".to_owned())?
-                .map_err(|error| error.to_string())
-        },
-        Message::UserSelectionCancelled,
-    )
+    Task::batch([
+        Task::perform(
+            async move {
+                auth::cancel(client)
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            Message::UserSelectionCancelled,
+        ),
+        Task::perform(
+            async {
+                tokio::time::sleep(USER_SELECTION_CANCEL_PROGRESS_DELAY).await;
+            },
+            |()| Message::UserSelectionCancellationSlow,
+        ),
+    ])
 }
 
 pub(super) fn close_timeout(window: window::Id) -> Task<Message> {

@@ -87,6 +87,7 @@ pub(crate) enum Message {
     AccountsResult(Result<Vec<Account>, String>),
     ChangeUser,
     UserSelectionCancelled(Result<(), String>),
+    UserSelectionCancellationSlow,
     RetryUserSelectionCancellation,
     SelectAccount(Account),
     SelectSession(Session),
@@ -274,6 +275,13 @@ impl App {
                 self.message_is_error = true;
                 Task::none()
             }
+            Message::UserSelectionCancellationSlow
+                if self.phase == Phase::CancellingForUserSelection =>
+            {
+                self.message = Some("Still changing user…".into());
+                self.message_is_error = false;
+                Task::none()
+            }
             Message::RetryUserSelectionCancellation
                 if self.phase == Phase::UserSelectionCancellationFailed =>
             {
@@ -285,9 +293,9 @@ impl App {
                 }
                 auth_flow::cancel_for_user_selection(None)
             }
-            Message::UserSelectionCancelled(_) | Message::RetryUserSelectionCancellation => {
-                Task::none()
-            }
+            Message::UserSelectionCancelled(_)
+            | Message::UserSelectionCancellationSlow
+            | Message::RetryUserSelectionCancellation => Task::none(),
             Message::SelectAccount(account)
                 if self.can_select_account() && account.username != self.username =>
             {
@@ -734,6 +742,28 @@ mod tests {
         let _ = app.update(Message::RetryUserSelectionCancellation);
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
         assert_eq!(app.message.as_deref(), Some("Changing user…"));
+    }
+
+    #[test]
+    fn slow_cancellation_remains_authoritative_and_blocks_retry() {
+        let mut app = app();
+        app.accounts = vec![account("darwin"), account("alice")];
+
+        let _ = app.update(Message::ChangeUser);
+        let attempt = app.attempt;
+        let _ = app.update(Message::UserSelectionCancellationSlow);
+
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+        assert_eq!(app.message.as_deref(), Some("Still changing user…"));
+        assert!(!app.message_is_error);
+        assert!(!app.can_select_account());
+
+        let _ = app.update(Message::RetryUserSelectionCancellation);
+        let _ = app.update(Message::SelectAccount(account("alice")));
+
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+        assert_eq!(app.attempt, attempt);
+        assert!(app.username.is_empty());
     }
 
     #[test]
