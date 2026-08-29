@@ -116,11 +116,12 @@ CI has no DRM devices:
 make hardware-smoke
 ```
 
-Run it from a Wayland session. It tests every local AMD and NVIDIA Vulkan ICD,
-launches the packaged Genkan under Vulkan-rendered nested Cage on each
-display-connected adapter, and checks that an AMD-only run does not load or
-open the NVIDIA driver. On Sway, this stricter invocation also moves Cage to
-every active output and requires both GPU vendors and an external display:
+Run it from a Wayland session. It tests the system AMD and NVIDIA Vulkan ICD
+once per detected vendor, launches the packaged Genkan under Vulkan-rendered
+nested Cage when that vendor has a display-connected adapter, and checks that
+an AMD-only run does not load or open the NVIDIA driver. On Sway, this stricter
+invocation also moves Cage to every active output, verifies its resulting tree
+location, and requires both GPU vendors and an active external display:
 
 ```sh
 GENKAN_REQUIRE_GPU_VENDORS='1002 10de' \
@@ -155,5 +156,6 @@ session environment. It does not exercise iced rendering or input automation.
 jobs in CI. It starts headless Weston, nests Cage with its pixman renderer, and
 launches Genkan using Mesa's software Vulkan driver. Genkan must remain alive
 until the check's controlled timeout; `ICED_BACKEND=wgpu` prevents a successful
-tiny-skia fallback from masking Vulkan failure. Early compositor, loader, or
-application failure fails the derivation.
+tiny-skia fallback from masking Vulkan failure. A child PID marker and mapped
+Lavapipe library prove Cage started Genkan and iced initialized the intended
+driver. Early compositor, loader, or application failure fails the derivation.
