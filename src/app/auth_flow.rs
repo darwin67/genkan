@@ -1,5 +1,4 @@
 use greetd_ipc::Request;
-use iced::widget::text_input;
 use iced::{window, Task};
 
 use genkan::auth::{self, Client};
@@ -111,7 +110,7 @@ impl App {
                 self.prompt = clean_prompt(&message);
                 self.secret = secret;
                 self.input.clear();
-                text_input::focus(self.input_id.clone())
+                self.focus_input()
             }
             AuthEffect::Acknowledge {
                 error,

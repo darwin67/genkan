@@ -22,12 +22,12 @@ pub fn panel(_theme: &Theme) -> container::Style {
 pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused);
     text_input::Style {
-        background: Background::Color(Color::from_rgba8(255, 255, 255, 0.12)),
+        background: Background::Color(Color::from_rgba8(7, 10, 24, 0.68)),
         border: Border {
             color: if focused {
-                Color::from_rgba8(255, 255, 255, 0.7)
+                Color::from_rgba8(255, 255, 255, 0.82)
             } else {
-                Color::from_rgba8(255, 255, 255, 0.28)
+                Color::from_rgba8(255, 255, 255, 0.42)
             },
             width: if focused { 2.0 } else { 1.0 },
             radius: 22.0.into(),
@@ -82,6 +82,65 @@ pub fn selection(_theme: &Theme) -> container::Style {
         background: Some(Background::Color(Color::from_rgba8(255, 255, 255, 0.12))),
         border: Border {
             color: Color::from_rgba8(255, 255, 255, 0.28),
+            width: 1.0,
+            radius: 18.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+pub fn avatar(radius: f32) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgba8(255, 255, 255, 0.18))),
+        border: Border {
+            color: Color::from_rgba8(255, 255, 255, 0.46),
+            width: 2.0,
+            radius: radius.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba8(0, 0, 0, 0.28),
+            offset: iced::Vector::new(0.0, 5.0),
+            blur_radius: 14.0,
+        },
+        ..Default::default()
+    }
+}
+
+pub fn account_tile(_theme: &Theme, status: button::Status, focused: bool) -> button::Style {
+    let (background, border) = match status {
+        button::Status::Hovered => (0.72, 0.58),
+        button::Status::Pressed => (0.82, 0.68),
+        button::Status::Disabled => (0.34, 0.18),
+        button::Status::Active => (0.58, 0.34),
+    };
+    button::Style {
+        background: Some(Background::Color(Color::from_rgba8(7, 10, 24, background))),
+        text_color: Color::WHITE,
+        border: Border {
+            color: Color::from_rgba8(255, 255, 255, if focused { 0.95 } else { border }),
+            width: if focused { 3.0 } else { 1.0 },
+            radius: 22.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba8(0, 0, 0, 0.3),
+            offset: iced::Vector::new(0.0, 6.0),
+            blur_radius: 18.0,
+        },
+    }
+}
+
+pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let alpha = match status {
+        button::Status::Hovered => 0.34,
+        button::Status::Pressed => 0.42,
+        button::Status::Disabled => 0.14,
+        button::Status::Active => 0.27,
+    };
+    button::Style {
+        background: Some(Background::Color(Color::from_rgba8(255, 255, 255, alpha))),
+        text_color: Color::WHITE,
+        border: Border {
+            color: Color::from_rgba8(255, 255, 255, 0.34),
             width: 1.0,
             radius: 18.0.into(),
         },

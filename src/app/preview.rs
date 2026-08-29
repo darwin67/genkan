@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use chrono::{Local, TimeZone};
 use clap::ValueEnum;
-use iced::widget::text_input;
+use iced::widget::{scrollable, text_input};
 use iced::Task;
 
 use crate::accounts::Account;
@@ -18,6 +18,8 @@ pub(crate) enum Fixture {
     Users,
     DuplicateNames,
     LargeAccountSet,
+    LongAccounts,
+    LongAuthentication,
     VisiblePrompt,
     InformationalMessage,
     CancellationProgress,
@@ -54,12 +56,16 @@ pub(super) fn build(
         .selected
         .as_ref()
         .map(|account| (account.username.clone(), account.display_name.clone()))
-        .unwrap_or_else(|| (String::new(), "Select account".into()));
+        .unwrap_or_else(|| (String::new(), "Select a user".into()));
     let focus_input = state.phase == Phase::WaitingForInput;
+    let focused_account = (state.selected.is_none() && !state.accounts.is_empty()).then_some(0);
     let app = App {
         username,
         display_name,
         accounts: state.accounts,
+        focused_account,
+        account_scroll_id: scrollable::Id::unique(),
+        page_scroll_id: scrollable::Id::unique(),
         input: String::new(),
         input_id: input_id.clone(),
         prompt: state.prompt,
@@ -79,7 +85,7 @@ pub(super) fn build(
         preview: true,
     };
     let task = if focus_input {
-        text_input::focus(input_id)
+        app.focus_input()
     } else {
         Task::none()
     };
@@ -125,6 +131,30 @@ impl State {
                     })
                     .collect(),
             ),
+            Fixture::LongAccounts => {
+                let prefix = "account".repeat(34);
+                state.select_accounts(vec![
+                    Account::override_account(
+                        format!("{prefix}01"),
+                        Some("Long duplicate account name ".repeat(4)),
+                    ),
+                    Account::override_account(
+                        format!("{prefix}02"),
+                        Some("Long duplicate account name ".repeat(4)),
+                    ),
+                ]);
+            }
+            Fixture::LongAuthentication => {
+                let account = Account::override_account(
+                    "selected-account".repeat(16),
+                    Some("Long selected account name ".repeat(4)),
+                );
+                state.accounts = vec![account.clone()];
+                state.selected = Some(account);
+                state.prompt = "Enter the complete authentication challenge: ".to_owned()
+                    + &"challenge ".repeat(52);
+                state.message = "Authentication details: ".to_owned() + &"detail ".repeat(70);
+            }
             Fixture::VisiblePrompt => {
                 state.prompt = "Verification code".into();
                 state.secret = false;
@@ -175,7 +205,7 @@ impl State {
         self.accounts = accounts;
         self.selected = None;
         self.phase = Phase::SelectingUser;
-        self.message = "Select an account".into();
+        self.message = "Select a user".into();
     }
 }
 
@@ -262,6 +292,14 @@ mod tests {
         let (large, _) = build(Fixture::LargeAccountSet, None, None);
         assert_eq!(large.accounts.len(), 24);
 
+        let (long, _) = build(Fixture::LongAccounts, None, None);
+        assert_eq!(long.accounts.len(), 2);
+        assert_eq!(long.accounts[0].display_name, long.accounts[1].display_name);
+        assert_ne!(long.accounts[0].username, long.accounts[1].username);
+        assert!(long.accounts[0].display_name.chars().count() >= 70);
+        assert!(long.accounts[0].username.chars().count() >= 240);
+        assert!(long.requires_flow_layout());
+
         let (empty, _) = build(Fixture::DiscoveryFailure, None, None);
         assert!(empty.accounts.is_empty());
     }
@@ -272,6 +310,12 @@ mod tests {
         assert_eq!(visible.phase, Phase::WaitingForInput);
         assert!(!visible.secret);
 
+        let (long, _) = build(Fixture::LongAuthentication, None, None);
+        assert!(long.prompt.chars().count() >= 500);
+        assert!(long.message.as_deref().unwrap().chars().count() >= 500);
+        assert!(long.username.chars().count() >= 240);
+        assert!(long.requires_flow_layout());
+
         let (authentication, _) = build(Fixture::AuthenticationFailure, None, None);
         assert_eq!(authentication.phase, Phase::Failed);
         assert!(authentication.message_is_error);
@@ -279,6 +323,7 @@ mod tests {
         let (cancellation, _) = build(Fixture::CancellationProgress, None, None);
         assert_eq!(cancellation.phase, Phase::CancellingForUserSelection);
         assert!(!cancellation.can_select_account());
+        assert_eq!(cancellation.focused_account, Some(0));
 
         let (cancellation_failure, _) = build(Fixture::CancellationFailure, None, None);
         assert_eq!(
@@ -286,6 +331,7 @@ mod tests {
             Phase::UserSelectionCancellationFailed
         );
         assert!(cancellation_failure.message_is_error);
+        assert_eq!(cancellation_failure.focused_account, Some(0));
 
         let (power, _) = build(Fixture::PowerConfirmation, None, None);
         assert_eq!(

@@ -31,9 +31,12 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   last-user record.
 - [X] Preserve cached, valid, unlocked, non-system account eligibility and
   partial object-failure behavior.
-- [ ] Present eligible identities in a wrapped, scrollable avatar grid with a
-  visible username and unique accessible name for every tile.
-- [ ] Keep the selected identity prominent during authentication and provide a
+- [X] Present eligible identities in a wrapped, scrollable avatar grid with a
+  visible username for every tile.
+- [ ] Expose a unique semantic accessible name containing display name and
+  username for every tile when the iced accessibility backend supports it;
+  visible text and application-managed keyboard focus do not satisfy this item.
+- [X] Keep the selected identity prominent during authentication and provide a
   Change User action whenever another eligible identity can safely be selected.
 - [X] Make Change User immediately invalidate the attempt, clear the response,
   and display account selection while a noninteractive state cancels greetd.
@@ -53,7 +56,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [ ] Automatically acknowledge noninteractive protocol messages while keeping
   the latest one visible until the RFD-defined superseding event; test
   message-to-prompt and consecutive-message sequences.
-- [ ] Keep prompt, input, submit action, progress, and inline failure feedback
+- [X] Keep prompt, input, submit action, progress, and inline failure feedback
   together as one compact readable unit.
 - [ ] Represent account, session, authentication, greetd transport/session,
   power, and preview notices by source and place each according to the RFD table.
@@ -64,7 +67,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Visual hierarchy
 
-- [ ] Remove the enclosing login panel and place time/date, identity flow,
+- [X] Remove the enclosing login panel and place time/date, identity flow,
   session choice, and utilities in the RFD hierarchy.
 - [ ] Establish shared styling for avatar tiles, compact prompt controls,
   selectors, utility actions, focus rings, and confirmation dialogs.
@@ -91,11 +94,11 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Session and power controls
 
-- [ ] Move the validated Wayland session selector to the lower-left secondary
+- [X] Move the validated Wayland session selector to the lower-left secondary
   position without changing its command-validation boundary.
 - [ ] Add only implemented keyboard and accessibility utility controls; do not
   render placeholders.
-- [ ] Place labelled power actions in the utility area and preserve explicit
+- [X] Place labelled power actions in the utility area and preserve explicit
   confirmation, logind error reporting, and preview simulation.
 
 * Responsive and graphics verification
