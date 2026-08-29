@@ -4,7 +4,6 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Fill, Length};
 
-use crate::accounts::Account;
 use crate::power::Action as PowerAction;
 use crate::{background, theme};
 
@@ -44,29 +43,37 @@ impl App {
             });
 
         let interactive = self.closing.is_none() && self.power_state == PowerState::Idle;
-        let account_selector: Element<'_, Message> =
-            if interactive && self.phase == Phase::SelectingUser && self.accounts.len() > 1 {
-                pick_list(
-                    self.accounts.as_slice(),
-                    None::<&Account>,
-                    Message::SelectAccount,
-                )
-                .padding([10, 16])
-                .style(theme::selector)
-                .menu_style(theme::selector_menu)
-                .width(Length::Fixed(260.0))
-                .into()
-            } else {
-                Space::new(Length::Shrink, Length::Shrink).into()
-            };
-        let prompt = scrollable(
-            text(&self.prompt)
-                .size(15)
-                .width(Fill)
-                .wrapping(Wrapping::WordOrGlyph),
-        )
-        .width(Fill)
-        .height(Length::Fixed(52.0));
+        let selected_account = self
+            .accounts
+            .iter()
+            .find(|account| account.username == self.username);
+        let account_selector: Element<'_, Message> = if self.can_select_account() {
+            pick_list(
+                self.accounts.as_slice(),
+                selected_account,
+                Message::SelectAccount,
+            )
+            .placeholder("Select account")
+            .padding([10, 16])
+            .style(theme::selector)
+            .menu_style(theme::selector_menu)
+            .width(Length::Fixed(260.0))
+            .into()
+        } else {
+            container(text(
+                selected_account
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| self.display_name.clone()),
+            ))
+            .width(Length::Fixed(260.0))
+            .padding([10, 16])
+            .style(theme::selection)
+            .into()
+        };
+        let prompt = text(&self.prompt)
+            .size(15)
+            .width(Fill)
+            .wrapping(Wrapping::WordOrGlyph);
         let input = text_input("", &self.input)
             .id(self.input_id.clone())
             .on_input_maybe(
@@ -143,11 +150,6 @@ impl App {
         let login_panel = container(
             column![
                 avatar,
-                text(&self.display_name)
-                    .size(26)
-                    .color(Color::WHITE)
-                    .width(Fill)
-                    .wrapping(Wrapping::WordOrGlyph),
                 account_selector,
                 prompt,
                 auth_row,

@@ -92,6 +92,7 @@ impl App {
         let account = config
             .username
             .map(|username| Account::override_account(username, config.display_name));
+        let accounts = account.iter().cloned().collect();
         let configured = selected_session.is_some() && account.is_some();
         let preview = config.preview && account.is_some();
         let discovering = selected_session.is_some() && account.is_none();
@@ -106,7 +107,7 @@ impl App {
                 .as_ref()
                 .map(|account| account.display_name.clone())
                 .unwrap_or_else(|| "Select account".into()),
-            accounts: Vec::new(),
+            accounts,
             input: String::new(),
             input_id: text_input::Id::new("authentication-input"),
             prompt: "Password".into(),
@@ -227,7 +228,9 @@ impl App {
                 Task::none()
             }
             Message::AccountsResult(Err(error)) => self.fail(error),
-            Message::SelectAccount(account) if self.phase == Phase::SelectingUser => {
+            Message::SelectAccount(account)
+                if self.can_select_account() && account.username != self.username =>
+            {
                 self.select_account(account)
             }
             Message::SelectAccount(_) => Task::none(),
@@ -381,13 +384,19 @@ impl App {
     }
 
     fn select_account(&mut self, account: Account) -> Task<Message> {
+        let replacing_account = !self.username.is_empty();
         self.username = account.username;
         self.display_name = account.display_name;
+        self.input.clear();
         self.message = None;
         self.message_is_error = false;
         self.phase = Phase::CreatingSession;
         let attempt = self.attempt.advance();
-        auth_flow::begin(self.username.clone(), attempt, true)
+        if replacing_account {
+            auth_flow::restart(self.client.take(), self.username.clone(), attempt)
+        } else {
+            auth_flow::begin(self.username.clone(), attempt, true)
+        }
     }
 
     fn retry_authentication(&mut self) -> Task<Message> {
@@ -416,6 +425,15 @@ impl App {
         self.closing.is_none()
             && self.power_state == PowerState::Idle
             && !matches!(self.phase, Phase::Authenticating | Phase::StartingSession)
+    }
+
+    fn can_select_account(&self) -> bool {
+        self.closing.is_none()
+            && self.power_state == PowerState::Idle
+            && matches!(
+                self.phase,
+                Phase::SelectingUser | Phase::WaitingForInput | Phase::Failed
+            )
     }
 }
 
@@ -532,6 +550,38 @@ mod tests {
         assert_eq!(app.phase, Phase::SelectingUser);
         assert_eq!(app.accounts.len(), 2);
         assert_eq!(app.message.as_deref(), Some("Select an account"));
+    }
+
+    #[test]
+    fn selecting_another_account_restarts_authentication() {
+        let mut app = app();
+        app.accounts = vec![account("darwin"), account("alice")];
+
+        let _ = app.update(Message::SelectAccount(account("alice")));
+
+        assert_eq!(app.phase, Phase::CreatingSession);
+        assert_eq!(app.username, "alice");
+        assert_eq!(app.display_name, "ALICE");
+        assert!(app.input.is_empty());
+        assert!(app.message.is_none());
+    }
+
+    #[test]
+    fn account_selection_is_disabled_while_authentication_is_in_flight() {
+        for phase in [
+            Phase::CreatingSession,
+            Phase::Authenticating,
+            Phase::StartingSession,
+        ] {
+            let mut app = app();
+            app.phase = phase;
+            app.accounts = vec![account("darwin"), account("alice")];
+
+            let _ = app.update(Message::SelectAccount(account("alice")));
+
+            assert!(!app.can_select_account(), "phase {phase:?}");
+            assert_eq!(app.username, "darwin");
+        }
     }
 
     #[test]

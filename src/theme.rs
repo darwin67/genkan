@@ -76,6 +76,19 @@ pub fn selector_menu(_theme: &Theme) -> menu::Style {
     }
 }
 
+pub fn selection(_theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(Color::WHITE),
+        background: Some(Background::Color(Color::from_rgba8(255, 255, 255, 0.12))),
+        border: Border {
+            color: Color::from_rgba8(255, 255, 255, 0.28),
+            width: 1.0,
+            radius: 18.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 pub fn translucent_button(_theme: &Theme, status: button::Status) -> button::Style {
     let alpha = match status {
         button::Status::Hovered => 0.24,
