@@ -86,8 +86,13 @@ pub(crate) enum Message {
     },
     AccountsResult(Result<Vec<Account>, String>),
     ChangeUser,
-    UserSelectionCancelled(Result<(), String>),
-    UserSelectionCancellationSlow,
+    UserSelectionCancelled {
+        attempt: Attempt,
+        result: Result<(), String>,
+    },
+    UserSelectionCancellationSlow {
+        attempt: Attempt,
+    },
     RetryUserSelectionCancellation,
     SelectAccount(Account),
     SelectSession(Session),
@@ -179,7 +184,7 @@ impl App {
                 ),
                 Closing::WaitingForUserSelectionCancellation(_) => matches!(
                     &message,
-                    Message::UserSelectionCancelled(_) | Message::CloseTimeout(_)
+                    Message::UserSelectionCancelled { .. } | Message::CloseTimeout(_)
                 ),
                 Closing::Cancelling(_) => {
                     matches!(
@@ -245,11 +250,12 @@ impl App {
             Message::AccountsResult(Err(error)) => self.fail(error),
             Message::ChangeUser if self.can_change_user() => self.change_user(),
             Message::ChangeUser => Task::none(),
-            Message::UserSelectionCancelled(_)
-                if matches!(
-                    self.closing,
-                    Some(Closing::WaitingForUserSelectionCancellation(_))
-                ) =>
+            Message::UserSelectionCancelled { attempt, .. }
+                if attempt == self.attempt
+                    && matches!(
+                        self.closing,
+                        Some(Closing::WaitingForUserSelectionCancellation(_))
+                    ) =>
             {
                 let Some(Closing::WaitingForUserSelectionCancellation(window)) = self.closing
                 else {
@@ -258,25 +264,27 @@ impl App {
                 self.closing = Some(Closing::Dispatching(window));
                 window::close(window)
             }
-            Message::UserSelectionCancelled(Ok(()))
-                if self.phase == Phase::CancellingForUserSelection =>
-            {
+            Message::UserSelectionCancelled {
+                attempt,
+                result: Ok(()),
+            } if attempt == self.attempt && self.phase == Phase::CancellingForUserSelection => {
                 self.phase = Phase::SelectingUser;
                 self.selection_session_cancelled = true;
                 self.message = Some("Select an account".into());
                 self.message_is_error = false;
                 Task::none()
             }
-            Message::UserSelectionCancelled(Err(error))
-                if self.phase == Phase::CancellingForUserSelection =>
-            {
+            Message::UserSelectionCancelled {
+                attempt,
+                result: Err(error),
+            } if attempt == self.attempt && self.phase == Phase::CancellingForUserSelection => {
                 self.phase = Phase::UserSelectionCancellationFailed;
                 self.message = Some(auth_flow::bounded_auth_text(&error));
                 self.message_is_error = true;
                 Task::none()
             }
-            Message::UserSelectionCancellationSlow
-                if self.phase == Phase::CancellingForUserSelection =>
+            Message::UserSelectionCancellationSlow { attempt }
+                if attempt == self.attempt && self.phase == Phase::CancellingForUserSelection =>
             {
                 self.message = Some("Still changing user…".into());
                 self.message_is_error = false;
@@ -291,10 +299,11 @@ impl App {
                 if self.preview {
                     return self.finish_preview_user_selection();
                 }
-                auth_flow::cancel_for_user_selection(None)
+                let attempt = self.attempt.advance();
+                auth_flow::cancel_for_user_selection(None, attempt)
             }
-            Message::UserSelectionCancelled(_)
-            | Message::UserSelectionCancellationSlow
+            Message::UserSelectionCancelled { .. }
+            | Message::UserSelectionCancellationSlow { .. }
             | Message::RetryUserSelectionCancellation => Task::none(),
             Message::SelectAccount(account)
                 if self.can_select_account() && account.username != self.username =>
@@ -508,7 +517,7 @@ impl App {
 
     fn change_user(&mut self) -> Task<Message> {
         let client = self.client.take();
-        self.attempt.advance();
+        let attempt = self.attempt.advance();
         self.username.clear();
         self.display_name = "Select account".into();
         self.input.clear();
@@ -519,7 +528,7 @@ impl App {
         if self.preview {
             self.finish_preview_user_selection()
         } else {
-            auth_flow::cancel_for_user_selection(client)
+            auth_flow::cancel_for_user_selection(client, attempt)
         }
     }
 
@@ -706,7 +715,10 @@ mod tests {
         let _ = app.update(Message::SelectAccount(account("alice")));
         assert!(app.username.is_empty());
 
-        let _ = app.update(Message::UserSelectionCancelled(Ok(())));
+        let _ = app.update(Message::UserSelectionCancelled {
+            attempt: app.attempt,
+            result: Ok(()),
+        });
         assert_eq!(app.phase, Phase::SelectingUser);
         assert!(app.can_select_account());
         assert!(app.selection_session_cancelled);
@@ -727,9 +739,10 @@ mod tests {
         app.accounts = vec![account("darwin"), account("alice")];
 
         let _ = app.update(Message::ChangeUser);
-        let _ = app.update(Message::UserSelectionCancelled(Err(
-            "greetd unavailable".into()
-        )));
+        let _ = app.update(Message::UserSelectionCancelled {
+            attempt: app.attempt,
+            result: Err("greetd unavailable".into()),
+        });
 
         assert_eq!(app.phase, Phase::UserSelectionCancellationFailed);
         assert_eq!(app.message.as_deref(), Some("greetd unavailable"));
@@ -751,7 +764,7 @@ mod tests {
 
         let _ = app.update(Message::ChangeUser);
         let attempt = app.attempt;
-        let _ = app.update(Message::UserSelectionCancellationSlow);
+        let _ = app.update(Message::UserSelectionCancellationSlow { attempt });
 
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
         assert_eq!(app.message.as_deref(), Some("Still changing user…"));
@@ -764,6 +777,32 @@ mod tests {
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
         assert_eq!(app.attempt, attempt);
         assert!(app.username.is_empty());
+    }
+
+    #[test]
+    fn stale_progress_does_not_mark_a_new_cancellation_as_slow() {
+        let mut app = app();
+        app.accounts = vec![account("darwin"), account("alice")];
+
+        let _ = app.update(Message::ChangeUser);
+        let old_attempt = app.attempt;
+        let _ = app.update(Message::UserSelectionCancelled {
+            attempt: old_attempt,
+            result: Err("greetd unavailable".into()),
+        });
+        let _ = app.update(Message::RetryUserSelectionCancellation);
+        let current_attempt = app.attempt;
+
+        assert_ne!(current_attempt, old_attempt);
+        assert_eq!(app.message.as_deref(), Some("Changing user…"));
+
+        let _ = app.update(Message::UserSelectionCancellationSlow {
+            attempt: old_attempt,
+        });
+
+        assert_eq!(app.attempt, current_attempt);
+        assert_eq!(app.message.as_deref(), Some("Changing user…"));
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
     }
 
     #[test]
@@ -1066,9 +1105,10 @@ mod tests {
         );
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
 
-        let _ = app.update(Message::UserSelectionCancelled(Err(
-            "greetd unavailable".into()
-        )));
+        let _ = app.update(Message::UserSelectionCancelled {
+            attempt: app.attempt,
+            result: Err("greetd unavailable".into()),
+        });
 
         assert_eq!(app.closing, Some(Closing::Dispatching(window)));
         assert_eq!(app.phase, Phase::CancellingForUserSelection);

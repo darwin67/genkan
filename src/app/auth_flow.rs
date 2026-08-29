@@ -241,7 +241,7 @@ pub(super) fn cancel_for_close(client: Option<Client>, window: window::Id) -> Ta
     })
 }
 
-pub(super) fn cancel_for_user_selection(client: Option<Client>) -> Task<Message> {
+pub(super) fn cancel_for_user_selection(client: Option<Client>, attempt: Attempt) -> Task<Message> {
     Task::batch([
         Task::perform(
             async move {
@@ -249,13 +249,13 @@ pub(super) fn cancel_for_user_selection(client: Option<Client>) -> Task<Message>
                     .await
                     .map_err(|error| error.to_string())
             },
-            Message::UserSelectionCancelled,
+            move |result| Message::UserSelectionCancelled { attempt, result },
         ),
         Task::perform(
             async {
                 tokio::time::sleep(USER_SELECTION_CANCEL_PROGRESS_DELAY).await;
             },
-            |()| Message::UserSelectionCancellationSlow,
+            move |()| Message::UserSelectionCancellationSlow { attempt },
         ),
     ])
 }
