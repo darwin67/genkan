@@ -51,6 +51,9 @@ impl App {
                     None::<&Account>,
                     Message::SelectAccount,
                 )
+                .padding([10, 16])
+                .style(theme::selector)
+                .menu_style(theme::selector_menu)
                 .width(Length::Fixed(260.0))
                 .into()
             } else {
@@ -115,6 +118,9 @@ impl App {
                 self.selected_session.as_ref(),
                 Message::SelectSession,
             )
+            .padding([10, 16])
+            .style(theme::selector)
+            .menu_style(theme::selector_menu)
             .width(Length::Fixed(220.0))
             .into()
         } else {
