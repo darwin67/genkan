@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use chrono::Local;
+use chrono::{Local, TimeZone};
 use clap::ValueEnum;
 use iced::widget::text_input;
 use iced::Task;
@@ -71,7 +71,7 @@ pub(super) fn build(
         sessions,
         selected_session,
         started_at: Instant::now(),
-        now: Local::now(),
+        now: preview_now(),
         power_state: state.power_state,
         attempt: Attempt::initial(),
         selection_session_cancelled: false,
@@ -197,6 +197,13 @@ fn preview_session() -> Session {
     }
 }
 
+fn preview_now() -> chrono::DateTime<Local> {
+    Local
+        .with_ymd_and_hms(2026, 8, 29, 9, 41, 0)
+        .single()
+        .expect("preview date must be valid in the local time zone")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,7 +214,33 @@ mod tests {
             let (app, _) = build(*fixture, None, None);
             assert!(app.preview, "fixture {fixture:?}");
             assert!(app.client.is_none(), "fixture {fixture:?}");
+            assert_eq!(app.now.format("%-I:%M").to_string(), "9:41");
+            assert_eq!(
+                app.now.format("%A, %B %-d").to_string(),
+                "Saturday, August 29"
+            );
+            assert_eq!(app.background_elapsed(), 0.0);
         }
+
+        let (selected, _) = build(Fixture::Selected, None, None);
+        assert_eq!(selected.username, "preview");
+        assert_eq!(selected.display_name, "Preview User");
+        assert_eq!(selected.accounts, vec![selected.accounts[0].clone()]);
+        assert_eq!(
+            selected.selected_session.as_ref().unwrap(),
+            &preview_session()
+        );
+    }
+
+    #[test]
+    fn preview_ticks_do_not_change_time_or_animation() {
+        let (mut app, _) = build(Fixture::Selected, None, None);
+        let now = app.now;
+
+        let _ = app.update(Message::Tick);
+
+        assert_eq!(app.now, now);
+        assert_eq!(app.background_elapsed(), 0.0);
     }
 
     #[test]

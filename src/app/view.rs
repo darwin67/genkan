@@ -12,8 +12,7 @@ use super::{App, Message, PowerState};
 
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        let elapsed = self.started_at.elapsed().as_secs_f32();
-        let background = background::Background::new(elapsed).view();
+        let background = background::Background::new(self.background_elapsed()).view();
         let clock = text(self.now.format("%-I:%M").to_string())
             .size(80)
             .color(Color::WHITE);

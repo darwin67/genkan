@@ -12,11 +12,12 @@ runs the user session itself.
 make dev
 ```
 
-The default preview uses `$USER` as a synthetic account and accepts password
-input without sending it anywhere. Authentication submission and all power
-actions are simulated, so testing the UI cannot suspend, restart, or shut down
-the development machine. Preview also uses a synthetic Wayland session and does
-not contact AccountsService, greetd, or logind.
+The default preview uses a fixed synthetic account, time, animation frame, and
+Wayland session. It accepts password input without sending it anywhere.
+Authentication submission and all power actions are simulated, so testing the
+UI cannot suspend, restart, or shut down the development machine. Preview does
+not contact AccountsService, greetd, or logind. Pass an explicit `--username`
+to `cargo run` only when a particular preview identity is useful.
 
 Select deterministic fixtures with `PREVIEW`, for example:
 

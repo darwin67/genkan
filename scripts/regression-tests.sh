@@ -241,6 +241,15 @@ test_ci_watches_all_scripts() {
     fail "CI push and pull_request filters must watch scripts/**"
 }
 
+test_dev_preview_does_not_inherit_host_identity() {
+  local command
+  command=$(make --no-print-directory -n -C "$repo_root" dev)
+  [[ $command == *'--windowed --preview "selected"'* ]] ||
+    fail "make dev must select the deterministic default fixture"
+  [[ $command != *'--username'* ]] ||
+    fail "make dev must not inject a host-dependent username"
+}
+
 test_conventional_commit_description
 test_vendor_level_hardware_coverage
 test_vulkan_discovery_timeout
@@ -248,5 +257,6 @@ test_sway_query_failure_is_not_masked
 test_external_output_must_be_active
 test_representative_selection_placement_and_cleanup
 test_ci_watches_all_scripts
+test_dev_preview_does_not_inherit_host_identity
 
 echo "Shell regression tests passed"

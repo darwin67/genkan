@@ -217,6 +217,7 @@ impl App {
         }
 
         match message {
+            Message::Tick if self.preview => Task::none(),
             Message::Tick => {
                 self.now = Local::now();
                 Task::none()
@@ -553,6 +554,14 @@ impl App {
         self.closing.is_none()
             && self.power_state == PowerState::Idle
             && self.phase == Phase::SelectingUser
+    }
+
+    fn background_elapsed(&self) -> f32 {
+        if self.preview {
+            0.0
+        } else {
+            self.started_at.elapsed().as_secs_f32()
+        }
     }
 }
 
