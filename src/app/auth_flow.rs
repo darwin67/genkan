@@ -408,6 +408,37 @@ mod tests {
     }
 
     #[test]
+    fn successful_authentication_emits_the_selected_session_request() {
+        let session = crate::sessions::Session {
+            name: "River".into(),
+            command: vec!["/run/current-system/sw/bin/river".into(), "-c".into()],
+            session_id: "river-session".into(),
+            desktop_names: vec!["River".into(), "wlroots".into()],
+        };
+        let transition = transition(
+            Phase::Authenticating,
+            auth::Response::Success,
+            Some(&session),
+        );
+
+        let AuthEffect::StartSession(request) = transition.effect else {
+            panic!("successful authentication did not start the selected session");
+        };
+        let Request::StartSession { cmd, env } = request.into_greetd() else {
+            panic!("successful authentication emitted the wrong greetd request");
+        };
+        assert_eq!(cmd, session.command);
+        assert_eq!(
+            env,
+            [
+                "XDG_SESSION_TYPE=wayland",
+                "XDG_SESSION_DESKTOP=river-session",
+                "XDG_CURRENT_DESKTOP=River:wlroots",
+            ]
+        );
+    }
+
+    #[test]
     fn successful_authentication_requires_a_selected_session() {
         assert_eq!(
             transition(Phase::Authenticating, auth::Response::Success, None),
