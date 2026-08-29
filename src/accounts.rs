@@ -93,6 +93,9 @@ pub(crate) fn preferred_account(accounts: &[Account]) -> Option<&Account> {
     if accounts.len() == 1 {
         return accounts.first();
     }
+    if accounts.iter().any(|account| account.last_login.is_none()) {
+        return None;
+    }
     let latest = accounts
         .iter()
         .filter_map(|account| account.last_login)
@@ -250,7 +253,7 @@ mod tests {
         let mut bob = Account::override_account("bob".into(), Some("Bob".into()));
         bob.last_login = Some(20);
         let mut carol = Account::override_account("carol".into(), Some("Carol".into()));
-        carol.last_login = None;
+        carol.last_login = Some(5);
 
         assert_eq!(preferred_account(&[alice.clone()]), Some(&alice));
         assert_eq!(
@@ -262,14 +265,23 @@ mod tests {
     }
 
     #[test]
-    fn does_not_guess_when_login_recency_is_unknown_or_zero() {
+    fn does_not_guess_when_any_login_recency_is_unknown_or_zero() {
         let unknown = Account::override_account("unknown".into(), None);
         let mut zero = properties();
         zero.username = "zero".into();
         zero.last_login = Some(0);
         let zero = Account::from_properties(zero).unwrap();
+        let mut known = properties();
+        known.username = "known".into();
+        known.last_login = Some(20);
+        let known = Account::from_properties(known).unwrap();
 
-        assert_eq!(preferred_account(&[unknown, zero]), None);
+        assert_eq!(preferred_account(&[unknown.clone(), known.clone()]), None);
+        assert_eq!(preferred_account(&[zero, known]), None);
+        assert_eq!(
+            preferred_account(std::slice::from_ref(&unknown)),
+            Some(&unknown)
+        );
     }
 
     #[test]

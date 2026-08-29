@@ -100,11 +100,13 @@ policy. A denial or unavailable system bus leaves the active authentication
 attempt intact and displays the logind error.
 
 Genkan discovers cached, unlocked, non-system login users through
-AccountsService. It automatically selects a sole account and presents a
-selector when multiple accounts are available. `--username` and
-`--display-name` remain optional administrative overrides. The greeter renders
-initials from bounded account labels rather than decoding user-controlled icon
-files in the credential-handling process.
+AccountsService. Selection precedence is an administrative `--username`
+override, the uniquely most recent eligible account when every eligible
+account has usable login recency, and then a sole eligible account. Genkan
+presents account selection when recency is missing, zero, or tied.
+`--display-name` remains an optional companion to `--username`. The greeter
+renders initials from bounded account labels rather than decoding
+user-controlled icon files in the credential-handling process.
 
 Wayland sessions come exclusively from validated `wayland-sessions/*.desktop`
 entries in `XDG_DATA_DIRS`. Genkan honors directory precedence and hidden-entry
