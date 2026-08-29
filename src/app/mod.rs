@@ -20,6 +20,7 @@ pub(crate) use preview::Fixture as PreviewFixture;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Closing {
     WaitingForClient(window::Id),
+    WaitingForUserSelectionCancellation(window::Id),
     Cancelling(window::Id),
     Dispatching(window::Id),
 }
@@ -33,7 +34,13 @@ enum PowerState {
 
 impl Closing {
     fn is_cleaning(self, window: window::Id) -> bool {
-        matches!(self, Self::WaitingForClient(id) | Self::Cancelling(id) if id == window)
+        matches!(
+            self,
+            Self::WaitingForClient(id)
+                | Self::WaitingForUserSelectionCancellation(id)
+                | Self::Cancelling(id)
+                if id == window
+        )
     }
 }
 
@@ -169,6 +176,10 @@ impl App {
                         | Message::SessionCancelled(_)
                         | Message::CloseTimeout(_)
                 ),
+                Closing::WaitingForUserSelectionCancellation(_) => matches!(
+                    &message,
+                    Message::UserSelectionCancelled(_) | Message::CloseTimeout(_)
+                ),
                 Closing::Cancelling(_) => {
                     matches!(
                         &message,
@@ -232,6 +243,19 @@ impl App {
             Message::AccountsResult(Err(error)) => self.fail(error),
             Message::ChangeUser if self.can_change_user() => self.change_user(),
             Message::ChangeUser => Task::none(),
+            Message::UserSelectionCancelled(_)
+                if matches!(
+                    self.closing,
+                    Some(Closing::WaitingForUserSelectionCancellation(_))
+                ) =>
+            {
+                let Some(Closing::WaitingForUserSelectionCancellation(window)) = self.closing
+                else {
+                    unreachable!();
+                };
+                self.closing = Some(Closing::Dispatching(window));
+                window::close(window)
+            }
             Message::UserSelectionCancelled(Ok(()))
                 if self.phase == Phase::CancellingForUserSelection =>
             {
@@ -393,6 +417,10 @@ impl App {
                 }
             }
             Message::CloseRequested(window) if self.preview => window::close(window),
+            Message::CloseRequested(window) if self.phase == Phase::CancellingForUserSelection => {
+                self.closing = Some(Closing::WaitingForUserSelectionCancellation(window));
+                auth_flow::close_timeout(window)
+            }
             Message::CloseRequested(window) if self.client.is_some() => {
                 self.attempt.advance();
                 self.closing = Some(Closing::Cancelling(window));
@@ -979,6 +1007,28 @@ mod tests {
         let _ = app.update(Message::CloseRequested(second));
 
         assert_eq!(app.closing, Some(Closing::Cancelling(first)));
+    }
+
+    #[test]
+    fn close_waits_for_in_flight_user_selection_cancellation() {
+        let mut app = app();
+        let window = window::Id::unique();
+        app.phase = Phase::CancellingForUserSelection;
+
+        let _ = app.update(Message::CloseRequested(window));
+
+        assert_eq!(
+            app.closing,
+            Some(Closing::WaitingForUserSelectionCancellation(window))
+        );
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+
+        let _ = app.update(Message::UserSelectionCancelled(Err(
+            "greetd unavailable".into()
+        )));
+
+        assert_eq!(app.closing, Some(Closing::Dispatching(window)));
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
     }
 
     #[test]
