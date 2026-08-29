@@ -10,6 +10,7 @@ const MAX_LABEL_CHARS: usize = 80;
 pub struct Account {
     pub username: String,
     pub display_name: String,
+    last_login: Option<i64>,
 }
 
 impl Account {
@@ -18,6 +19,7 @@ impl Account {
             display_name: presentation_label(display_name.as_deref().unwrap_or(&username))
                 .unwrap_or_else(|| username.clone()),
             username,
+            last_login: None,
         }
     }
 
@@ -33,6 +35,7 @@ impl Account {
         Some(Self {
             username: properties.username,
             display_name,
+            last_login: properties.last_login.filter(|time| *time > 0),
         })
     }
 }
@@ -53,6 +56,7 @@ struct Properties {
     real_name: String,
     system_account: bool,
     locked: bool,
+    last_login: Option<i64>,
 }
 
 #[derive(Debug, Error)]
@@ -85,6 +89,18 @@ fn is_format_control(character: char) -> bool {
     get_general_category(character) == GeneralCategory::Format
 }
 
+pub(crate) fn preferred_account(accounts: &[Account]) -> Option<&Account> {
+    if accounts.len() == 1 {
+        return accounts.first();
+    }
+    let latest = accounts.iter().filter_map(|account| account.last_login).max()?;
+    let mut matches = accounts
+        .iter()
+        .filter(|account| account.last_login == Some(latest));
+    let account = matches.next()?;
+    matches.next().is_none().then_some(account)
+}
+
 async fn load_properties(
     connection: &zbus::Connection,
     path: &OwnedObjectPath,
@@ -96,11 +112,17 @@ async fn load_properties(
         "org.freedesktop.Accounts.User",
     )
     .await?;
+    let username = user.get_property("UserName").await?;
+    let real_name = user.get_property("RealName").await?;
+    let system_account = user.get_property("SystemAccount").await?;
+    let locked = user.get_property("Locked").await?;
+    let last_login = user.get_property("LoginTime").await.ok();
     Ok(Properties {
-        username: user.get_property("UserName").await?,
-        real_name: user.get_property("RealName").await?,
-        system_account: user.get_property("SystemAccount").await?,
-        locked: user.get_property("Locked").await?,
+        username,
+        real_name,
+        system_account,
+        locked,
+        last_login,
     })
 }
 
@@ -156,6 +178,7 @@ mod tests {
             real_name: "Alice Example".into(),
             system_account: false,
             locked: false,
+            last_login: None,
         }
     }
 
@@ -197,6 +220,35 @@ mod tests {
             collect_accounts([Err::<Properties, _>("stale object")]),
             Err("stale object")
         );
+    }
+
+    #[test]
+    fn selects_only_a_unique_most_recent_account() {
+        let mut alice = Account::from_properties(properties()).unwrap();
+        alice.last_login = Some(10);
+        let mut bob = Account::override_account("bob".into(), Some("Bob".into()));
+        bob.last_login = Some(20);
+        let mut carol = Account::override_account("carol".into(), Some("Carol".into()));
+        carol.last_login = None;
+
+        assert_eq!(preferred_account(&[alice.clone()]), Some(&alice));
+        assert_eq!(
+            preferred_account(&[alice.clone(), bob.clone(), carol.clone()]),
+            Some(&bob)
+        );
+        assert_eq!(preferred_account(&[alice.clone(), alice]), None);
+        assert_eq!(preferred_account(&[carol, bob.clone()]), Some(&bob));
+    }
+
+    #[test]
+    fn does_not_guess_when_login_recency_is_unknown_or_zero() {
+        let unknown = Account::override_account("unknown".into(), None);
+        let mut zero = properties();
+        zero.username = "zero".into();
+        zero.last_login = Some(0);
+        let zero = Account::from_properties(zero).unwrap();
+
+        assert_eq!(preferred_account(&[unknown, zero]), None);
     }
 
     #[test]

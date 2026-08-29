@@ -213,19 +213,19 @@ impl App {
                 Task::none()
             }
             Message::InputChanged(_) => Task::none(),
-            Message::AccountsResult(Ok(accounts)) if accounts.len() == 1 => {
-                self.accounts = accounts;
-                self.select_account(self.accounts[0].clone())
-            }
             Message::AccountsResult(Ok(accounts)) if accounts.is_empty() => {
                 self.fail("AccountsService found no unlocked non-system users".into())
             }
             Message::AccountsResult(Ok(accounts)) => {
                 self.accounts = accounts;
-                self.phase = Phase::SelectingUser;
-                self.message = Some("Select an account".into());
-                self.message_is_error = false;
-                Task::none()
+                if let Some(account) = accounts::preferred_account(&self.accounts).cloned() {
+                    self.select_account(account)
+                } else {
+                    self.phase = Phase::SelectingUser;
+                    self.message = Some("Select an account".into());
+                    self.message_is_error = false;
+                    Task::none()
+                }
             }
             Message::AccountsResult(Err(error)) => self.fail(error),
             Message::SelectAccount(account)
