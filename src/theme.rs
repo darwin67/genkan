@@ -106,7 +106,7 @@ pub fn avatar(radius: f32) -> container::Style {
     }
 }
 
-pub fn account_tile(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn account_tile(_theme: &Theme, status: button::Status, focused: bool) -> button::Style {
     let (background, border) = match status {
         button::Status::Hovered => (0.72, 0.58),
         button::Status::Pressed => (0.82, 0.68),
@@ -117,8 +117,8 @@ pub fn account_tile(_theme: &Theme, status: button::Status) -> button::Style {
         background: Some(Background::Color(Color::from_rgba8(7, 10, 24, background))),
         text_color: Color::WHITE,
         border: Border {
-            color: Color::from_rgba8(255, 255, 255, border),
-            width: 1.0,
+            color: Color::from_rgba8(255, 255, 255, if focused { 0.95 } else { border }),
+            width: if focused { 3.0 } else { 1.0 },
             radius: 22.0.into(),
         },
         shadow: Shadow {

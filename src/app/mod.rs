@@ -1,3 +1,4 @@
+mod account_tile;
 mod auth_flow;
 mod preview;
 mod view;
@@ -7,8 +8,8 @@ use std::time::{Duration, Instant};
 use auth_flow::{Attempt, Phase};
 use chrono::Local;
 use greetd_ipc::Request;
-use iced::widget::text_input;
-use iced::{time, window, Subscription, Task};
+use iced::widget::{scrollable, text_input};
+use iced::{event, keyboard, time, window, Subscription, Task};
 
 use crate::accounts::{self, Account};
 use crate::power::{self, Action as PowerAction};
@@ -30,6 +31,21 @@ enum PowerState {
     Idle,
     Confirming(PowerAction),
     Executing(PowerAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountNavigation {
+    Next,
+    Previous,
+    Activate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageNavigation {
+    Up,
+    Down,
+    Start,
+    End,
 }
 
 impl Closing {
@@ -55,6 +71,9 @@ pub(crate) struct App {
     username: String,
     display_name: String,
     accounts: Vec<Account>,
+    focused_account: Option<usize>,
+    account_scroll_id: scrollable::Id,
+    page_scroll_id: scrollable::Id,
     input: String,
     input_id: text_input::Id,
     prompt: String,
@@ -95,6 +114,8 @@ pub(crate) enum Message {
     },
     RetryUserSelectionCancellation,
     SelectAccount(Account),
+    NavigateAccount(AccountNavigation),
+    NavigatePage(PageNavigation),
     SelectSession(Session),
     AskPower(PowerAction),
     CancelPower,
@@ -130,6 +151,9 @@ impl App {
                 .map(|account| account.display_name.clone())
                 .unwrap_or_else(|| "Select a user".into()),
             accounts,
+            focused_account: None,
+            account_scroll_id: scrollable::Id::unique(),
+            page_scroll_id: scrollable::Id::unique(),
             input: String::new(),
             input_id: text_input::Id::new("authentication-input"),
             prompt: "Password".into(),
@@ -170,6 +194,8 @@ impl App {
         Subscription::batch([
             time::every(Duration::from_millis(50)).map(|_| Message::Tick),
             window::close_requests().map(Message::CloseRequested),
+            keyboard::on_key_press(account_navigation),
+            event::listen_with(page_navigation),
         ])
     }
 
@@ -241,10 +267,11 @@ impl App {
                 if let Some(account) = accounts::preferred_account(&self.accounts).cloned() {
                     self.select_account(account)
                 } else {
+                    self.focused_account = Some(0);
                     self.phase = Phase::SelectingUser;
                     self.message = Some("Select a user".into());
                     self.message_is_error = false;
-                    Task::none()
+                    self.scroll_to_focused_account()
                 }
             }
             Message::AccountsResult(Err(error)) => self.fail(error),
@@ -272,7 +299,7 @@ impl App {
                 self.selection_session_cancelled = true;
                 self.message = Some("Select a user".into());
                 self.message_is_error = false;
-                Task::none()
+                self.scroll_to_focused_account()
             }
             Message::UserSelectionCancelled {
                 attempt,
@@ -311,6 +338,11 @@ impl App {
                 self.select_account(account)
             }
             Message::SelectAccount(_) => Task::none(),
+            Message::NavigateAccount(navigation) if self.can_select_account() => {
+                self.navigate_account(navigation)
+            }
+            Message::NavigateAccount(_) => Task::none(),
+            Message::NavigatePage(navigation) => self.navigate_page(navigation),
             Message::SelectSession(session) if self.can_select_session() => {
                 self.selected_session = Some(session);
                 Task::none()
@@ -359,7 +391,7 @@ impl App {
                     self.input.clear();
                     self.message = Some("Preview: credentials were not sent".into());
                     self.message_is_error = false;
-                    return text_input::focus(self.input_id.clone());
+                    return self.focus_input();
                 }
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
@@ -384,7 +416,7 @@ impl App {
             Message::CancelPower if matches!(self.power_state, PowerState::Confirming(_)) => {
                 self.power_state = PowerState::Idle;
                 if self.phase == Phase::WaitingForInput {
-                    text_input::focus(self.input_id.clone())
+                    self.focus_input()
                 } else {
                     Task::none()
                 }
@@ -399,7 +431,7 @@ impl App {
                     ));
                     self.message_is_error = false;
                     return if self.phase == Phase::WaitingForInput {
-                        text_input::focus(self.input_id.clone())
+                        self.focus_input()
                     } else {
                         Task::none()
                     };
@@ -418,7 +450,7 @@ impl App {
                 self.power_state = PowerState::Idle;
                 self.message = None;
                 if self.phase == Phase::WaitingForInput {
-                    text_input::focus(self.input_id.clone())
+                    self.focus_input()
                 } else {
                     Task::none()
                 }
@@ -429,7 +461,7 @@ impl App {
                 self.message = Some(auth_flow::bounded_auth_text(&error));
                 self.message_is_error = true;
                 if self.phase == Phase::WaitingForInput {
-                    text_input::focus(self.input_id.clone())
+                    self.focus_input()
                 } else {
                     Task::none()
                 }
@@ -488,6 +520,7 @@ impl App {
         let replacing_account = !self.username.is_empty();
         self.username = account.username;
         self.display_name = account.display_name;
+        self.focused_account = None;
         self.input.clear();
         self.message = None;
         self.message_is_error = false;
@@ -498,7 +531,7 @@ impl App {
         if self.preview {
             self.phase = Phase::WaitingForInput;
             self.message = Some("Preview mode: credentials and power actions are simulated".into());
-            text_input::focus(self.input_id.clone())
+            self.focus_input()
         } else if replacing_account {
             auth_flow::restart(self.client.take(), self.username.clone(), attempt)
         } else {
@@ -520,6 +553,7 @@ impl App {
         let attempt = self.attempt.advance();
         self.username.clear();
         self.display_name = "Select a user".into();
+        self.focused_account = (!self.accounts.is_empty()).then_some(0);
         self.input.clear();
         self.selection_session_cancelled = false;
         self.phase = Phase::CancellingForUserSelection;
@@ -528,14 +562,77 @@ impl App {
         if self.preview {
             self.finish_preview_user_selection()
         } else {
-            auth_flow::cancel_for_user_selection(client, attempt)
+            Task::batch([
+                auth_flow::cancel_for_user_selection(client, attempt),
+                self.scroll_to_focused_account(),
+            ])
         }
     }
 
     fn finish_preview_user_selection(&mut self) -> Task<Message> {
         self.phase = Phase::SelectingUser;
         self.message = Some("Select a user".into());
-        Task::none()
+        self.scroll_to_focused_account()
+    }
+
+    fn navigate_account(&mut self, navigation: AccountNavigation) -> Task<Message> {
+        let Some(current) = self.focused_account else {
+            self.focused_account = (!self.accounts.is_empty()).then_some(0);
+            return self.scroll_to_focused_account();
+        };
+        match navigation {
+            AccountNavigation::Next => {
+                self.focused_account = Some((current + 1) % self.accounts.len());
+                self.scroll_to_focused_account()
+            }
+            AccountNavigation::Previous => {
+                self.focused_account =
+                    Some((current + self.accounts.len() - 1) % self.accounts.len());
+                self.scroll_to_focused_account()
+            }
+            AccountNavigation::Activate => {
+                let account = self.accounts[current].clone();
+                self.select_account(account)
+            }
+        }
+    }
+
+    fn scroll_to_focused_account(&self) -> Task<Message> {
+        let Some(index) = self.focused_account else {
+            return Task::none();
+        };
+        account_tile::reveal(
+            account_tile::id(&self.accounts[index].username),
+            vec![self.account_scroll_id.clone(), self.page_scroll_id.clone()],
+        )
+    }
+
+    pub(super) fn focus_input(&self) -> Task<Message> {
+        Task::batch([
+            text_input::focus(self.input_id.clone()),
+            account_tile::reveal(
+                iced::advanced::widget::Id::new("authentication-input-anchor"),
+                vec![self.page_scroll_id.clone()],
+            ),
+        ])
+    }
+
+    fn navigate_page(&self, navigation: PageNavigation) -> Task<Message> {
+        let scrollables = [self.page_scroll_id.clone(), self.account_scroll_id.clone()];
+        Task::batch(scrollables.map(|id| match navigation {
+            PageNavigation::Up => {
+                scrollable::scroll_by(id, scrollable::AbsoluteOffset { x: 0.0, y: -400.0 })
+            }
+            PageNavigation::Down => {
+                scrollable::scroll_by(id, scrollable::AbsoluteOffset { x: 0.0, y: 400.0 })
+            }
+            PageNavigation::Start => {
+                scrollable::snap_to(id, scrollable::RelativeOffset { x: 0.0, y: 0.0 })
+            }
+            PageNavigation::End => {
+                scrollable::snap_to(id, scrollable::RelativeOffset { x: 0.0, y: 1.0 })
+            }
+        }))
     }
 
     fn power_dialog_interactive(&self) -> bool {
@@ -582,6 +679,50 @@ impl App {
     }
 }
 
+fn account_navigation(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
+    use keyboard::key::Named;
+
+    let message = match key.as_ref() {
+        keyboard::Key::Named(Named::Tab) if modifiers.shift() => AccountNavigation::Previous,
+        keyboard::Key::Named(Named::Tab | Named::ArrowRight | Named::ArrowDown) => {
+            AccountNavigation::Next
+        }
+        keyboard::Key::Named(Named::ArrowLeft | Named::ArrowUp) => AccountNavigation::Previous,
+        keyboard::Key::Named(Named::Enter | Named::Space) => AccountNavigation::Activate,
+        _ => return None,
+    };
+    Some(Message::NavigateAccount(message))
+}
+
+fn page_navigation(
+    event: iced::Event,
+    status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event else {
+        return None;
+    };
+    page_navigation_key(key, status)
+}
+
+fn page_navigation_key(key: keyboard::Key, status: event::Status) -> Option<Message> {
+    use keyboard::key::Named;
+
+    match key.as_ref() {
+        // Page keys scroll even when a focused text input captures them. Home
+        // and End retain their conventional text-editing behavior when captured.
+        keyboard::Key::Named(Named::PageUp) => Some(Message::NavigatePage(PageNavigation::Up)),
+        keyboard::Key::Named(Named::PageDown) => Some(Message::NavigatePage(PageNavigation::Down)),
+        keyboard::Key::Named(Named::Home) if status == event::Status::Ignored => {
+            Some(Message::NavigatePage(PageNavigation::Start))
+        }
+        keyboard::Key::Named(Named::End) if status == event::Status::Ignored => {
+            Some(Message::NavigatePage(PageNavigation::End))
+        }
+        _ => None,
+    }
+}
+
 fn discover_accounts() -> Task<Message> {
     Task::perform(accounts::discover(), |result| {
         Message::AccountsResult(result.map_err(|error| error.to_string()))
@@ -608,6 +749,9 @@ mod tests {
             username: "darwin".into(),
             display_name: "Darwin".into(),
             accounts: Vec::new(),
+            focused_account: None,
+            account_scroll_id: scrollable::Id::unique(),
+            page_scroll_id: scrollable::Id::unique(),
             input: "secret".into(),
             input_id: text_input::Id::new("test-authentication-input"),
             prompt: "Password".into(),
@@ -834,6 +978,75 @@ mod tests {
             assert!(!app.can_select_account(), "phase {phase:?}");
             assert_eq!(app.username, "darwin");
         }
+    }
+
+    #[test]
+    fn keyboard_navigation_wraps_and_activates_the_focused_account() {
+        let mut app = app();
+        app.preview = true;
+        app.phase = Phase::SelectingUser;
+        app.username.clear();
+        app.accounts = vec![account("alice"), account("bob")];
+        app.focused_account = Some(0);
+
+        let _ = app.update(Message::NavigateAccount(AccountNavigation::Previous));
+        assert_eq!(app.focused_account, Some(1));
+
+        let _ = app.update(Message::NavigateAccount(AccountNavigation::Next));
+        assert_eq!(app.focused_account, Some(0));
+
+        let _ = app.update(Message::NavigateAccount(AccountNavigation::Activate));
+        assert_eq!(app.username, "alice");
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.focused_account, None);
+    }
+
+    #[test]
+    fn keyboard_navigation_is_ignored_while_account_tiles_are_disabled() {
+        let mut app = app();
+        app.phase = Phase::CancellingForUserSelection;
+        app.accounts = vec![account("alice"), account("bob")];
+        app.focused_account = Some(0);
+
+        let _ = app.update(Message::NavigateAccount(AccountNavigation::Next));
+        let _ = app.update(Message::NavigateAccount(AccountNavigation::Activate));
+
+        assert_eq!(app.focused_account, Some(0));
+        assert_eq!(app.username, "darwin");
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+    }
+
+    #[test]
+    fn maps_account_selection_keys_without_capturing_other_input() {
+        use keyboard::key::Named;
+
+        assert!(matches!(
+            account_navigation(keyboard::Key::Named(Named::Tab), keyboard::Modifiers::SHIFT),
+            Some(Message::NavigateAccount(AccountNavigation::Previous))
+        ));
+        assert!(matches!(
+            account_navigation(
+                keyboard::Key::Named(Named::Enter),
+                keyboard::Modifiers::empty()
+            ),
+            Some(Message::NavigateAccount(AccountNavigation::Activate))
+        ));
+        assert!(matches!(
+            page_navigation_key(
+                keyboard::Key::Named(Named::PageDown),
+                event::Status::Captured,
+            ),
+            Some(Message::NavigatePage(PageNavigation::Down))
+        ));
+        assert!(
+            page_navigation_key(keyboard::Key::Named(Named::Home), event::Status::Captured,)
+                .is_none()
+        );
+        assert!(account_navigation(
+            keyboard::Key::Character("a".into()),
+            keyboard::Modifiers::empty()
+        )
+        .is_none());
     }
 
     #[test]
