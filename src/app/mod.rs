@@ -417,6 +417,10 @@ impl App {
                 }
             }
             Message::CloseRequested(window) if self.preview => window::close(window),
+            Message::CloseRequested(window) if self.selection_session_cancelled => {
+                self.closing = Some(Closing::Dispatching(window));
+                window::close(window)
+            }
             Message::CloseRequested(window) if self.phase == Phase::CancellingForUserSelection => {
                 self.closing = Some(Closing::WaitingForUserSelectionCancellation(window));
                 auth_flow::close_timeout(window)
@@ -1029,6 +1033,19 @@ mod tests {
 
         assert_eq!(app.closing, Some(Closing::Dispatching(window)));
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
+    }
+
+    #[test]
+    fn close_does_not_cancel_an_already_cancelled_selection_session() {
+        let mut app = app();
+        let window = window::Id::unique();
+        app.phase = Phase::SelectingUser;
+        app.selection_session_cancelled = true;
+
+        let _ = app.update(Message::CloseRequested(window));
+
+        assert_eq!(app.closing, Some(Closing::Dispatching(window)));
+        assert!(app.selection_session_cancelled);
     }
 
     #[test]
