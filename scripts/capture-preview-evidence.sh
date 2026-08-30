@@ -5,7 +5,7 @@ set -euo pipefail
 : "${GENKAN_BIN:?set GENKAN_BIN to the packaged Genkan executable}"
 : "${PREVIEW_OUTPUT_DIR:?set PREVIEW_OUTPUT_DIR to the screenshot destination}"
 
-for command in cage identify strace weston weston-screenshooter; do
+for command in identify strace weston weston-screenshooter; do
   command -v "$command" >/dev/null || {
     echo "missing preview evidence dependency: $command" >&2
     exit 1
@@ -14,13 +14,13 @@ done
 
 work_dir=$(mktemp -d)
 weston_pid=""
-cage_pid=""
+app_pid=""
 
 cleanup_case() {
-  if [[ -n $cage_pid ]]; then
-    kill -TERM -- "-$cage_pid" 2>/dev/null || true
-    wait "$cage_pid" 2>/dev/null || true
-    cage_pid=""
+  if [[ -n $app_pid ]]; then
+    kill -TERM -- "-$app_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
+    app_pid=""
   fi
   if [[ -n $weston_pid ]]; then
     kill -TERM "$weston_pid" 2>/dev/null || true
@@ -46,7 +46,7 @@ capture() {
   local socket="wayland-$name"
   local screenshot
 
-  mkdir -p "$case_dir/home" "$case_dir/runtime" "$case_dir/capture"
+  mkdir -p "$case_dir/home/.cache/fontconfig" "$case_dir/runtime" "$case_dir/capture"
   chmod 700 "$case_dir/runtime"
 
   HOME="$case_dir/home" \
@@ -57,6 +57,7 @@ capture() {
       --width="$width" \
       --height="$height" \
       --idle-time=0 \
+      --shell=kiosk \
       --socket="$socket" \
       --debug \
       --log="$case_dir/weston.log" &
@@ -90,13 +91,13 @@ EOF
     WLR_RENDERER=pixman \
     WGPU_BACKEND=vulkan \
     LIBGL_ALWAYS_SOFTWARE=1 \
-    setsid cage -- "$case_dir/run-genkan" > "$case_dir/cage.log" 2>&1 &
-  cage_pid=$!
+    setsid "$case_dir/run-genkan" > "$case_dir/genkan.log" 2>&1 &
+  app_pid=$!
 
   for _ in $(seq 1 100); do
     [[ -s "$case_dir/genkan.pid" ]] && break
-    if ! kill -0 "$cage_pid" 2>/dev/null; then
-      cat "$case_dir/cage.log" >&2
+    if ! kill -0 "$app_pid" 2>/dev/null; then
+      cat "$case_dir/genkan.log" >&2
       echo "Genkan exited before $name capture" >&2
       exit 1
     fi
@@ -137,6 +138,7 @@ capture power-confirmation 1280 800 power-confirmation
 capture laptop-large-accounts 1440 900 large-account-set
 capture widescreen-users 1920 1080 users
 capture ultrawide-selected 2560 1080 selected
+capture narrow-selected 480 600 selected
 capture narrow-long-authentication 480 600 long-authentication
 
 printf 'Captured %s deterministic preview images\n' "$(find "$PREVIEW_OUTPUT_DIR" -name '*.png' | wc -l)"

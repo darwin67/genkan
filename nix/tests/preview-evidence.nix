@@ -6,11 +6,11 @@ pkgs.runCommand "genkan-preview-evidence"
       fontDirectories = [ pkgs.dejavu_fonts ];
     };
     nativeBuildInputs = [
-      pkgs.cage
       pkgs.coreutils
       pkgs.gnugrep
       pkgs.imagemagick
       pkgs.strace
+      pkgs.util-linux
       pkgs.weston
     ];
   }
