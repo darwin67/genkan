@@ -5,11 +5,11 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Baseline and acceptance evidence
 
-- [X] Capture the current preview at representative laptop and external-display
-  sizes before changing layout; see [[file:ACCEPTANCE.md][acceptance evidence]].
-- [X] Record generated reference screenshots for account selection, a secret
+- [ ] Capture the pre-layout preview at representative laptop and
+  external-display sizes. This was not retained before layout work began.
+- [ ] Record durable reference screenshots for account selection, a secret
   prompt, a visible prompt, failed authentication, power confirmation, and
-  narrow layout.
+  narrow layout; generated CI evidence is intentionally not a pixel contract.
 - [X] Define reviewable acceptance checks for hierarchy, focus order, wrapping,
   WCAG contrast targets, and notice placement without treating screenshot
   pixels as the behavioral contract.

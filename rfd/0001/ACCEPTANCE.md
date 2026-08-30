@@ -22,12 +22,19 @@ preview images under headless Weston's kiosk shell. The Nix output contains:
 | `narrow-selected.png` | 480×600 | `selected` | Narrow flow layout |
 | `narrow-long-authentication.png` | 480×600 | `long-authentication` | Wrapped long prompt and focused input reveal |
 
+The check obtains the complete fixture list from the packaged binary and adds a
+default-size `fixture-*.png` capture for every fixture not already represented
+above. This makes service-isolation and rendered-frame checks exhaustive when a
+new fixture is added without expanding the human review matrix unnecessarily.
+
 The capture check fails when a screenshot does not have its declared dimensions,
-the application exits early, or `strace` observes a preview connection attempt
-to the configured greetd socket or system D-Bus socket. The latter protects the
-AccountsService, greetd, and logind isolation boundary. Unit tests separately
-verify simulated submission clears the response, account changes clear a
-simulated response, and every power action remains non-destructive.
+has fewer than 16 colors, does not stabilize across two consecutive frames, the
+application exits before or during capture, or `strace` observes any connection
+other than the case's Wayland socket. The latter protects the AccountsService,
+greetd, and logind isolation boundary without relying on configured decoy socket
+names. Unit tests separately verify simulated submission clears the response,
+account changes clear a simulated response, and every power action remains
+non-destructive.
 
 The ordinary `graphics-smoke` check remains responsible for launching the
 production-mode package under nested Cage. The evidence check intentionally
@@ -57,3 +64,19 @@ Review generated captures using these stable criteria:
 
 The background and fixture clock are deterministic in preview mode. Compositor
 timestamps and window chrome are excluded by kiosk-shell capture.
+
+## Recorded review outcome
+
+The generated captures were reviewed on 2026-08-30 with these results:
+
+| Captures | Outcome |
+|---|---|
+| Default account and authentication states | Controls preserve the intended hierarchy, focus indication, and notice ownership. |
+| 1440×900 large account set | The bounded grid presents complete first-row identities and a visible continuation within its scrollbar. |
+| 1920×1080 and 2560×1080 | The centered identity flow remains bounded while corner utilities retain their secondary placement. |
+| 480×600 selected account | Content uses the vertical flow without horizontal clipping; the page scrollbar remains available. |
+| 480×600 long authentication | Long identity and PAM text wrap; focus reveal leaves the input and submit action fully visible with bottom margin. |
+
+These textual outcomes are durable, but the generated images are not retained
+as a baseline. The corresponding baseline and reference-image checklist items
+therefore remain open.
