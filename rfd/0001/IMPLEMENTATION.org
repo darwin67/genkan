@@ -78,9 +78,9 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Input and accessibility
 
-- [ ] Define and test keyboard focus order for account selection, prompt input,
+- [X] Define and test keyboard focus order for account selection, prompt input,
   submit, Change User, session selection, and utility actions.
-- [ ] Test state-specific initial focus, Enter/Space activation, Escape behavior,
+- [X] Test state-specific initial focus, Enter/Space activation, Escape behavior,
   modal focus containment, safe initial modal action, and focus restoration.
 - [X] Ensure every icon action has a visible text or accessible label and no
   action depends only on hover, color, or icon recognition.
