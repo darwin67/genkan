@@ -69,9 +69,9 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 - [X] Remove the enclosing login panel and place time/date, identity flow,
   session choice, and utilities in the RFD hierarchy.
-- [ ] Establish shared styling for avatar tiles, compact prompt controls,
+- [X] Establish shared styling for avatar tiles, compact prompt controls,
   selectors, utility actions, focus rings, and confirmation dialogs.
-- [ ] Use translucent material only for functional controls and focused
+- [X] Use translucent material only for functional controls and focused
   surfaces, with a contrast-preserving background treatment.
 - [ ] Select or create any packaged wallpaper only after recording its source,
   license, generated variants, and packaging behavior.
