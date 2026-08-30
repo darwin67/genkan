@@ -2,14 +2,57 @@ use iced::overlay::menu;
 use iced::widget::{button, container, pick_list, text_input};
 use iced::{Background, Border, Color, Shadow, Theme};
 
-pub fn panel(_theme: &Theme) -> container::Style {
+const CONTROL_RADIUS: f32 = 18.0;
+const EMPHASIS_WIDTH: f32 = 3.0;
+
+pub fn primary_text() -> Color {
+    Color::WHITE
+}
+
+pub fn strong_secondary_text() -> Color {
+    Color::from_rgba8(255, 255, 255, 0.85)
+}
+
+pub fn secondary_text() -> Color {
+    Color::from_rgba8(255, 255, 255, 0.78)
+}
+
+pub fn muted_text() -> Color {
+    Color::from_rgba8(255, 255, 255, 0.68)
+}
+
+pub fn status_text(error: bool) -> Color {
+    if error {
+        Color::from_rgb8(255, 171, 171)
+    } else {
+        secondary_text()
+    }
+}
+
+fn material(alpha: f32) -> Background {
+    Background::Color(Color::from_rgba8(7, 10, 24, alpha))
+}
+
+fn outline(alpha: f32, emphasized: bool) -> Border {
+    Border {
+        color: Color::from_rgba8(255, 255, 255, if emphasized { 0.95 } else { alpha }),
+        width: if emphasized { EMPHASIS_WIDTH } else { 1.0 },
+        radius: CONTROL_RADIUS.into(),
+    }
+}
+
+fn elevation() -> Shadow {
+    Shadow {
+        color: Color::from_rgba8(0, 0, 0, 0.3),
+        offset: iced::Vector::new(0.0, 6.0),
+        blur_radius: 18.0,
+    }
+}
+
+pub fn dialog(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgba8(7, 10, 24, 0.58))),
-        border: Border {
-            color: Color::from_rgba8(255, 255, 255, 0.16),
-            width: 1.0,
-            radius: 32.0.into(),
-        },
+        background: Some(material(0.82)),
+        border: outline(0.28, false),
         shadow: Shadow {
             color: Color::from_rgba8(0, 0, 0, 0.45),
             offset: iced::Vector::new(0.0, 12.0),
@@ -22,86 +65,69 @@ pub fn panel(_theme: &Theme) -> container::Style {
 pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused);
     text_input::Style {
-        background: Background::Color(Color::from_rgba8(7, 10, 24, 0.68)),
-        border: Border {
-            color: if focused {
-                Color::from_rgba8(255, 255, 255, 0.82)
-            } else {
-                Color::from_rgba8(255, 255, 255, 0.42)
-            },
-            width: if focused { 2.0 } else { 1.0 },
-            radius: 22.0.into(),
-        },
-        icon: Color::WHITE,
+        background: material(0.72),
+        border: outline(0.42, focused),
+        icon: primary_text(),
         placeholder: Color::from_rgba8(255, 255, 255, 0.55),
-        value: Color::WHITE,
+        value: primary_text(),
         selection: Color::from_rgb8(65, 105, 225),
     }
 }
 
 pub fn selector(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
-    let highlighted = matches!(
-        status,
-        pick_list::Status::Hovered | pick_list::Status::Opened
-    );
+    let hovered = matches!(status, pick_list::Status::Hovered);
+    let opened = matches!(status, pick_list::Status::Opened);
     pick_list::Style {
-        text_color: Color::WHITE,
+        text_color: primary_text(),
         placeholder_color: Color::from_rgba8(255, 255, 255, 0.55),
         handle_color: Color::from_rgba8(255, 255, 255, 0.8),
         background: Background::Color(Color::from_rgba8(
             255,
             255,
             255,
-            if highlighted { 0.18 } else { 0.12 },
+            if hovered || opened { 0.18 } else { 0.12 },
         )),
-        border: Border {
-            color: Color::from_rgba8(255, 255, 255, if highlighted { 0.5 } else { 0.28 }),
-            width: 1.0,
-            radius: 18.0.into(),
-        },
+        border: outline(if hovered { 0.5 } else { 0.28 }, opened),
     }
 }
 
 pub fn selector_menu(_theme: &Theme) -> menu::Style {
     menu::Style {
         background: Background::Color(Color::from_rgba8(22, 27, 56, 0.98)),
-        border: Border {
-            color: Color::from_rgba8(255, 255, 255, 0.28),
-            width: 1.0,
-            radius: 14.0.into(),
-        },
-        text_color: Color::WHITE,
-        selected_text_color: Color::WHITE,
+        border: outline(0.28, false),
+        text_color: primary_text(),
+        selected_text_color: primary_text(),
         selected_background: Background::Color(Color::from_rgba8(255, 255, 255, 0.18)),
     }
 }
 
-pub fn selection(_theme: &Theme) -> container::Style {
+pub fn inactive_control(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(Color::WHITE),
+        text_color: Some(primary_text()),
         background: Some(Background::Color(Color::from_rgba8(255, 255, 255, 0.12))),
-        border: Border {
-            color: Color::from_rgba8(255, 255, 255, 0.28),
-            width: 1.0,
-            radius: 18.0.into(),
-        },
+        border: outline(0.28, false),
+        ..Default::default()
+    }
+}
+
+pub fn preview_badge(_theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(primary_text()),
+        background: Some(Background::Color(Color::from_rgb8(22, 27, 56))),
+        border: outline(0.28, false),
         ..Default::default()
     }
 }
 
 pub fn avatar(radius: f32) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgba8(255, 255, 255, 0.18))),
+        background: Some(material(0.76)),
         border: Border {
             color: Color::from_rgba8(255, 255, 255, 0.46),
             width: 2.0,
             radius: radius.into(),
         },
-        shadow: Shadow {
-            color: Color::from_rgba8(0, 0, 0, 0.28),
-            offset: iced::Vector::new(0.0, 5.0),
-            blur_radius: 14.0,
-        },
+        shadow: elevation(),
         ..Default::default()
     }
 }
@@ -114,18 +140,10 @@ pub fn account_tile(_theme: &Theme, status: button::Status, focused: bool) -> bu
         button::Status::Active => (0.58, 0.34),
     };
     button::Style {
-        background: Some(Background::Color(Color::from_rgba8(7, 10, 24, background))),
-        text_color: Color::WHITE,
-        border: Border {
-            color: Color::from_rgba8(255, 255, 255, if focused { 0.95 } else { border }),
-            width: if focused { 3.0 } else { 1.0 },
-            radius: 22.0.into(),
-        },
-        shadow: Shadow {
-            color: Color::from_rgba8(0, 0, 0, 0.3),
-            offset: iced::Vector::new(0.0, 6.0),
-            blur_radius: 18.0,
-        },
+        background: Some(material(background)),
+        text_color: primary_text(),
+        border: outline(border, focused),
+        shadow: elevation(),
     }
 }
 
@@ -138,13 +156,9 @@ pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
     };
     button::Style {
         background: Some(Background::Color(Color::from_rgba8(255, 255, 255, alpha))),
-        text_color: Color::WHITE,
-        border: Border {
-            color: Color::from_rgba8(255, 255, 255, 0.34),
-            width: 1.0,
-            radius: 18.0.into(),
-        },
-        ..Default::default()
+        text_color: primary_text(),
+        border: outline(0.34, false),
+        shadow: elevation(),
     }
 }
 
@@ -159,13 +173,12 @@ pub fn dialog_button(
         style.background = Some(Background::Color(Color::from_rgba8(170, 42, 52, 0.72)));
     }
     if focused {
-        style.border.color = Color::WHITE;
-        style.border.width = 3.0;
+        style.border = outline(0.34, true);
     }
     style
 }
 
-pub fn translucent_button(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
     let alpha = match status {
         button::Status::Hovered => 0.24,
         button::Status::Pressed => 0.3,
@@ -173,11 +186,67 @@ pub fn translucent_button(_theme: &Theme, status: button::Status) -> button::Sty
     };
     button::Style {
         background: Some(Background::Color(Color::from_rgba8(255, 255, 255, alpha))),
-        text_color: Color::WHITE,
-        border: Border {
-            radius: 18.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
+        text_color: primary_text(),
+        border: outline(0.28, false),
+        shadow: elevation(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controls_share_corner_and_focus_treatment() {
+        let theme = Theme::Dark;
+        let active_input = input(&theme, text_input::Status::Active);
+        let focused_input = input(&theme, text_input::Status::Focused);
+        let focused_account = account_tile(&theme, button::Status::Active, true);
+        let focused_dialog = dialog_button(&theme, button::Status::Active, true, false);
+        let opened_selector = selector(&theme, pick_list::Status::Opened);
+        let dialog = dialog(&theme);
+        let selector_menu = selector_menu(&theme);
+
+        assert_eq!(active_input.border.radius, CONTROL_RADIUS.into());
+        assert_eq!(
+            primary_button(&theme, button::Status::Active).border.radius,
+            active_input.border.radius
+        );
+        assert_eq!(
+            secondary_button(&theme, button::Status::Active)
+                .border
+                .radius,
+            active_input.border.radius
+        );
+        assert_eq!(opened_selector.border.radius, active_input.border.radius);
+        assert_eq!(dialog.border.radius, active_input.border.radius);
+        assert_eq!(selector_menu.border.radius, active_input.border.radius);
+        for border in [
+            focused_input.border,
+            focused_account.border,
+            focused_dialog.border,
+        ] {
+            assert_eq!(border.width, EMPHASIS_WIDTH);
+            assert_eq!(border.color, Color::from_rgba8(255, 255, 255, 0.95));
+        }
+    }
+
+    #[test]
+    fn opened_selector_is_emphasized_without_claiming_keyboard_focus() {
+        let theme = Theme::Dark;
+        let closed = selector(&theme, pick_list::Status::Active);
+        let opened = selector(&theme, pick_list::Status::Opened);
+
+        assert_eq!(closed.border.width, 1.0);
+        assert_eq!(opened.border.width, EMPHASIS_WIDTH);
+        assert_eq!(opened.border.color, Color::from_rgba8(255, 255, 255, 0.95));
+    }
+
+    #[test]
+    fn noninteractive_preview_badge_is_opaque() {
+        assert_eq!(
+            preview_badge(&Theme::Dark).background,
+            Some(Background::Color(Color::from_rgb8(22, 27, 56)))
+        );
     }
 }

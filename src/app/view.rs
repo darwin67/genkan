@@ -2,7 +2,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{
     button, column, container, responsive, row, scrollable, stack, text, text_input, Space,
 };
-use iced::{Alignment, Color, Element, Fill, Length, Size};
+use iced::{Alignment, Element, Fill, Length, Size};
 
 use crate::accounts::Account;
 use crate::power::Action as PowerAction;
@@ -86,7 +86,7 @@ impl App {
                     .spacing(22),
                 )
                 .padding(30)
-                .style(theme::panel);
+                .style(theme::dialog);
                 modal(main_content, confirmation)
             }
             PowerState::Executing(action) => {
@@ -94,7 +94,7 @@ impl App {
                     text(format!("Requesting {}…", action.label().to_lowercase())).size(22),
                 )
                 .padding(30)
-                .style(theme::panel);
+                .style(theme::dialog);
                 modal(main_content, progress)
             }
             PowerState::Idle => main_content,
@@ -169,10 +169,10 @@ impl App {
         column![
             text(self.now.format("%-I:%M").to_string())
                 .size(80)
-                .color(Color::WHITE),
+                .color(theme::primary_text()),
             text(self.now.format("%A, %B %-d").to_string())
                 .size(22)
-                .color(Color::from_rgba8(255, 255, 255, 0.85)),
+                .color(theme::strong_secondary_text()),
         ]
         .align_x(Alignment::Center)
         .spacing(0)
@@ -225,7 +225,7 @@ impl App {
         container(text(message).size(13).wrapping(Wrapping::WordOrGlyph))
             .padding([7, 12])
             .max_width(360)
-            .style(theme::selection)
+            .style(theme::preview_badge)
             .into()
     }
 
@@ -261,7 +261,7 @@ impl App {
                         .then_some(message),
                 )
                 .padding([10, 18])
-                .style(theme::translucent_button)
+                .style(theme::secondary_button)
                 .into()
         } else {
             Space::new(Length::Shrink, Length::Fixed(0.0)).into()
@@ -269,7 +269,7 @@ impl App {
 
         container(
             column![
-                text("Select a user").size(28).color(Color::WHITE),
+                text("Select a user").size(28).color(theme::primary_text()),
                 account_grid(
                     &self.accounts,
                     interactive,
@@ -343,10 +343,9 @@ impl App {
                     .padding([12, 18])
                     .style(theme::primary_button)
                     .into(),
-                AuthenticationControls::Progress(label) => text(label)
-                    .size(15)
-                    .color(Color::from_rgba8(255, 255, 255, 0.78))
-                    .into(),
+                AuthenticationControls::Progress(label) => {
+                    text(label).size(15).color(theme::secondary_text()).into()
+                }
                 AuthenticationControls::Unavailable => {
                     Space::new(Length::Shrink, Length::Fixed(0.0)).into()
                 }
@@ -355,7 +354,7 @@ impl App {
             button(text("Change User").size(14))
                 .on_press(Message::ChangeUser)
                 .padding([8, 14])
-                .style(theme::translucent_button)
+                .style(theme::secondary_button)
                 .into()
         } else {
             Space::new(Length::Shrink, Length::Fixed(0.0)).into()
@@ -363,13 +362,13 @@ impl App {
         let identity = column![
             text(&self.display_name)
                 .size(28)
-                .color(Color::WHITE)
+                .color(theme::primary_text())
                 .width(Fill)
                 .align_x(Alignment::Center)
                 .wrapping(Wrapping::WordOrGlyph),
             text(username)
                 .size(14)
-                .color(Color::from_rgba8(255, 255, 255, 0.68))
+                .color(theme::muted_text())
                 .width(Fill)
                 .align_x(Alignment::Center)
                 .wrapping(Wrapping::WordOrGlyph),
@@ -426,11 +425,7 @@ impl App {
 
     fn status_for<'a>(&'a self, message: Option<&'a str>, _flow: bool) -> Element<'a, Message> {
         let status = message.unwrap_or(" ");
-        let color = if self.message_is_error {
-            Color::from_rgb8(255, 171, 171)
-        } else {
-            Color::from_rgba8(255, 255, 255, 0.78)
-        };
+        let color = theme::status_text(self.message_is_error);
         let status = text(status)
             .size(14)
             .color(color)
@@ -464,7 +459,7 @@ impl App {
             )
             .width(Length::Fixed(210.0))
             .padding([9, 14])
-            .style(theme::selection)
+            .style(theme::inactive_control)
             .into()
         };
         let retry: Element<'_, Message> =
@@ -475,15 +470,13 @@ impl App {
                             .then_some(Message::RetrySession),
                     )
                     .padding([7, 12])
-                    .style(theme::translucent_button)
+                    .style(theme::secondary_button)
                     .into()
             } else {
                 Space::new(Length::Shrink, Length::Fixed(0.0)).into()
             };
         column![
-            text("Session")
-                .size(13)
-                .color(Color::from_rgba8(255, 255, 255, 0.72)),
+            text("Session").size(13).color(theme::secondary_text()),
             selector,
             notice(self.session_message.as_deref(), true),
             retry,
@@ -515,11 +508,7 @@ fn notice<'a>(message: Option<&'a str>, error: bool) -> Element<'a, Message> {
     };
     text(message)
         .size(13)
-        .color(if error {
-            Color::from_rgb8(255, 171, 171)
-        } else {
-            Color::from_rgba8(255, 255, 255, 0.78)
-        })
+        .color(theme::status_text(error))
         .wrapping(Wrapping::WordOrGlyph)
         .into()
 }
@@ -599,7 +588,7 @@ fn account_tile<'a>(
                 .wrapping(Wrapping::WordOrGlyph),
             text(format!("@{}", account.username))
                 .size(13)
-                .color(Color::from_rgba8(255, 255, 255, 0.68))
+                .color(theme::muted_text())
                 .width(Fill)
                 .align_x(Alignment::Center)
                 .wrapping(Wrapping::WordOrGlyph),
@@ -619,13 +608,17 @@ fn dynamic_text_requires_flow(value: &str) -> bool {
 }
 
 fn avatar<'a>(name: &str, diameter: f32, text_size: u16) -> Element<'a, Message> {
-    container(text(initials(name)).size(text_size).color(Color::WHITE))
-        .width(Length::Fixed(diameter))
-        .height(Length::Fixed(diameter))
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .style(move |_| theme::avatar(diameter / 2.0))
-        .into()
+    container(
+        text(initials(name))
+            .size(text_size)
+            .color(theme::primary_text()),
+    )
+    .width(Length::Fixed(diameter))
+    .height(Length::Fixed(diameter))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .style(move |_| theme::avatar(diameter / 2.0))
+    .into()
 }
 
 fn account_grid_columns(width: f32) -> usize {
@@ -677,7 +670,7 @@ fn power_button(action: PowerAction, interactive: bool) -> Element<'static, Mess
     button(text(action.label()).size(14))
         .on_press_maybe(interactive.then_some(Message::AskPower(action)))
         .padding([9, 15])
-        .style(theme::translucent_button)
+        .style(theme::secondary_button)
         .into()
 }
 
