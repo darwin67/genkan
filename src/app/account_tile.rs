@@ -11,6 +11,7 @@ use iced::{
 use crate::theme;
 
 const DRAG_THRESHOLD: f32 = 6.0;
+const REVEAL_MARGIN: f32 = 16.0;
 
 pub(super) fn tile<'a, Message: Clone + 'a>(
     content: impl Into<Element<'a, Message>>,
@@ -58,6 +59,16 @@ struct State {
 }
 
 impl State {
+    fn press_mouse(&mut self) {
+        self.mouse_pressed = true;
+    }
+
+    fn release_mouse(&mut self, over_tile: bool) -> bool {
+        let activate = self.mouse_pressed && over_tile;
+        self.mouse_pressed = false;
+        activate
+    }
+
     fn start_touch(&mut self, finger: touch::Finger, position: Point) {
         self.touch_finger = Some(finger);
         self.touch_start = Some(position);
@@ -170,14 +181,13 @@ where
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if self.on_press.is_some() && cursor.is_over(bounds) =>
             {
-                state.mouse_pressed = true;
+                state.press_mouse();
                 event::Status::Captured
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
                 if state.mouse_pressed =>
             {
-                state.mouse_pressed = false;
-                if cursor.is_over(bounds) {
+                if state.release_mouse(cursor.is_over(bounds)) {
                     if let Some(message) = self.on_press.clone() {
                         shell.publish(message);
                     }
@@ -362,10 +372,14 @@ fn reveal_offset(
 ) -> Option<operation::scrollable::AbsoluteOffset> {
     let visible_top = viewport.y + translation.y;
     let visible_bottom = visible_top + viewport.height;
-    let y = if target.height > viewport.height || target.y < visible_top {
+    let padded_top = target.y - REVEAL_MARGIN;
+    let padded_bottom = target.y + target.height + REVEAL_MARGIN;
+    let y = if target.height + 2.0 * REVEAL_MARGIN > viewport.height {
         target.y - content.y
-    } else if target.y + target.height > visible_bottom {
-        target.y + target.height - content.y - viewport.height
+    } else if padded_top < visible_top {
+        padded_top - content.y
+    } else if padded_bottom > visible_bottom {
+        padded_bottom - content.y - viewport.height
     } else {
         return None;
     };
@@ -393,6 +407,19 @@ mod tests {
     }
 
     #[test]
+    fn pointer_click_activates_only_when_released_over_the_tile() {
+        let mut state = State::default();
+        state.press_mouse();
+        assert!(state.release_mouse(true));
+        assert!(!state.mouse_pressed);
+
+        state.press_mouse();
+        assert!(!state.release_mouse(false));
+        assert!(!state.mouse_pressed);
+        assert!(!state.release_mouse(true));
+    }
+
+    #[test]
     fn reveal_offset_uses_target_geometry() {
         let viewport = Rectangle::new(Point::ORIGIN, Size::new(400.0, 200.0));
         let content = Rectangle::new(Point::ORIGIN, Size::new(400.0, 800.0));
@@ -404,7 +431,7 @@ mod tests {
                 Vector::new(0.0, 100.0),
                 Rectangle::new(Point::new(0.0, 350.0), Size::new(100.0, 80.0)),
             ),
-            Some(operation::scrollable::AbsoluteOffset { x: 0.0, y: 230.0 })
+            Some(operation::scrollable::AbsoluteOffset { x: 0.0, y: 246.0 })
         );
         assert_eq!(
             reveal_offset(
@@ -413,7 +440,7 @@ mod tests {
                 Vector::new(0.0, 300.0),
                 Rectangle::new(Point::new(0.0, 120.0), Size::new(100.0, 80.0)),
             ),
-            Some(operation::scrollable::AbsoluteOffset { x: 0.0, y: 120.0 })
+            Some(operation::scrollable::AbsoluteOffset { x: 0.0, y: 104.0 })
         );
         assert_eq!(
             reveal_offset(

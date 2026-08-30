@@ -132,6 +132,10 @@
             pkgs = config.pkgs;
             genkan = config.package;
           };
+          preview-evidence = import ./nix/tests/preview-evidence.nix {
+            pkgs = config.pkgs;
+            genkan = config.package;
+          };
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           greetd-e2e = config.pkgs.testers.runNixOSTest (

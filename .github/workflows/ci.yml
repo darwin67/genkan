@@ -133,4 +133,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
-      - run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs
+      - run: >-
+          nix build
+          .#checks.${{ matrix.system }}.graphics-smoke
+          .#checks.${{ matrix.system }}.preview-evidence
+          --print-build-logs

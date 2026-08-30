@@ -820,23 +820,32 @@ mod tests {
 
     #[test]
     fn preview_never_dispatches_power_actions() {
-        let mut app = app();
-        app.preview = true;
+        for action in [
+            PowerAction::Suspend,
+            PowerAction::Reboot,
+            PowerAction::PowerOff,
+        ] {
+            let mut app = app();
+            app.preview = true;
 
-        let _ = app.update(Message::AskPower(PowerAction::Suspend));
-        assert_eq!(
-            app.power_state,
-            PowerState::Confirming(PowerAction::Suspend)
-        );
+            let _ = app.update(Message::AskPower(action));
+            assert_eq!(app.power_state, PowerState::Confirming(action));
 
-        let _ = app.update(Message::ConfirmPower(PowerAction::Suspend));
-        assert_eq!(app.power_state, PowerState::Idle);
-        assert_eq!(
-            app.power_message.as_deref(),
-            Some("Preview: sleep was not requested")
-        );
-        assert!(!app.power_message_is_error);
-        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+            let _ = app.update(Message::ConfirmPower(action));
+            assert_eq!(app.power_state, PowerState::Idle);
+            assert_eq!(
+                app.power_message.as_deref(),
+                Some(
+                    format!(
+                        "Preview: {} was not requested",
+                        action.label().to_lowercase()
+                    )
+                    .as_str()
+                )
+            );
+            assert!(!app.power_message_is_error);
+            assert_eq!(app.message.as_deref(), Some("Keep this message"));
+        }
     }
 
     #[test]
