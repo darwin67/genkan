@@ -3,7 +3,7 @@ use iced::widget::{button, container, pick_list, text_input};
 use iced::{Background, Border, Color, Shadow, Theme};
 
 const CONTROL_RADIUS: f32 = 18.0;
-const FOCUS_WIDTH: f32 = 3.0;
+const EMPHASIS_WIDTH: f32 = 3.0;
 
 pub fn primary_text() -> Color {
     Color::WHITE
@@ -33,10 +33,10 @@ fn material(alpha: f32) -> Background {
     Background::Color(Color::from_rgba8(7, 10, 24, alpha))
 }
 
-fn outline(alpha: f32, focused: bool) -> Border {
+fn outline(alpha: f32, emphasized: bool) -> Border {
     Border {
-        color: Color::from_rgba8(255, 255, 255, if focused { 0.95 } else { alpha }),
-        width: if focused { FOCUS_WIDTH } else { 1.0 },
+        color: Color::from_rgba8(255, 255, 255, if emphasized { 0.95 } else { alpha }),
+        width: if emphasized { EMPHASIS_WIDTH } else { 1.0 },
         radius: CONTROL_RADIUS.into(),
     }
 }
@@ -76,7 +76,7 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
 
 pub fn selector(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
     let hovered = matches!(status, pick_list::Status::Hovered);
-    let focused = matches!(status, pick_list::Status::Opened);
+    let opened = matches!(status, pick_list::Status::Opened);
     pick_list::Style {
         text_color: primary_text(),
         placeholder_color: Color::from_rgba8(255, 255, 255, 0.55),
@@ -85,9 +85,9 @@ pub fn selector(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
             255,
             255,
             255,
-            if hovered || focused { 0.18 } else { 0.12 },
+            if hovered || opened { 0.18 } else { 0.12 },
         )),
-        border: outline(if hovered { 0.5 } else { 0.28 }, focused),
+        border: outline(if hovered { 0.5 } else { 0.28 }, opened),
     }
 }
 
@@ -225,11 +225,21 @@ mod tests {
             focused_input.border,
             focused_account.border,
             focused_dialog.border,
-            opened_selector.border,
         ] {
-            assert_eq!(border.width, FOCUS_WIDTH);
+            assert_eq!(border.width, EMPHASIS_WIDTH);
             assert_eq!(border.color, Color::from_rgba8(255, 255, 255, 0.95));
         }
+    }
+
+    #[test]
+    fn opened_selector_is_emphasized_without_claiming_keyboard_focus() {
+        let theme = Theme::Dark;
+        let closed = selector(&theme, pick_list::Status::Active);
+        let opened = selector(&theme, pick_list::Status::Opened);
+
+        assert_eq!(closed.border.width, 1.0);
+        assert_eq!(opened.border.width, EMPHASIS_WIDTH);
+        assert_eq!(opened.border.color, Color::from_rgba8(255, 255, 255, 0.95));
     }
 
     #[test]
