@@ -58,6 +58,16 @@ struct State {
 }
 
 impl State {
+    fn press_mouse(&mut self) {
+        self.mouse_pressed = true;
+    }
+
+    fn release_mouse(&mut self, over_tile: bool) -> bool {
+        let activate = self.mouse_pressed && over_tile;
+        self.mouse_pressed = false;
+        activate
+    }
+
     fn start_touch(&mut self, finger: touch::Finger, position: Point) {
         self.touch_finger = Some(finger);
         self.touch_start = Some(position);
@@ -170,14 +180,13 @@ where
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if self.on_press.is_some() && cursor.is_over(bounds) =>
             {
-                state.mouse_pressed = true;
+                state.press_mouse();
                 event::Status::Captured
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
                 if state.mouse_pressed =>
             {
-                state.mouse_pressed = false;
-                if cursor.is_over(bounds) {
+                if state.release_mouse(cursor.is_over(bounds)) {
                     if let Some(message) = self.on_press.clone() {
                         shell.publish(message);
                     }
@@ -390,6 +399,19 @@ mod tests {
         state.start_touch(finger, Point::new(10.0, 10.0));
         state.move_touch(finger, Point::new(10.0, 30.0));
         assert!(!state.finish_touch(finger));
+    }
+
+    #[test]
+    fn pointer_click_activates_only_when_released_over_the_tile() {
+        let mut state = State::default();
+        state.press_mouse();
+        assert!(state.release_mouse(true));
+        assert!(!state.mouse_pressed);
+
+        state.press_mouse();
+        assert!(!state.release_mouse(false));
+        assert!(!state.mouse_pressed);
+        assert!(!state.release_mouse(true));
     }
 
     #[test]
