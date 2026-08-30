@@ -35,7 +35,12 @@ fn material(alpha: f32) -> Background {
 
 fn outline(alpha: f32, emphasized: bool) -> Border {
     Border {
-        color: Color::from_rgba8(255, 255, 255, if emphasized { 0.95 } else { alpha }),
+        color: Color::from_rgba8(
+            255,
+            255,
+            255,
+            if emphasized { 0.95 } else { alpha.max(0.44) },
+        ),
         width: if emphasized { EMPHASIS_WIDTH } else { 1.0 },
         radius: CONTROL_RADIUS.into(),
     }
@@ -79,7 +84,7 @@ pub fn selector(_theme: &Theme, status: pick_list::Status, focused: bool) -> pic
     let opened = matches!(status, pick_list::Status::Opened);
     pick_list::Style {
         text_color: primary_text(),
-        placeholder_color: Color::from_rgba8(255, 255, 255, 0.55),
+        placeholder_color: Color::from_rgba8(255, 255, 255, 0.72),
         handle_color: Color::from_rgba8(255, 255, 255, 0.8),
         background: Background::Color(Color::from_rgba8(
             255,
@@ -148,14 +153,14 @@ pub fn account_tile(_theme: &Theme, status: button::Status, focused: bool) -> bu
 }
 
 pub fn primary_button(_theme: &Theme, status: button::Status, focused: bool) -> button::Style {
-    let alpha = match status {
-        button::Status::Hovered => 0.34,
-        button::Status::Pressed => 0.42,
-        button::Status::Disabled => 0.14,
-        button::Status::Active => 0.27,
+    let background = match status {
+        button::Status::Active => Color::from_rgb8(56, 92, 204),
+        button::Status::Hovered => Color::from_rgb8(65, 105, 225),
+        button::Status::Pressed => Color::from_rgb8(47, 79, 180),
+        button::Status::Disabled => Color::from_rgba8(255, 255, 255, 0.14),
     };
     button::Style {
-        background: Some(Background::Color(Color::from_rgba8(255, 255, 255, alpha))),
+        background: Some(Background::Color(background)),
         text_color: primary_text(),
         border: outline(0.34, focused),
         shadow: elevation(),
@@ -195,6 +200,179 @@ pub fn secondary_button(_theme: &Theme, status: button::Status, focused: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NORMAL_TEXT_CONTRAST: f32 = 4.5;
+    const NON_TEXT_CONTRAST: f32 = 3.0;
+
+    fn composite(foreground: Color, background: Color) -> Color {
+        Color::from_rgb(
+            foreground.r * foreground.a + background.r * (1.0 - foreground.a),
+            foreground.g * foreground.a + background.g * (1.0 - foreground.a),
+            foreground.b * foreground.a + background.b * (1.0 - foreground.a),
+        )
+    }
+
+    fn channel_luminance(channel: f32) -> f32 {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn luminance(color: Color) -> f32 {
+        0.2126 * channel_luminance(color.r)
+            + 0.7152 * channel_luminance(color.g)
+            + 0.0722 * channel_luminance(color.b)
+    }
+
+    fn contrast(first: Color, second: Color) -> f32 {
+        let (lighter, darker) = if luminance(first) > luminance(second) {
+            (luminance(first), luminance(second))
+        } else {
+            (luminance(second), luminance(first))
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    fn background_color(background: Background) -> Color {
+        match background {
+            Background::Color(color) => color,
+            Background::Gradient(_) => panic!("control styles use solid material colors"),
+        }
+    }
+
+    fn assert_text_contrast(foreground: Color, surface: Color, label: &str) {
+        let rendered = composite(foreground, surface);
+        assert!(
+            contrast(rendered, surface) >= NORMAL_TEXT_CONTRAST,
+            "{label} contrast was {}",
+            contrast(rendered, surface)
+        );
+    }
+
+    fn assert_boundary_contrast(border: Border, backdrop: Color, label: &str) {
+        let rendered = composite(border.color, backdrop);
+        assert!(
+            contrast(rendered, backdrop) >= NON_TEXT_CONTRAST,
+            "{label} contrast was {}",
+            contrast(rendered, backdrop)
+        );
+    }
+
+    #[test]
+    fn text_tokens_meet_wcag_contrast_on_every_background_combination() {
+        for backdrop in crate::background::contrast_backdrops() {
+            for (label, color) in [
+                ("primary", primary_text()),
+                ("strong secondary", strong_secondary_text()),
+                ("secondary", secondary_text()),
+                ("muted", muted_text()),
+                ("error", status_text(true)),
+            ] {
+                assert_text_contrast(color, backdrop, label);
+            }
+        }
+    }
+
+    #[test]
+    fn control_text_and_boundaries_meet_wcag_contrast() {
+        let theme = Theme::Dark;
+        for backdrop in crate::background::contrast_backdrops() {
+            for status in [
+                button::Status::Active,
+                button::Status::Hovered,
+                button::Status::Pressed,
+                button::Status::Disabled,
+            ] {
+                for (label, style) in [
+                    ("account tile", account_tile(&theme, status, false)),
+                    ("primary button", primary_button(&theme, status, false)),
+                    ("secondary button", secondary_button(&theme, status, false)),
+                    (
+                        "destructive button",
+                        dialog_button(&theme, status, false, true),
+                    ),
+                ] {
+                    let surface = composite(
+                        background_color(style.background.expect("control material")),
+                        backdrop,
+                    );
+                    assert_text_contrast(style.text_color, surface, label);
+                    assert_boundary_contrast(style.border, backdrop, label);
+                }
+            }
+
+            for status in [
+                pick_list::Status::Active,
+                pick_list::Status::Hovered,
+                pick_list::Status::Opened,
+            ] {
+                let style = selector(&theme, status, false);
+                let surface = composite(background_color(style.background), backdrop);
+                assert_text_contrast(style.text_color, surface, "selector text");
+                assert_text_contrast(style.placeholder_color, surface, "selector placeholder");
+                assert_boundary_contrast(
+                    Border {
+                        color: style.handle_color,
+                        width: 1.0,
+                        ..Border::default()
+                    },
+                    surface,
+                    "selector handle",
+                );
+                assert_boundary_contrast(style.border, backdrop, "selector boundary");
+            }
+
+            let input_style = input(&theme, text_input::Status::Active);
+            let surface = composite(background_color(input_style.background), backdrop);
+            assert_text_contrast(input_style.value, surface, "input value");
+            assert_text_contrast(input_style.placeholder, surface, "input placeholder");
+            assert_text_contrast(
+                input_style.value,
+                input_style.selection,
+                "selected input value",
+            );
+            assert_boundary_contrast(input_style.border, backdrop, "input boundary");
+            assert_boundary_contrast(avatar(50.0).border, backdrop, "avatar boundary");
+
+            for (label, style) in [
+                ("inactive control", inactive_control(&theme)),
+                ("preview badge", preview_badge(&theme)),
+                ("dialog", dialog(&theme)),
+            ] {
+                let surface = composite(
+                    background_color(style.background.expect("container material")),
+                    backdrop,
+                );
+                assert_text_contrast(
+                    style.text_color.unwrap_or_else(primary_text),
+                    surface,
+                    label,
+                );
+                assert_boundary_contrast(style.border, backdrop, label);
+            }
+
+            for border in [
+                input(&theme, text_input::Status::Focused).border,
+                account_tile(&theme, button::Status::Active, true).border,
+                primary_button(&theme, button::Status::Active, true).border,
+                selector(&theme, pick_list::Status::Active, true).border,
+            ] {
+                assert_boundary_contrast(border, backdrop, "focus ring");
+            }
+        }
+
+        let menu = selector_menu(&theme);
+        let menu_surface = background_color(menu.background);
+        assert_text_contrast(menu.text_color, menu_surface, "selector menu text");
+        let selected_surface = composite(background_color(menu.selected_background), menu_surface);
+        assert_text_contrast(
+            menu.selected_text_color,
+            selected_surface,
+            "selected menu text",
+        );
+    }
 
     #[test]
     fn controls_share_corner_and_focus_treatment() {

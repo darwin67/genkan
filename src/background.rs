@@ -2,6 +2,14 @@ use iced::mouse;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Theme};
 
+const BASE_COLOR: Color = Color::from_rgb(5.0 / 255.0, 9.0 / 255.0, 24.0 / 255.0);
+const BLOB_COLORS: [Color; 3] = [
+    Color::from_rgba(51.0 / 255.0, 72.0 / 255.0, 181.0 / 255.0, 0.42),
+    Color::from_rgba(142.0 / 255.0, 44.0 / 255.0, 118.0 / 255.0, 0.34),
+    Color::from_rgba(23.0 / 255.0, 111.0 / 255.0, 140.0 / 255.0, 0.35),
+];
+const DIM_COLOR: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.2);
+
 #[derive(Debug, Clone, Copy)]
 pub struct Background {
     elapsed: f32,
@@ -32,7 +40,7 @@ impl<Message> canvas::Program<Message> for Background {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), Color::from_rgb8(5, 9, 24));
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), BASE_COLOR);
 
         let t = self.elapsed / 70.0;
         let blobs = [
@@ -40,19 +48,19 @@ impl<Message> canvas::Program<Message> for Background {
                 0.24 + 0.05 * t.sin(),
                 0.35 + 0.04 * (t * 0.7).cos(),
                 0.43,
-                Color::from_rgba8(51, 72, 181, 0.42),
+                BLOB_COLORS[0],
             ),
             (
                 0.72 + 0.05 * (t * 0.8).cos(),
                 0.28 + 0.06 * t.sin(),
                 0.38,
-                Color::from_rgba8(142, 44, 118, 0.34),
+                BLOB_COLORS[1],
             ),
             (
                 0.58 + 0.04 * (t * 1.1).sin(),
                 0.78 + 0.03 * t.cos(),
                 0.48,
-                Color::from_rgba8(23, 111, 140, 0.35),
+                BLOB_COLORS[2],
             ),
         ];
 
@@ -67,11 +75,42 @@ impl<Message> canvas::Program<Message> for Background {
             );
         }
 
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            Color::from_rgba8(0, 0, 0, 0.2),
-        );
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), DIM_COLOR);
         vec![frame.into_geometry()]
     }
+}
+
+#[cfg(test)]
+pub(crate) fn contrast_backdrops() -> Vec<Color> {
+    const COVERAGE_STEPS: u8 = 4;
+
+    let mut backdrops = Vec::with_capacity((usize::from(COVERAGE_STEPS) + 1).pow(3));
+    for first in 0..=COVERAGE_STEPS {
+        for second in 0..=COVERAGE_STEPS {
+            for third in 0..=COVERAGE_STEPS {
+                let coverage = [first, second, third];
+                let mut color = BASE_COLOR;
+                for (blob, coverage) in BLOB_COLORS.into_iter().zip(coverage) {
+                    color = composite(
+                        Color {
+                            a: blob.a * f32::from(coverage) / f32::from(COVERAGE_STEPS),
+                            ..blob
+                        },
+                        color,
+                    );
+                }
+                backdrops.push(composite(DIM_COLOR, color));
+            }
+        }
+    }
+    backdrops
+}
+
+#[cfg(test)]
+fn composite(foreground: Color, background: Color) -> Color {
+    Color::from_rgb(
+        foreground.r * foreground.a + background.r * (1.0 - foreground.a),
+        foreground.g * foreground.a + background.g * (1.0 - foreground.a),
+        foreground.b * foreground.a + background.b * (1.0 - foreground.a),
+    )
 }
