@@ -11,6 +11,7 @@ use iced::{
 use crate::theme;
 
 const DRAG_THRESHOLD: f32 = 6.0;
+const REVEAL_MARGIN: f32 = 16.0;
 
 pub(super) fn tile<'a, Message: Clone + 'a>(
     content: impl Into<Element<'a, Message>>,
@@ -371,10 +372,14 @@ fn reveal_offset(
 ) -> Option<operation::scrollable::AbsoluteOffset> {
     let visible_top = viewport.y + translation.y;
     let visible_bottom = visible_top + viewport.height;
-    let y = if target.height > viewport.height || target.y < visible_top {
+    let padded_top = target.y - REVEAL_MARGIN;
+    let padded_bottom = target.y + target.height + REVEAL_MARGIN;
+    let y = if target.height + 2.0 * REVEAL_MARGIN > viewport.height {
         target.y - content.y
-    } else if target.y + target.height > visible_bottom {
-        target.y + target.height - content.y - viewport.height
+    } else if padded_top < visible_top {
+        padded_top - content.y
+    } else if padded_bottom > visible_bottom {
+        padded_bottom - content.y - viewport.height
     } else {
         return None;
     };
@@ -426,7 +431,7 @@ mod tests {
                 Vector::new(0.0, 100.0),
                 Rectangle::new(Point::new(0.0, 350.0), Size::new(100.0, 80.0)),
             ),
-            Some(operation::scrollable::AbsoluteOffset { x: 0.0, y: 230.0 })
+            Some(operation::scrollable::AbsoluteOffset { x: 0.0, y: 246.0 })
         );
         assert_eq!(
             reveal_offset(
@@ -435,7 +440,7 @@ mod tests {
                 Vector::new(0.0, 300.0),
                 Rectangle::new(Point::new(0.0, 120.0), Size::new(100.0, 80.0)),
             ),
-            Some(operation::scrollable::AbsoluteOffset { x: 0.0, y: 120.0 })
+            Some(operation::scrollable::AbsoluteOffset { x: 0.0, y: 104.0 })
         );
         assert_eq!(
             reveal_offset(

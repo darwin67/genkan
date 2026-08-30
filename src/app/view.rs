@@ -365,7 +365,7 @@ impl App {
                             input,
                             button(text("Log In").size(16))
                                 .on_press_maybe(interactive.then_some(Message::Submit))
-                                .padding([12, 18])
+                                .padding([12, 12])
                                 .width(Length::Fixed(AUTH_ACTION_WIDTH))
                                 .style(|theme, status| {
                                     theme::primary_button(
