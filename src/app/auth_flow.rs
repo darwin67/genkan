@@ -117,8 +117,7 @@ impl App {
                 message,
                 request,
             } => {
-                self.message = Some(bounded_auth_text(&message));
-                self.message_is_error = error;
+                self.set_auth_notice(message, error);
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
@@ -144,6 +143,11 @@ impl App {
         self.message = Some(bounded_auth_text(&message));
         self.message_is_error = true;
         Task::none()
+    }
+
+    pub(super) fn set_auth_notice(&mut self, message: String, error: bool) {
+        self.message = Some(bounded_auth_text(&message));
+        self.message_is_error = error;
     }
 }
 

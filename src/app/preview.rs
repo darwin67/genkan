@@ -10,11 +10,12 @@ use crate::power::Action as PowerAction;
 use crate::sessions::Session;
 
 use super::auth_flow::{Attempt, Phase};
-use super::{App, Message, PowerState};
+use super::{App, Message, PowerDialogFocus, PowerState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Fixture {
     Selected,
+    SecretPrompt,
     Users,
     DuplicateNames,
     LargeAccountSet,
@@ -22,6 +23,7 @@ pub(crate) enum Fixture {
     LongAuthentication,
     VisiblePrompt,
     InformationalMessage,
+    ConsecutiveMessages,
     CancellationProgress,
     CancellationFailure,
     AuthenticationFailure,
@@ -35,8 +37,12 @@ struct State {
     accounts: Vec<Account>,
     selected: Option<Account>,
     prompt: String,
-    message: String,
+    message: Option<String>,
     message_is_error: bool,
+    session_message: Option<String>,
+    power_message: Option<String>,
+    power_message_is_error: bool,
+    preview_message: Option<String>,
     secret: bool,
     phase: Phase,
     session: Option<Session>,
@@ -69,8 +75,12 @@ pub(super) fn build(
         input: String::new(),
         input_id: input_id.clone(),
         prompt: state.prompt,
-        message: Some(state.message),
+        message: state.message,
         message_is_error: state.message_is_error,
+        session_message: state.session_message,
+        power_message: state.power_message,
+        power_message_is_error: state.power_message_is_error,
+        preview_message: state.preview_message,
         secret: state.secret,
         phase: state.phase,
         client: None,
@@ -79,6 +89,7 @@ pub(super) fn build(
         started_at: Instant::now(),
         now: preview_now(),
         power_state: state.power_state,
+        power_dialog_focus: PowerDialogFocus::Cancel,
         attempt: Attempt::initial(),
         selection_session_cancelled: false,
         closing: None,
@@ -101,13 +112,18 @@ impl State {
             display_name.or_else(|| synthetic_identity.then(|| "Preview User".into())),
         );
         let session = preview_session();
-        let message = "Preview mode: credentials and power actions are simulated".to_owned();
         let mut state = Self {
             accounts: vec![selected.clone()],
             selected: Some(selected),
             prompt: "Password".into(),
-            message,
+            message: None,
             message_is_error: false,
+            session_message: None,
+            power_message: None,
+            power_message_is_error: false,
+            preview_message: Some(
+                "Preview mode: credentials and power actions are simulated".into(),
+            ),
             secret: true,
             phase: Phase::WaitingForInput,
             session: Some(session),
@@ -115,7 +131,7 @@ impl State {
         };
 
         match fixture {
-            Fixture::Selected => {}
+            Fixture::Selected | Fixture::SecretPrompt => {}
             Fixture::Users => state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")])),
             Fixture::DuplicateNames => state.select_accounts(accounts([
                 ("alex", "Alex Morgan"),
@@ -153,46 +169,48 @@ impl State {
                 state.selected = Some(account);
                 state.prompt = "Enter the complete authentication challenge: ".to_owned()
                     + &"challenge ".repeat(52);
-                state.message = "Authentication details: ".to_owned() + &"detail ".repeat(70);
+                state.message = Some("Authentication details: ".to_owned() + &"detail ".repeat(70));
             }
             Fixture::VisiblePrompt => {
                 state.prompt = "Verification code".into();
                 state.secret = false;
             }
             Fixture::InformationalMessage => {
-                state.message = "Touch the security key, then enter your password".into();
+                state.message = Some("Touch the security key, then enter your password".into());
+            }
+            Fixture::ConsecutiveMessages => {
+                state.message = Some("Security key accepted; enter your password".into());
             }
             Fixture::CancellationProgress => {
                 state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")]));
                 state.phase = Phase::CancellingForUserSelection;
-                state.message = "Still changing user…".into();
+                state.message = Some("Still changing user…".into());
             }
             Fixture::CancellationFailure => {
                 state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")]));
                 state.phase = Phase::UserSelectionCancellationFailed;
-                state.message = "Could not cancel the previous login attempt".into();
+                state.message = Some("Could not cancel the previous login attempt".into());
                 state.message_is_error = true;
             }
             Fixture::AuthenticationFailure => {
                 state.phase = Phase::Failed;
-                state.message = "Authentication failed".into();
+                state.message = Some("Authentication failed".into());
                 state.message_is_error = true;
             }
             Fixture::DiscoveryFailure => {
                 state.select_accounts(Vec::new());
                 state.phase = Phase::Failed;
-                state.message = "AccountsService found no unlocked non-system users".into();
+                state.message = Some("AccountsService found no unlocked non-system users".into());
                 state.message_is_error = true;
             }
             Fixture::SessionFailure => {
                 state.session = None;
                 state.phase = Phase::Failed;
-                state.message = "No valid Wayland sessions are installed".into();
-                state.message_is_error = true;
+                state.session_message = Some("No valid Wayland sessions are installed".into());
             }
             Fixture::PowerFailure => {
-                state.message = "Power action was not authorized".into();
-                state.message_is_error = true;
+                state.power_message = Some("Power action was not authorized".into());
+                state.power_message_is_error = true;
             }
             Fixture::PowerConfirmation => {
                 state.power_state = PowerState::Confirming(PowerAction::PowerOff);
@@ -205,7 +223,7 @@ impl State {
         self.accounts = accounts;
         self.selected = None;
         self.phase = Phase::SelectingUser;
-        self.message = "Select a user".into();
+        self.message = Some("Select a user".into());
     }
 }
 
@@ -315,6 +333,15 @@ mod tests {
         assert!(long.message.as_deref().unwrap().chars().count() >= 500);
         assert!(long.username.chars().count() >= 240);
         assert!(long.requires_flow_layout());
+
+        let (secret, _) = build(Fixture::SecretPrompt, None, None);
+        assert!(secret.secret);
+
+        let (consecutive, _) = build(Fixture::ConsecutiveMessages, None, None);
+        assert_eq!(
+            consecutive.message.as_deref(),
+            Some("Security key accepted; enter your password")
+        );
 
         let (authentication, _) = build(Fixture::AuthenticationFailure, None, None);
         assert_eq!(authentication.phase, Phase::Failed);

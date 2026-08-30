@@ -10,7 +10,7 @@ use crate::{background, theme};
 
 use super::account_tile as tile_widget;
 use super::auth_flow::Phase;
-use super::{App, Message, PowerState};
+use super::{App, Message, PowerDialogFocus, PowerState};
 
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
 const ACCOUNT_GRID_GAP: f32 = 18.0;
@@ -32,6 +32,14 @@ enum ScreenLayout {
     Flow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthenticationControls {
+    Prompt,
+    Retry,
+    Progress(&'static str),
+    Unavailable,
+}
+
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let background = background::Background::new(self.background_elapsed()).view();
@@ -49,10 +57,27 @@ impl App {
                         text(format!("{} this computer?", action.label())).size(24),
                         row![
                             button("Cancel")
-                                .on_press_maybe(dialog_interactive.then_some(Message::CancelPower)),
-                            button(action.label()).on_press_maybe(
-                                dialog_interactive.then_some(Message::ConfirmPower(action))
-                            ),
+                                .on_press_maybe(dialog_interactive.then_some(Message::CancelPower))
+                                .style(|theme, status| {
+                                    theme::dialog_button(
+                                        theme,
+                                        status,
+                                        self.power_dialog_focus == PowerDialogFocus::Cancel,
+                                        false,
+                                    )
+                                }),
+                            button(action.label())
+                                .on_press_maybe(
+                                    dialog_interactive.then_some(Message::ConfirmPower(action))
+                                )
+                                .style(|theme, status| {
+                                    theme::dialog_button(
+                                        theme,
+                                        status,
+                                        self.power_dialog_focus == PowerDialogFocus::Confirm,
+                                        true,
+                                    )
+                                }),
                         ]
                         .spacing(12),
                     ]
@@ -108,12 +133,19 @@ impl App {
                     .align_x(Alignment::Start)
                     .align_y(Alignment::End)
                     .padding([28, 30]);
-                stack![center, utilities, session].into()
+                let preview = container(self.preview_indicator())
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::Start)
+                    .align_y(Alignment::Start)
+                    .padding([28, 30]);
+                stack![center, utilities, session, preview].into()
             }
             ScreenLayout::Flow => scrollable(
                 container(
                     column![
                         self.clock(),
+                        self.preview_indicator(),
                         self.power_controls(),
                         self.identity(None, Some((size.width - 32.0).max(0.0)), true),
                         self.session_selector(),
@@ -170,13 +202,30 @@ impl App {
 
     fn power_controls(&self) -> Element<'_, Message> {
         let power_interactive = self.can_request_power();
-        row![
-            power_button(PowerAction::Suspend, power_interactive),
-            power_button(PowerAction::Reboot, power_interactive),
-            power_button(PowerAction::PowerOff, power_interactive),
+        column![
+            row![
+                power_button(PowerAction::Suspend, power_interactive),
+                power_button(PowerAction::Reboot, power_interactive),
+                power_button(PowerAction::PowerOff, power_interactive),
+            ]
+            .spacing(10),
+            notice(self.power_message.as_deref(), self.power_message_is_error),
         ]
-        .spacing(10)
+        .align_x(Alignment::End)
+        .max_width(360)
+        .spacing(6)
         .into()
+    }
+
+    fn preview_indicator(&self) -> Element<'_, Message> {
+        let Some(message) = self.preview_message.as_deref() else {
+            return Space::new(Length::Shrink, Length::Fixed(0.0)).into();
+        };
+        container(text(message).size(13).wrapping(Wrapping::WordOrGlyph))
+            .padding([7, 12])
+            .max_width(360)
+            .style(theme::selection)
+            .into()
     }
 
     fn account_selection(
@@ -193,7 +242,9 @@ impl App {
             flow,
         );
         let retry: Element<'_, Message> = if self.phase == Phase::UserSelectionCancellationFailed
-            || (self.phase == Phase::Failed && self.username.is_empty())
+            || (self.phase == Phase::Failed
+                && self.username.is_empty()
+                && self.selected_session.is_some())
         {
             let (label, message) = if self.phase == Phase::UserSelectionCancellationFailed {
                 (
@@ -247,49 +298,58 @@ impl App {
         let username = selected_account
             .map(|account| format!("@{}", account.username))
             .unwrap_or_else(|| format!("@{}", self.username));
-        let prompt_text = text(&self.prompt)
-            .size(15)
-            .width(Fill)
-            .align_x(Alignment::Center)
-            .wrapping(Wrapping::WordOrGlyph);
-        let prompt: Element<'_, Message> = prompt_text.into();
-        let input = container(
-            text_input("", &self.input)
-                .id(self.input_id.clone())
-                .on_input_maybe(
-                    (interactive && self.phase == Phase::WaitingForInput)
-                        .then_some(Message::InputChanged),
-                )
-                .on_submit_maybe(
-                    (interactive && self.phase == Phase::WaitingForInput)
-                        .then_some(Message::Submit),
-                )
-                .secure(self.secret)
-                .padding([12, 18])
-                .size(18)
-                .width(Fill)
-                .style(theme::input),
-        )
-        .id(iced::widget::container::Id::new(
-            "authentication-input-anchor",
-        ))
-        .width(Fill);
-        let submit = if self.phase == Phase::Failed {
-            button(text("Retry").size(16))
-                .on_press_maybe(interactive.then_some(Message::Retry))
-                .padding([12, 18])
-                .width(Length::Fixed(AUTH_ACTION_WIDTH))
-                .style(theme::primary_button)
-        } else {
-            button(text("Log In").size(16))
-                .on_press_maybe(
-                    (interactive && self.phase == Phase::WaitingForInput)
-                        .then_some(Message::Submit),
-                )
-                .padding([12, 18])
-                .width(Length::Fixed(AUTH_ACTION_WIDTH))
-                .style(theme::primary_button)
-        };
+        let controls: Element<'_, Message> =
+            match authentication_controls(self.phase, self.selected_session.is_some()) {
+                AuthenticationControls::Prompt => {
+                    let input = container(
+                        text_input("", &self.input)
+                            .id(self.input_id.clone())
+                            .on_input_maybe(interactive.then_some(Message::InputChanged))
+                            .on_submit_maybe(interactive.then_some(Message::Submit))
+                            .secure(self.secret)
+                            .padding([12, 18])
+                            .size(18)
+                            .width(Fill)
+                            .style(theme::input),
+                    )
+                    .id(iced::widget::container::Id::new(
+                        "authentication-input-anchor",
+                    ))
+                    .width(Fill);
+                    column![
+                        text(&self.prompt)
+                            .size(15)
+                            .width(Fill)
+                            .align_x(Alignment::Center)
+                            .wrapping(Wrapping::WordOrGlyph),
+                        row![
+                            Space::new(Length::Fixed(AUTH_ACTION_WIDTH), Length::Shrink),
+                            input,
+                            button(text("Log In").size(16))
+                                .on_press_maybe(interactive.then_some(Message::Submit))
+                                .padding([12, 18])
+                                .width(Length::Fixed(AUTH_ACTION_WIDTH))
+                                .style(theme::primary_button),
+                        ]
+                        .spacing(8)
+                        .width(Fill),
+                    ]
+                    .spacing(8)
+                    .into()
+                }
+                AuthenticationControls::Retry => button(text("Retry").size(16))
+                    .on_press_maybe(interactive.then_some(Message::Retry))
+                    .padding([12, 18])
+                    .style(theme::primary_button)
+                    .into(),
+                AuthenticationControls::Progress(label) => text(label)
+                    .size(15)
+                    .color(Color::from_rgba8(255, 255, 255, 0.78))
+                    .into(),
+                AuthenticationControls::Unavailable => {
+                    Space::new(Length::Shrink, Length::Fixed(0.0)).into()
+                }
+            };
         let change_user: Element<'_, Message> = if self.can_change_user() {
             button(text("Change User").size(14))
                 .on_press(Message::ChangeUser)
@@ -322,19 +382,10 @@ impl App {
             column![
                 avatar(&self.display_name, 100.0, 38),
                 identity,
-                column![
-                    prompt,
-                    row![
-                        Space::new(Length::Fixed(AUTH_ACTION_WIDTH), Length::Shrink),
-                        input,
-                        submit
-                    ]
-                    .spacing(8)
-                    .width(Fill),
-                    self.status_for(self.message.as_deref(), flow)
-                ]
-                .width(Fill)
-                .spacing(8),
+                column![controls, self.status_for(self.message.as_deref(), flow)]
+                    .width(Fill)
+                    .align_x(Alignment::Center)
+                    .spacing(8),
                 change_user,
             ]
             .width(Fill)
@@ -358,6 +409,18 @@ impl App {
                 dynamic_text_requires_flow(&account.display_name)
                     || dynamic_text_requires_flow(&account.username)
             })
+            || self
+                .session_message
+                .as_deref()
+                .is_some_and(dynamic_text_requires_flow)
+            || self
+                .power_message
+                .as_deref()
+                .is_some_and(dynamic_text_requires_flow)
+            || self
+                .preview_message
+                .as_deref()
+                .is_some_and(dynamic_text_requires_flow)
     }
 
     fn status_for<'a>(&'a self, message: Option<&'a str>, _flow: bool) -> Element<'a, Message> {
@@ -403,15 +466,61 @@ impl App {
             .style(theme::selection)
             .into()
         };
+        let retry: Element<'_, Message> =
+            if self.phase == Phase::Failed && self.selected_session.is_none() {
+                button(text("Retry session discovery").size(13))
+                    .on_press_maybe(
+                        (self.closing.is_none() && self.power_state == PowerState::Idle)
+                            .then_some(Message::RetrySession),
+                    )
+                    .padding([7, 12])
+                    .style(theme::translucent_button)
+                    .into()
+            } else {
+                Space::new(Length::Shrink, Length::Fixed(0.0)).into()
+            };
         column![
             text("Session")
                 .size(13)
                 .color(Color::from_rgba8(255, 255, 255, 0.72)),
             selector,
+            notice(self.session_message.as_deref(), true),
+            retry,
         ]
+        .max_width(300)
         .spacing(6)
         .into()
     }
+}
+
+fn authentication_controls(phase: Phase, has_session: bool) -> AuthenticationControls {
+    match phase {
+        Phase::WaitingForInput => AuthenticationControls::Prompt,
+        Phase::Failed if has_session => AuthenticationControls::Retry,
+        Phase::Failed => AuthenticationControls::Unavailable,
+        Phase::CreatingSession => AuthenticationControls::Progress("Preparing authentication…"),
+        Phase::Authenticating => AuthenticationControls::Progress("Continuing authentication…"),
+        Phase::StartingSession => AuthenticationControls::Progress("Starting session…"),
+        Phase::DiscoveringUsers
+        | Phase::CancellingForUserSelection
+        | Phase::SelectingUser
+        | Phase::UserSelectionCancellationFailed => AuthenticationControls::Unavailable,
+    }
+}
+
+fn notice<'a>(message: Option<&'a str>, error: bool) -> Element<'a, Message> {
+    let Some(message) = message else {
+        return Space::new(Length::Shrink, Length::Fixed(0.0)).into();
+    };
+    text(message)
+        .size(13)
+        .color(if error {
+            Color::from_rgb8(255, 171, 171)
+        } else {
+            Color::from_rgba8(255, 255, 255, 0.78)
+        })
+        .wrapping(Wrapping::WordOrGlyph)
+        .into()
 }
 
 fn account_grid<'a>(
@@ -602,6 +711,26 @@ mod tests {
         assert_eq!(
             account_selector_state(Phase::Failed, false, false),
             AccountSelectorState::Disabled
+        );
+    }
+
+    #[test]
+    fn authentication_only_collects_input_for_protocol_prompts() {
+        assert_eq!(
+            authentication_controls(Phase::WaitingForInput, true),
+            AuthenticationControls::Prompt
+        );
+        assert_eq!(
+            authentication_controls(Phase::Authenticating, true),
+            AuthenticationControls::Progress("Continuing authentication…")
+        );
+        assert_eq!(
+            authentication_controls(Phase::Failed, false),
+            AuthenticationControls::Unavailable
+        );
+        assert_eq!(
+            authentication_controls(Phase::Failed, true),
+            AuthenticationControls::Retry
         );
     }
 
