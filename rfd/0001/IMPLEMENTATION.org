@@ -5,17 +5,18 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Baseline and acceptance evidence
 
-- [ ] Capture the current preview at representative laptop and external-display
-  sizes before changing layout.
-- [ ] Record reference screenshots for account selection, a secret prompt, a
-  visible prompt, failed authentication, power confirmation, and narrow layout.
-- [ ] Define reviewable acceptance checks for hierarchy, focus order, wrapping,
+- [X] Capture the current preview at representative laptop and external-display
+  sizes before changing layout; see [[file:ACCEPTANCE.md][acceptance evidence]].
+- [X] Record generated reference screenshots for account selection, a secret
+  prompt, a visible prompt, failed authentication, power confirmation, and
+  narrow layout.
+- [X] Define reviewable acceptance checks for hierarchy, focus order, wrapping,
   WCAG contrast targets, and notice placement without treating screenshot
   pixels as the behavioral contract.
 - [X] Add deterministic preview fixtures for zero/one/many, duplicate-name, and
   large account sets; secret/visible and consecutive informational prompts;
   failure sources; cancellation progress; and power confirmation.
-- [ ] Prove preview never contacts AccountsService, greetd, or logind and never
+- [X] Prove preview never contacts AccountsService, greetd, or logind and never
   retains a simulated response after submission or account change.
 
 * Interaction model
@@ -85,9 +86,9 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   modal focus containment, safe initial modal action, and focus restoration.
 - [X] Ensure every icon action has a visible text or accessible label and no
   action depends only on hover, color, or icon recognition.
-- [ ] Exercise pointer, keyboard, and touch-equivalent account activation where
+- [X] Exercise pointer, keyboard, and touch-equivalent account activation where
   iced and the test environment expose those paths.
-- [ ] Verify long localized prompts and bounded account labels wrap without
+- [X] Verify long localized prompts and bounded account labels wrap without
   hiding the current input or status.
 - [ ] Verify unique accessible account names, status announcements where iced
   exposes them, 4.5:1 normal-text contrast, and 3:1 large-text, focus, and
@@ -104,7 +105,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Responsive and graphics verification
 
-- [ ] Verify the composition at common laptop, 16:9, ultrawide, and narrow
+- [X] Verify the composition at common laptop, 16:9, ultrawide, and narrow
   dimensions without relying on one fixed screenshot geometry.
 - [X] Add deterministic view-model or widget-state regressions for selection,
   authentication, account switching, disabled controls, and wrapped content.
