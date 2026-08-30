@@ -10,6 +10,7 @@ use crate::{background, theme};
 
 use super::account_tile as tile_widget;
 use super::auth_flow::Phase;
+use super::modal as modal_widget;
 use super::{App, Message, PowerDialogFocus, PowerState};
 
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
@@ -33,7 +34,7 @@ enum ScreenLayout {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuthenticationControls {
+pub(super) enum AuthenticationControls {
     Prompt,
     Retry,
     Progress(&'static str),
@@ -493,7 +494,7 @@ impl App {
     }
 }
 
-fn authentication_controls(phase: Phase, has_session: bool) -> AuthenticationControls {
+pub(super) fn authentication_controls(phase: Phase, has_session: bool) -> AuthenticationControls {
     match phase {
         Phase::WaitingForInput => AuthenticationControls::Prompt,
         Phase::Failed if has_session => AuthenticationControls::Retry,
@@ -661,11 +662,13 @@ fn modal<'a>(
 ) -> Element<'a, Message> {
     stack![
         main_content.into(),
-        container(dialog)
-            .width(Fill)
-            .height(Fill)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center)
+        modal_widget::barrier(
+            container(dialog)
+                .width(Fill)
+                .height(Fill)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+        )
     ]
     .into()
 }

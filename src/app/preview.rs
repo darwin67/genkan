@@ -292,6 +292,20 @@ mod tests {
     }
 
     #[test]
+    fn preview_account_changes_clear_simulated_responses_without_a_client() {
+        let (mut app, _) = build(Fixture::Users, None, None);
+        app.input = "simulated response".into();
+        let account = app.accounts[0].clone();
+
+        let _ = app.update(Message::SelectAccount(account));
+
+        assert!(app.input.is_empty());
+        assert!(app.client.is_none());
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert!(app.preview_message.is_some());
+    }
+
+    #[test]
     fn account_fixtures_cover_cardinality_and_collisions() {
         let (users, _) = build(Fixture::Users, None, None);
         assert_eq!(users.accounts.len(), 2);

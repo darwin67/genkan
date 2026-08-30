@@ -1,5 +1,6 @@
 mod account_tile;
 mod auth_flow;
+mod modal;
 mod preview;
 mod view;
 
@@ -77,6 +78,13 @@ pub(crate) struct Config {
     pub(crate) username: Option<String>,
     pub(crate) display_name: Option<String>,
     pub(crate) preview: Option<PreviewFixture>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupMode {
+    ConfiguredIdentity,
+    DiscoverAccounts,
+    MissingSession,
 }
 
 #[derive(Debug)]
@@ -157,8 +165,7 @@ impl App {
             .username
             .map(|username| Account::override_account(username, config.display_name));
         let accounts = account.iter().cloned().collect();
-        let configured = selected_session.is_some() && account.is_some();
-        let discovering = selected_session.is_some() && account.is_none();
+        let startup = startup_mode(selected_session.is_some(), account.is_some());
         let attempt = Attempt::initial();
 
         let app = Self {
@@ -186,12 +193,10 @@ impl App {
             power_message_is_error: false,
             preview_message: None,
             secret: true,
-            phase: if configured {
-                Phase::CreatingSession
-            } else if discovering {
-                Phase::DiscoveringUsers
-            } else {
-                Phase::Failed
+            phase: match startup {
+                StartupMode::ConfiguredIdentity => Phase::CreatingSession,
+                StartupMode::DiscoverAccounts => Phase::DiscoveringUsers,
+                StartupMode::MissingSession => Phase::Failed,
             },
             client: None,
             sessions,
@@ -205,12 +210,12 @@ impl App {
             closing: None,
             preview: false,
         };
-        let task = if configured {
-            auth_flow::begin(app.username.clone(), attempt, true)
-        } else if discovering {
-            discover_accounts()
-        } else {
-            Task::none()
+        let task = match startup {
+            StartupMode::ConfiguredIdentity => {
+                auth_flow::begin(app.username.clone(), attempt, true)
+            }
+            StartupMode::DiscoverAccounts => discover_accounts(),
+            StartupMode::MissingSession => Task::none(),
         };
         (app, task)
     }
@@ -733,6 +738,14 @@ impl App {
     }
 }
 
+fn startup_mode(has_session: bool, has_configured_identity: bool) -> StartupMode {
+    match (has_session, has_configured_identity) {
+        (true, true) => StartupMode::ConfiguredIdentity,
+        (true, false) => StartupMode::DiscoverAccounts,
+        (false, _) => StartupMode::MissingSession,
+    }
+}
+
 fn account_navigation(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
     use keyboard::key::Named;
 
@@ -930,6 +943,13 @@ mod tests {
     }
 
     #[test]
+    fn configured_identity_precedes_account_discovery() {
+        assert_eq!(startup_mode(true, true), StartupMode::ConfiguredIdentity);
+        assert_eq!(startup_mode(true, false), StartupMode::DiscoverAccounts);
+        assert_eq!(startup_mode(false, true), StartupMode::MissingSession);
+    }
+
+    #[test]
     fn multiple_discovered_accounts_require_selection() {
         let mut app = app();
         app.phase = Phase::DiscoveringUsers;
@@ -977,6 +997,36 @@ mod tests {
         assert!(app.input.is_empty());
         assert!(app.message.is_none());
         assert!(!app.selection_session_cancelled);
+    }
+
+    #[test]
+    fn repeated_change_user_is_ignored_while_cancellation_is_in_flight() {
+        let mut app = app();
+        app.accounts = vec![account("darwin"), account("alice")];
+
+        let _ = app.update(Message::ChangeUser);
+        let attempt = app.attempt;
+        let _ = app.update(Message::ChangeUser);
+
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+        assert_eq!(app.attempt, attempt);
+        assert_eq!(app.message.as_deref(), Some("Changing user…"));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn failed_authentication_can_change_account_without_restarting() {
+        let mut app = app();
+        app.phase = Phase::Failed;
+        app.accounts = vec![account("darwin"), account("alice")];
+        let attempt = app.attempt;
+
+        let _ = app.update(Message::ChangeUser);
+
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+        assert_ne!(app.attempt, attempt);
+        assert!(app.username.is_empty());
+        assert!(app.input.is_empty());
     }
 
     #[test]
@@ -1309,6 +1359,32 @@ mod tests {
         assert_eq!(app.phase, Phase::Failed);
         assert_eq!(app.message.as_deref(), Some("greetd closed the socket"));
         assert!(app.message_is_error);
+    }
+
+    #[test]
+    fn successful_authentication_supersedes_the_previous_pam_notice() {
+        let mut app = app();
+        app.phase = Phase::Authenticating;
+        app.message = Some("Previous PAM error".into());
+        app.message_is_error = true;
+
+        let transition = super::auth_flow::transition(
+            app.phase,
+            auth::Response::Success,
+            app.selected_session.as_ref(),
+        );
+        assert!(matches!(
+            app.apply_auth_transition(transition),
+            super::auth_flow::AuthEffect::StartSession(_)
+        ));
+
+        assert_eq!(app.phase, Phase::StartingSession);
+        assert!(app.message.is_none());
+        assert!(!app.message_is_error);
+        assert_eq!(
+            super::view::authentication_controls(Phase::StartingSession, true),
+            super::view::AuthenticationControls::Progress("Starting session…")
+        );
     }
 
     #[test]

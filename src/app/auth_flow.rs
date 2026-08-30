@@ -26,13 +26,13 @@ pub(super) enum Phase {
 pub(crate) struct Attempt(u64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AuthTransition {
+pub(super) struct AuthTransition {
     phase: Phase,
     effect: AuthEffect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum AuthEffect {
+pub(super) enum AuthEffect {
     Prompt {
         secret: bool,
         message: String,
@@ -48,7 +48,7 @@ enum AuthEffect {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum AuthRequest {
+pub(super) enum AuthRequest {
     Acknowledge,
     StartSession { cmd: Vec<String>, env: Vec<String> },
 }
@@ -104,8 +104,7 @@ impl App {
 
     pub(super) fn handle_auth_response(&mut self, response: auth::Response) -> Task<Message> {
         let transition = transition(self.phase, response, self.selected_session.as_ref());
-        self.phase = transition.phase;
-        match transition.effect {
+        match self.apply_auth_transition(transition) {
             AuthEffect::Prompt { secret, message } => {
                 self.prompt = clean_prompt(&message);
                 self.secret = secret;
@@ -128,11 +127,18 @@ impl App {
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                self.message = Some("Starting session…".into());
                 exchange(client, request.into_greetd(), self.attempt)
             }
             AuthEffect::Fail(message) => self.fail(message),
         }
+    }
+
+    pub(super) fn apply_auth_transition(&mut self, transition: AuthTransition) -> AuthEffect {
+        self.phase = transition.phase;
+        if matches!(transition.effect, AuthEffect::StartSession(_)) {
+            self.clear_auth_notice();
+        }
+        transition.effect
     }
 
     pub(super) fn fail(&mut self, message: String) -> Task<Message> {
@@ -149,9 +155,14 @@ impl App {
         self.message = Some(bounded_auth_text(&message));
         self.message_is_error = error;
     }
+
+    pub(super) fn clear_auth_notice(&mut self) {
+        self.message = None;
+        self.message_is_error = false;
+    }
 }
 
-fn transition(
+pub(super) fn transition(
     phase: Phase,
     response: auth::Response,
     session: Option<&crate::sessions::Session>,
