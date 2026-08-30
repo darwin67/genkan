@@ -148,6 +148,23 @@ pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+pub fn dialog_button(
+    theme: &Theme,
+    status: button::Status,
+    focused: bool,
+    destructive: bool,
+) -> button::Style {
+    let mut style = primary_button(theme, status);
+    if destructive {
+        style.background = Some(Background::Color(Color::from_rgba8(170, 42, 52, 0.72)));
+    }
+    if focused {
+        style.border.color = Color::WHITE;
+        style.border.width = 3.0;
+    }
+    style
+}
+
 pub fn translucent_button(_theme: &Theme, status: button::Status) -> button::Style {
     let alpha = match status {
         button::Status::Hovered => 0.24,

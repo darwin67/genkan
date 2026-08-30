@@ -1,5 +1,6 @@
 mod account_tile;
 mod auth_flow;
+mod modal;
 mod preview;
 mod view;
 
@@ -31,6 +32,19 @@ enum PowerState {
     Idle,
     Confirming(PowerAction),
     Executing(PowerAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PowerDialogFocus {
+    Cancel,
+    Confirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PowerDialogNavigation {
+    Next,
+    Previous,
+    Activate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +80,13 @@ pub(crate) struct Config {
     pub(crate) preview: Option<PreviewFixture>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupMode {
+    ConfiguredIdentity,
+    DiscoverAccounts,
+    MissingSession,
+}
+
 #[derive(Debug)]
 pub(crate) struct App {
     username: String,
@@ -79,6 +100,10 @@ pub(crate) struct App {
     prompt: String,
     message: Option<String>,
     message_is_error: bool,
+    session_message: Option<String>,
+    power_message: Option<String>,
+    power_message_is_error: bool,
+    preview_message: Option<String>,
     secret: bool,
     phase: Phase,
     client: Option<Client>,
@@ -87,6 +112,7 @@ pub(crate) struct App {
     started_at: Instant,
     now: chrono::DateTime<Local>,
     power_state: PowerState,
+    power_dialog_focus: PowerDialogFocus,
     attempt: Attempt,
     selection_session_cancelled: bool,
     closing: Option<Closing>,
@@ -99,6 +125,7 @@ pub(crate) enum Message {
     InputChanged(String),
     Submit,
     Retry,
+    RetrySession,
     AuthResult {
         attempt: Attempt,
         result: Result<(Option<Client>, auth::Response), String>,
@@ -120,6 +147,7 @@ pub(crate) enum Message {
     AskPower(PowerAction),
     CancelPower,
     ConfirmPower(PowerAction),
+    NavigatePowerDialog(PowerDialogNavigation),
     PowerResult(Result<(), String>),
     CloseRequested(window::Id),
     SessionCancelled(window::Id),
@@ -137,8 +165,7 @@ impl App {
             .username
             .map(|username| Account::override_account(username, config.display_name));
         let accounts = account.iter().cloned().collect();
-        let configured = selected_session.is_some() && account.is_some();
-        let discovering = selected_session.is_some() && account.is_none();
+        let startup = startup_mode(selected_session.is_some(), account.is_some());
         let attempt = Attempt::initial();
 
         let app = Self {
@@ -157,17 +184,19 @@ impl App {
             input: String::new(),
             input_id: text_input::Id::new("authentication-input"),
             prompt: "Password".into(),
-            message: selected_session
+            message: None,
+            message_is_error: false,
+            session_message: selected_session
                 .is_none()
                 .then(|| "No valid Wayland sessions are installed".into()),
-            message_is_error: selected_session.is_none(),
+            power_message: None,
+            power_message_is_error: false,
+            preview_message: None,
             secret: true,
-            phase: if configured {
-                Phase::CreatingSession
-            } else if discovering {
-                Phase::DiscoveringUsers
-            } else {
-                Phase::Failed
+            phase: match startup {
+                StartupMode::ConfiguredIdentity => Phase::CreatingSession,
+                StartupMode::DiscoverAccounts => Phase::DiscoveringUsers,
+                StartupMode::MissingSession => Phase::Failed,
             },
             client: None,
             sessions,
@@ -175,17 +204,18 @@ impl App {
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
+            power_dialog_focus: PowerDialogFocus::Cancel,
             attempt,
             selection_session_cancelled: false,
             closing: None,
             preview: false,
         };
-        let task = if configured {
-            auth_flow::begin(app.username.clone(), attempt, true)
-        } else if discovering {
-            discover_accounts()
-        } else {
-            Task::none()
+        let task = match startup {
+            StartupMode::ConfiguredIdentity => {
+                auth_flow::begin(app.username.clone(), attempt, true)
+            }
+            StartupMode::DiscoverAccounts => discover_accounts(),
+            StartupMode::MissingSession => Task::none(),
         };
         (app, task)
     }
@@ -196,6 +226,8 @@ impl App {
             window::close_requests().map(Message::CloseRequested),
             keyboard::on_key_press(account_navigation),
             event::listen_with(page_navigation),
+            event::listen_with(cancel_shortcut),
+            event::listen_with(power_dialog_navigation),
         ])
     }
 
@@ -237,6 +269,7 @@ impl App {
                     | Message::CloseTimeout(_),
                 ) => true,
                 (PowerState::Confirming(_), Message::CancelPower) => true,
+                (PowerState::Confirming(_), Message::NavigatePowerDialog(_)) => true,
                 (PowerState::Confirming(expected), Message::ConfirmPower(actual)) => {
                     expected == *actual
                 }
@@ -348,19 +381,21 @@ impl App {
                 Task::none()
             }
             Message::SelectSession(_) => Task::none(),
-            Message::Retry if self.phase == Phase::Failed && self.selected_session.is_none() => {
+            Message::RetrySession
+                if self.phase == Phase::Failed && self.selected_session.is_none() =>
+            {
                 if self.preview {
-                    self.message = Some("Preview: retry was not sent".into());
-                    self.message_is_error = false;
+                    self.preview_message =
+                        Some("Preview mode: session discovery was not retried".into());
                     return Task::none();
                 }
                 self.sessions = sessions::discover();
                 self.selected_session = self.sessions.first().cloned();
                 if self.selected_session.is_none() {
-                    self.message = Some("No valid Wayland sessions are installed".into());
-                    self.message_is_error = true;
+                    self.session_message = Some("No valid Wayland sessions are installed".into());
                     return Task::none();
                 }
+                self.session_message = None;
                 if self.username.is_empty() {
                     self.phase = Phase::DiscoveringUsers;
                     self.message = None;
@@ -369,6 +404,7 @@ impl App {
                     self.retry_authentication()
                 }
             }
+            Message::RetrySession => Task::none(),
             Message::Retry if self.phase == Phase::Failed && self.username.is_empty() => {
                 if self.preview {
                     self.message = Some("Preview: retry was not sent".into());
@@ -389,8 +425,7 @@ impl App {
             Message::Submit if self.phase == Phase::WaitingForInput => {
                 if self.preview {
                     self.input.clear();
-                    self.message = Some("Preview: credentials were not sent".into());
-                    self.message_is_error = false;
+                    self.preview_message = Some("Preview mode: credentials were not sent".into());
                     return self.focus_input();
                 }
                 let Some(client) = self.client.clone() else {
@@ -410,6 +445,8 @@ impl App {
             Message::AuthResult { attempt, result } => self.handle_auth_result(attempt, result),
             Message::AskPower(action) if self.can_request_power() => {
                 self.power_state = PowerState::Confirming(action);
+                self.power_dialog_focus = PowerDialogFocus::Cancel;
+                self.power_message = None;
                 Task::none()
             }
             Message::AskPower(_) => Task::none(),
@@ -422,14 +459,37 @@ impl App {
                 }
             }
             Message::CancelPower => Task::none(),
+            Message::NavigatePowerDialog(navigation)
+                if matches!(self.power_state, PowerState::Confirming(_)) =>
+            {
+                match navigation {
+                    PowerDialogNavigation::Next | PowerDialogNavigation::Previous => {
+                        self.power_dialog_focus = match self.power_dialog_focus {
+                            PowerDialogFocus::Cancel => PowerDialogFocus::Confirm,
+                            PowerDialogFocus::Confirm => PowerDialogFocus::Cancel,
+                        };
+                        Task::none()
+                    }
+                    PowerDialogNavigation::Activate => match self.power_dialog_focus {
+                        PowerDialogFocus::Cancel => self.update(Message::CancelPower),
+                        PowerDialogFocus::Confirm => {
+                            let PowerState::Confirming(action) = self.power_state else {
+                                unreachable!();
+                            };
+                            self.update(Message::ConfirmPower(action))
+                        }
+                    },
+                }
+            }
+            Message::NavigatePowerDialog(_) => Task::none(),
             Message::ConfirmPower(action) if self.power_state == PowerState::Confirming(action) => {
                 if self.preview {
                     self.power_state = PowerState::Idle;
-                    self.message = Some(format!(
+                    self.power_message = Some(format!(
                         "Preview: {} was not requested",
                         action.label().to_lowercase()
                     ));
-                    self.message_is_error = false;
+                    self.power_message_is_error = false;
                     return if self.phase == Phase::WaitingForInput {
                         self.focus_input()
                     } else {
@@ -437,8 +497,6 @@ impl App {
                     };
                 }
                 self.power_state = PowerState::Executing(action);
-                self.message = Some(format!("Requesting {}…", action.label().to_lowercase()));
-                self.message_is_error = false;
                 Task::perform(power::execute(action), |result| {
                     Message::PowerResult(result.map_err(|error| error.to_string()))
                 })
@@ -448,7 +506,7 @@ impl App {
                 if self.power_state == PowerState::Executing(PowerAction::Suspend) =>
             {
                 self.power_state = PowerState::Idle;
-                self.message = None;
+                self.power_message = None;
                 if self.phase == Phase::WaitingForInput {
                     self.focus_input()
                 } else {
@@ -458,8 +516,8 @@ impl App {
             Message::PowerResult(Ok(())) => Task::none(),
             Message::PowerResult(Err(error)) => {
                 self.power_state = PowerState::Idle;
-                self.message = Some(auth_flow::bounded_auth_text(&error));
-                self.message_is_error = true;
+                self.power_message = Some(auth_flow::bounded_auth_text(&error));
+                self.power_message_is_error = true;
                 if self.phase == Phase::WaitingForInput {
                     self.focus_input()
                 } else {
@@ -530,7 +588,8 @@ impl App {
         self.selection_session_cancelled = false;
         if self.preview {
             self.phase = Phase::WaitingForInput;
-            self.message = Some("Preview mode: credentials and power actions are simulated".into());
+            self.preview_message =
+                Some("Preview mode: credentials and power actions are simulated".into());
             self.focus_input()
         } else if replacing_account {
             auth_flow::restart(self.client.take(), self.username.clone(), attempt)
@@ -679,6 +738,14 @@ impl App {
     }
 }
 
+fn startup_mode(has_session: bool, has_configured_identity: bool) -> StartupMode {
+    match (has_session, has_configured_identity) {
+        (true, true) => StartupMode::ConfiguredIdentity,
+        (true, false) => StartupMode::DiscoverAccounts,
+        (false, _) => StartupMode::MissingSession,
+    }
+}
+
 fn account_navigation(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
     use keyboard::key::Named;
 
@@ -723,6 +790,48 @@ fn page_navigation_key(key: keyboard::Key, status: event::Status) -> Option<Mess
     }
 }
 
+fn cancel_shortcut(
+    event: iced::Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event else {
+        return None;
+    };
+    cancel_shortcut_key(key)
+}
+
+fn cancel_shortcut_key(key: keyboard::Key) -> Option<Message> {
+    matches!(
+        key.as_ref(),
+        keyboard::Key::Named(keyboard::key::Named::Escape)
+    )
+    .then_some(Message::CancelPower)
+}
+
+fn power_dialog_navigation(
+    event: iced::Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
+        return None;
+    };
+    use keyboard::key::Named;
+    match key.as_ref() {
+        keyboard::Key::Named(Named::Tab) if modifiers.shift() => Some(
+            Message::NavigatePowerDialog(PowerDialogNavigation::Previous),
+        ),
+        keyboard::Key::Named(Named::Tab | Named::ArrowLeft | Named::ArrowRight) => {
+            Some(Message::NavigatePowerDialog(PowerDialogNavigation::Next))
+        }
+        keyboard::Key::Named(Named::Enter | Named::Space) => Some(Message::NavigatePowerDialog(
+            PowerDialogNavigation::Activate,
+        )),
+        _ => None,
+    }
+}
+
 fn discover_accounts() -> Task<Message> {
     Task::perform(accounts::discover(), |result| {
         Message::AccountsResult(result.map_err(|error| error.to_string()))
@@ -757,6 +866,10 @@ mod tests {
             prompt: "Password".into(),
             message: Some("Keep this message".into()),
             message_is_error: false,
+            session_message: None,
+            power_message: None,
+            power_message_is_error: false,
+            preview_message: None,
             secret: true,
             phase: Phase::WaitingForInput,
             client: None,
@@ -765,6 +878,7 @@ mod tests {
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
+            power_dialog_focus: PowerDialogFocus::Cancel,
             attempt,
             selection_session_cancelled: false,
             closing: None,
@@ -788,10 +902,10 @@ mod tests {
         assert_eq!(app.phase, Phase::WaitingForInput);
         assert!(app.input.is_empty());
         assert_eq!(
-            app.message.as_deref(),
-            Some("Preview: credentials were not sent")
+            app.preview_message.as_deref(),
+            Some("Preview mode: credentials were not sent")
         );
-        assert!(!app.message_is_error);
+        assert_eq!(app.message.as_deref(), Some("Keep this message"));
     }
 
     #[test]
@@ -808,10 +922,11 @@ mod tests {
         let _ = app.update(Message::ConfirmPower(PowerAction::Suspend));
         assert_eq!(app.power_state, PowerState::Idle);
         assert_eq!(
-            app.message.as_deref(),
+            app.power_message.as_deref(),
             Some("Preview: sleep was not requested")
         );
-        assert!(!app.message_is_error);
+        assert!(!app.power_message_is_error);
+        assert_eq!(app.message.as_deref(), Some("Keep this message"));
     }
 
     #[test]
@@ -825,6 +940,13 @@ mod tests {
         assert_eq!(app.username, "alice");
         assert_eq!(app.display_name, "ALICE");
         assert_eq!(app.accounts.len(), 1);
+    }
+
+    #[test]
+    fn configured_identity_precedes_account_discovery() {
+        assert_eq!(startup_mode(true, true), StartupMode::ConfiguredIdentity);
+        assert_eq!(startup_mode(true, false), StartupMode::DiscoverAccounts);
+        assert_eq!(startup_mode(false, true), StartupMode::MissingSession);
     }
 
     #[test]
@@ -875,6 +997,36 @@ mod tests {
         assert!(app.input.is_empty());
         assert!(app.message.is_none());
         assert!(!app.selection_session_cancelled);
+    }
+
+    #[test]
+    fn repeated_change_user_is_ignored_while_cancellation_is_in_flight() {
+        let mut app = app();
+        app.accounts = vec![account("darwin"), account("alice")];
+
+        let _ = app.update(Message::ChangeUser);
+        let attempt = app.attempt;
+        let _ = app.update(Message::ChangeUser);
+
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+        assert_eq!(app.attempt, attempt);
+        assert_eq!(app.message.as_deref(), Some("Changing user…"));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn failed_authentication_can_change_account_without_restarting() {
+        let mut app = app();
+        app.phase = Phase::Failed;
+        app.accounts = vec![account("darwin"), account("alice")];
+        let attempt = app.attempt;
+
+        let _ = app.update(Message::ChangeUser);
+
+        assert_eq!(app.phase, Phase::CancellingForUserSelection);
+        assert_ne!(app.attempt, attempt);
+        assert!(app.username.is_empty());
+        assert!(app.input.is_empty());
     }
 
     #[test]
@@ -1047,6 +1199,10 @@ mod tests {
             keyboard::Modifiers::empty()
         )
         .is_none());
+        assert!(matches!(
+            cancel_shortcut_key(keyboard::Key::Named(Named::Escape)),
+            Some(Message::CancelPower)
+        ));
     }
 
     #[test]
@@ -1151,6 +1307,10 @@ mod tests {
         assert_eq!(app.prompt, "Login code");
         assert!(!app.secret);
         assert!(app.input.is_empty());
+        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+
+        app.set_auth_notice("First security-key instruction".into(), false);
+        app.set_auth_notice("Security key accepted".into(), false);
 
         app.input = "123456".into();
         let _ = app.handle_auth_response(auth::Response::Prompt {
@@ -1160,6 +1320,30 @@ mod tests {
         assert_eq!(app.prompt, "Password");
         assert!(app.secret);
         assert!(app.input.is_empty());
+        assert_eq!(app.message.as_deref(), Some("Security key accepted"));
+        assert!(!app.message_is_error);
+    }
+
+    #[test]
+    fn session_recovery_notice_does_not_replace_authentication_status() {
+        let mut app = app();
+        app.phase = Phase::Failed;
+        app.selected_session = None;
+        app.sessions.clear();
+        app.session_message = Some("No valid Wayland sessions are installed".into());
+        app.preview = true;
+
+        let _ = app.update(Message::RetrySession);
+
+        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+        assert_eq!(
+            app.session_message.as_deref(),
+            Some("No valid Wayland sessions are installed")
+        );
+        assert_eq!(
+            app.preview_message.as_deref(),
+            Some("Preview mode: session discovery was not retried")
+        );
     }
 
     #[test]
@@ -1178,6 +1362,32 @@ mod tests {
     }
 
     #[test]
+    fn successful_authentication_supersedes_the_previous_pam_notice() {
+        let mut app = app();
+        app.phase = Phase::Authenticating;
+        app.message = Some("Previous PAM error".into());
+        app.message_is_error = true;
+
+        let transition = super::auth_flow::transition(
+            app.phase,
+            auth::Response::Success,
+            app.selected_session.as_ref(),
+        );
+        assert!(matches!(
+            app.apply_auth_transition(transition),
+            super::auth_flow::AuthEffect::StartSession(_)
+        ));
+
+        assert_eq!(app.phase, Phase::StartingSession);
+        assert!(app.message.is_none());
+        assert!(!app.message_is_error);
+        assert_eq!(
+            super::view::authentication_controls(Phase::StartingSession, true),
+            super::view::AuthenticationControls::Progress("Starting session…")
+        );
+    }
+
+    #[test]
     fn power_failures_preserve_authentication_state() {
         let mut app = app();
         app.power_state = PowerState::Executing(PowerAction::Reboot);
@@ -1186,8 +1396,9 @@ mod tests {
         assert_eq!(app.phase, Phase::WaitingForInput);
         assert_eq!(app.input, "secret");
         assert_eq!(app.power_state, PowerState::Idle);
-        assert_eq!(app.message.as_deref(), Some("not authorized"));
-        assert!(app.message_is_error);
+        assert_eq!(app.power_message.as_deref(), Some("not authorized"));
+        assert!(app.power_message_is_error);
+        assert_eq!(app.message.as_deref(), Some("Keep this message"));
     }
 
     #[test]
@@ -1266,15 +1477,43 @@ mod tests {
     }
 
     #[test]
+    fn power_dialog_starts_on_cancel_and_traps_keyboard_activation() {
+        let mut app = app();
+        app.preview = true;
+
+        let _ = app.update(Message::AskPower(PowerAction::PowerOff));
+        assert_eq!(app.power_dialog_focus, PowerDialogFocus::Cancel);
+
+        let _ = app.update(Message::NavigatePowerDialog(
+            PowerDialogNavigation::Activate,
+        ));
+        assert_eq!(app.power_state, PowerState::Idle);
+
+        let _ = app.update(Message::AskPower(PowerAction::PowerOff));
+        let _ = app.update(Message::NavigatePowerDialog(PowerDialogNavigation::Next));
+        assert_eq!(app.power_dialog_focus, PowerDialogFocus::Confirm);
+
+        let _ = app.update(Message::NavigatePowerDialog(
+            PowerDialogNavigation::Activate,
+        ));
+        assert_eq!(app.power_state, PowerState::Idle);
+        assert_eq!(
+            app.power_message.as_deref(),
+            Some("Preview: shut down was not requested")
+        );
+    }
+
+    #[test]
     fn successful_suspend_restores_the_greeter() {
         let mut app = app();
         app.power_state = PowerState::Executing(PowerAction::Suspend);
-        app.message = Some("Requesting sleep…".into());
+        app.power_message = Some("Requesting sleep…".into());
 
         let _ = app.update(Message::PowerResult(Ok(())));
 
         assert_eq!(app.power_state, PowerState::Idle);
-        assert_eq!(app.message, None);
+        assert_eq!(app.power_message, None);
+        assert_eq!(app.message.as_deref(), Some("Keep this message"));
         assert_eq!(app.phase, Phase::WaitingForInput);
     }
 

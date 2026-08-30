@@ -12,7 +12,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [ ] Define reviewable acceptance checks for hierarchy, focus order, wrapping,
   WCAG contrast targets, and notice placement without treating screenshot
   pixels as the behavioral contract.
-- [ ] Add deterministic preview fixtures for zero/one/many, duplicate-name, and
+- [X] Add deterministic preview fixtures for zero/one/many, duplicate-name, and
   large account sets; secret/visible and consecutive informational prompts;
   failure sources; cancellation progress; and power confirmation.
 - [ ] Prove preview never contacts AccountsService, greetd, or logind and never
@@ -26,7 +26,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   recently logged-in eligible account, falling back to the sole eligible account
   or account selection when recency is unavailable, zero, or tied; treat a
   ~LoginTime~ read failure as unknown recency rather than an ineligible account.
-- [ ] Test override precedence, unique recency, tied/zero/unknown recency, a sole
+- [X] Test override precedence, unique recency, tied/zero/unknown recency, a sole
   account, and deterministic account ordering without persisting a second
   last-user record.
 - [X] Preserve cached, valid, unlocked, non-system account eligibility and
@@ -43,7 +43,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [X] Disable tile activation until cancellation succeeds; on slow cancellation
   show stable progress, and on failure offer retry without calling
   ~CreateSession~ or resurrecting the invalidated attempt.
-- [ ] Test exact ~CancelSession~ before ~CreateSession~ request ordering,
+- [X] Test exact ~CancelSession~ before ~CreateSession~ request ordering,
   cancellation failure and retry, repeated Change User, and stale responses.
 - [X] Preserve direct selected-account startup for administrative username
   overrides without AccountsService discovery or Change User, and preserve the
@@ -51,18 +51,18 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Authentication presentation
 
-- [ ] Render secret, visible, informational, and error PAM messages without
+- [X] Render secret, visible, informational, and error PAM messages without
   assuming a single password prompt.
-- [ ] Automatically acknowledge noninteractive protocol messages while keeping
+- [X] Automatically acknowledge noninteractive protocol messages while keeping
   the latest one visible until the RFD-defined superseding event; test
   message-to-prompt and consecutive-message sequences.
 - [X] Keep prompt, input, submit action, progress, and inline failure feedback
   together as one compact readable unit.
-- [ ] Represent account, session, authentication, greetd transport/session,
+- [X] Represent account, session, authentication, greetd transport/session,
   power, and preview notices by source and place each according to the RFD table.
-- [ ] Preserve input focus across recoverable prompt transitions and power
+- [X] Preserve input focus across recoverable prompt transitions and power
   dialog cancellation without accepting input in inactive phases.
-- [ ] Verify failed authentication can retry or change account without
+- [X] Verify failed authentication can retry or change account without
   restarting Genkan.
 
 * Visual hierarchy
@@ -82,7 +82,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   submit, Change User, session selection, and utility actions.
 - [ ] Test state-specific initial focus, Enter/Space activation, Escape behavior,
   modal focus containment, safe initial modal action, and focus restoration.
-- [ ] Ensure every icon action has a visible text or accessible label and no
+- [X] Ensure every icon action has a visible text or accessible label and no
   action depends only on hover, color, or icon recognition.
 - [ ] Exercise pointer, keyboard, and touch-equivalent account activation where
   iced and the test environment expose those paths.
@@ -96,7 +96,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 - [X] Move the validated Wayland session selector to the lower-left secondary
   position without changing its command-validation boundary.
-- [ ] Add only implemented keyboard and accessibility utility controls; do not
+- [X] Add only implemented keyboard and accessibility utility controls; do not
   render placeholders.
 - [X] Place labelled power actions in the utility area and preserve explicit
   confirmation, logind error reporting, and preview simulation.
@@ -105,7 +105,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 - [ ] Verify the composition at common laptop, 16:9, ultrawide, and narrow
   dimensions without relying on one fixed screenshot geometry.
-- [ ] Add deterministic view-model or widget-state regressions for selection,
+- [X] Add deterministic view-model or widget-state regressions for selection,
   authentication, account switching, disabled controls, and wrapped content.
 - [ ] Run ~make verify~ on x86_64-linux and the packaged graphics smoke check on
   both x86_64-linux and aarch64-linux; do not treat ARM graphics smoke as full
