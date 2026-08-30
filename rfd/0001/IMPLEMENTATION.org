@@ -15,7 +15,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [X] Add deterministic preview fixtures for zero/one/many, duplicate-name, and
   large account sets; secret/visible and consecutive informational prompts;
   failure sources; cancellation progress; and power confirmation.
-- [X] Prove preview never contacts AccountsService, greetd, or logind and never
+- [ ] Prove preview never contacts AccountsService, greetd, or logind and never
   retains a simulated response after submission or account change.
 
 * Interaction model
@@ -86,7 +86,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   action depends only on hover, color, or icon recognition.
 - [ ] Exercise pointer, keyboard, and touch-equivalent account activation where
   iced and the test environment expose those paths.
-- [X] Verify long localized prompts and bounded account labels wrap without
+- [ ] Verify long localized prompts and bounded account labels wrap without
   hiding the current input or status.
 - [ ] Verify unique accessible account names, status announcements where iced
   exposes them, 4.5:1 normal-text contrast, and 3:1 large-text, focus, and
