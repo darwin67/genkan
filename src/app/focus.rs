@@ -41,7 +41,12 @@ pub(super) fn keyboard_navigation(
     let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
         return None;
     };
-    navigation_key(key, modifiers, status).map(Message::NavigateFocus)
+    let navigation = navigation_key(key, modifiers, event::Status::Ignored)?;
+    Some(if status == event::Status::Captured {
+        Message::NavigateModal(navigation)
+    } else {
+        Message::NavigateFocus(navigation)
+    })
 }
 
 pub(super) fn pointer_focus_sync(
@@ -138,13 +143,17 @@ impl App {
         match self.focus_order().first().copied() {
             Some(target) => self.set_focus(target),
             None => {
+                self.close_session_menu();
                 self.focus_target = None;
                 clear_widget_focus()
             }
         }
     }
 
-    pub(super) fn sync_widget_focus(&self) -> Task<Message> {
+    pub(super) fn sync_widget_focus(&mut self) -> Task<Message> {
+        if self.focus_target == Some(Target::AuthenticationInput) {
+            self.focus_target = None;
+        }
         widget::operate(operation::focusable::find_focused()).map(Message::WidgetFocused)
     }
 
@@ -159,6 +168,7 @@ impl App {
     fn move_focus(&mut self, delta: isize) -> Task<Message> {
         let order = self.focus_order();
         if order.is_empty() {
+            self.close_session_menu();
             self.focus_target = None;
             return clear_widget_focus();
         }
@@ -204,7 +214,8 @@ impl App {
             Some(Target::Submit) => self.update(Message::Submit),
             Some(Target::RetryAuthentication) => self.update(Message::Retry),
             Some(Target::ChangeUser) => self.update(Message::ChangeUser),
-            Some(Target::Session) => self.cycle_session(1),
+            Some(Target::Session) if self.can_select_session() => self.cycle_session(1),
+            Some(Target::Session) => Task::none(),
             Some(Target::RetrySession) => self.update(Message::RetrySession),
             Some(Target::Power(action)) => self.update(Message::AskPower(action)),
             Some(Target::DialogCancel) => self.update(Message::CancelPower),
@@ -233,6 +244,9 @@ impl App {
     }
 
     pub(super) fn set_focus(&mut self, target: Target) -> Task<Message> {
+        if target != Target::Session {
+            self.close_session_menu();
+        }
         self.focus_target = Some(target);
         match target {
             Target::AuthenticationInput => Task::batch([
@@ -246,6 +260,14 @@ impl App {
 
     pub(super) fn focus_input(&mut self) -> Task<Message> {
         self.set_focus(Target::AuthenticationInput)
+    }
+
+    pub(super) fn blur_input(&mut self) -> Task<Message> {
+        self.close_session_menu();
+        if self.focus_target == Some(Target::AuthenticationInput) {
+            self.focus_target = None;
+        }
+        clear_widget_focus()
     }
 
     pub(super) fn enter_power_dialog(&mut self) -> Task<Message> {
@@ -263,6 +285,7 @@ impl App {
         match target {
             Some(target) => self.set_focus(target),
             None => {
+                self.close_session_menu();
                 self.focus_target = None;
                 clear_widget_focus()
             }

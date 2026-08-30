@@ -3,6 +3,7 @@ mod auth_flow;
 mod focus;
 mod modal;
 mod preview;
+mod resettable;
 mod view;
 
 use std::time::{Duration, Instant};
@@ -92,6 +93,8 @@ pub(crate) struct App {
     client: Option<Client>,
     sessions: Vec<Session>,
     selected_session: Option<Session>,
+    session_menu_open: bool,
+    session_selector_key: u64,
     started_at: Instant,
     now: chrono::DateTime<Local>,
     power_state: PowerState,
@@ -124,14 +127,18 @@ pub(crate) enum Message {
     RetryUserSelectionCancellation,
     SelectAccount(Account),
     NavigateFocus(FocusNavigation),
+    NavigateModal(FocusNavigation),
     SyncWidgetFocus,
     WidgetFocused(iced::advanced::widget::Id),
     NavigatePage(PageNavigation),
     SelectSession(Session),
+    SessionMenuOpened,
+    SessionMenuClosed,
     AskPower(PowerAction),
     CancelPower,
     ConfirmPower(PowerAction),
     PowerResult(Result<(), String>),
+    Escape,
     CloseRequested(window::Id),
     SessionCancelled(window::Id),
     CloseTimeout(window::Id),
@@ -151,7 +158,7 @@ impl App {
         let startup = startup_mode(selected_session.is_some(), account.is_some());
         let attempt = Attempt::initial();
 
-        let app = Self {
+        let mut app = Self {
             username: account
                 .as_ref()
                 .map(|account| account.username.clone())
@@ -185,6 +192,8 @@ impl App {
             client: None,
             sessions,
             selected_session,
+            session_menu_open: false,
+            session_selector_key: 0,
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
@@ -198,7 +207,7 @@ impl App {
                 auth_flow::begin(app.username.clone(), attempt, true)
             }
             StartupMode::DiscoverAccounts => discover_accounts(),
-            StartupMode::MissingSession => Task::none(),
+            StartupMode::MissingSession => app.focus_first(),
         };
         (app, task)
     }
@@ -252,7 +261,7 @@ impl App {
                     | Message::CloseTimeout(_),
                 ) => true,
                 (PowerState::Confirming(_), Message::CancelPower) => true,
-                (PowerState::Confirming(_), Message::NavigateFocus(_)) => true,
+                (PowerState::Confirming(_), Message::NavigateModal(_) | Message::Escape) => true,
                 (PowerState::Confirming(expected), Message::ConfirmPower(actual)) => {
                     expected == *actual
                 }
@@ -284,11 +293,10 @@ impl App {
                 if let Some(account) = accounts::preferred_account(&self.accounts).cloned() {
                     self.select_account(account)
                 } else {
-                    self.focus_target = Some(FocusTarget::Account(0));
                     self.phase = Phase::SelectingUser;
                     self.message = Some("Select a user".into());
                     self.message_is_error = false;
-                    self.scroll_to_focused_account()
+                    self.set_focus(FocusTarget::Account(0))
                 }
             }
             Message::AccountsResult(Err(error)) => self.fail(error),
@@ -316,7 +324,7 @@ impl App {
                 self.selection_session_cancelled = true;
                 self.message = Some("Select a user".into());
                 self.message_is_error = false;
-                self.scroll_to_focused_account()
+                self.set_focus(FocusTarget::Account(0))
             }
             Message::UserSelectionCancelled {
                 attempt,
@@ -340,12 +348,12 @@ impl App {
                 self.phase = Phase::CancellingForUserSelection;
                 self.message = Some("Changing user…".into());
                 self.message_is_error = false;
-                self.focus_target = (!self.accounts.is_empty()).then_some(FocusTarget::Account(0));
+                let focus = self.focus_first();
                 if self.preview {
                     return self.finish_preview_user_selection();
                 }
                 let attempt = self.attempt.advance();
-                auth_flow::cancel_for_user_selection(None, attempt)
+                Task::batch([auth_flow::cancel_for_user_selection(None, attempt), focus])
             }
             Message::UserSelectionCancelled { .. }
             | Message::UserSelectionCancellationSlow { .. }
@@ -356,15 +364,34 @@ impl App {
                 self.select_account(account)
             }
             Message::SelectAccount(_) => Task::none(),
-            Message::NavigateFocus(navigation) => self.navigate_focus(navigation),
+            Message::NavigateFocus(navigation) => {
+                self.close_session_menu();
+                self.navigate_focus(navigation)
+            }
+            Message::NavigateModal(navigation)
+                if matches!(self.power_state, PowerState::Confirming(_)) =>
+            {
+                self.navigate_focus(navigation)
+            }
+            Message::NavigateModal(_) => Task::none(),
             Message::SyncWidgetFocus => self.sync_widget_focus(),
             Message::WidgetFocused(focused) => self.apply_widget_focus(focused),
             Message::NavigatePage(navigation) => self.navigate_page(navigation),
             Message::SelectSession(session) if self.can_select_session() => {
+                self.close_session_menu();
                 self.selected_session = Some(session);
                 self.set_focus(FocusTarget::Session)
             }
             Message::SelectSession(_) => Task::none(),
+            Message::SessionMenuOpened if self.can_select_session() => {
+                self.session_menu_open = true;
+                self.set_focus(FocusTarget::Session)
+            }
+            Message::SessionMenuOpened => Task::none(),
+            Message::SessionMenuClosed => {
+                self.session_menu_open = false;
+                Task::none()
+            }
             Message::RetrySession
                 if self.phase == Phase::Failed && self.selected_session.is_none() =>
             {
@@ -470,6 +497,15 @@ impl App {
                 self.power_message_is_error = true;
                 self.leave_power_dialog()
             }
+            Message::Escape if matches!(self.power_state, PowerState::Confirming(_)) => {
+                self.update(Message::CancelPower)
+            }
+            Message::Escape if self.session_menu_open => {
+                self.close_session_menu();
+                Task::none()
+            }
+            Message::Escape if self.phase == Phase::WaitingForInput => self.blur_input(),
+            Message::Escape => Task::none(),
             Message::CloseRequested(window) if self.preview => window::close(window),
             Message::CloseRequested(window) if self.selection_session_cancelled => {
                 self.closing = Some(Closing::Dispatching(window));
@@ -524,6 +560,7 @@ impl App {
         let replacing_account = !self.username.is_empty();
         self.username = account.username;
         self.display_name = account.display_name;
+        self.close_session_menu();
         self.focus_target = None;
         self.input.clear();
         self.message = None;
@@ -558,36 +595,30 @@ impl App {
         let attempt = self.attempt.advance();
         self.username.clear();
         self.display_name = "Select a user".into();
-        self.focus_target = (!self.accounts.is_empty()).then_some(FocusTarget::Account(0));
         self.input.clear();
         self.selection_session_cancelled = false;
         self.phase = Phase::CancellingForUserSelection;
         self.message = Some("Changing user…".into());
         self.message_is_error = false;
+        let focus = self.focus_first();
         if self.preview {
             self.finish_preview_user_selection()
         } else {
-            Task::batch([
-                auth_flow::cancel_for_user_selection(client, attempt),
-                self.scroll_to_focused_account(),
-            ])
+            Task::batch([auth_flow::cancel_for_user_selection(client, attempt), focus])
         }
     }
 
     fn finish_preview_user_selection(&mut self) -> Task<Message> {
         self.phase = Phase::SelectingUser;
         self.message = Some("Select a user".into());
-        self.scroll_to_focused_account()
+        self.set_focus(FocusTarget::Account(0))
     }
 
-    fn scroll_to_focused_account(&self) -> Task<Message> {
-        let Some(index) = self.focused_account() else {
-            return Task::none();
-        };
-        account_tile::reveal(
-            account_tile::id(&self.accounts[index].username),
-            vec![self.account_scroll_id.clone(), self.page_scroll_id.clone()],
-        )
+    fn close_session_menu(&mut self) {
+        if self.session_menu_open {
+            self.session_menu_open = false;
+            self.session_selector_key = self.session_selector_key.wrapping_add(1);
+        }
     }
 
     fn navigate_page(&self, navigation: PageNavigation) -> Task<Message> {
@@ -634,6 +665,7 @@ impl App {
     fn can_select_session(&self) -> bool {
         self.closing.is_none()
             && self.power_state == PowerState::Idle
+            && self.selected_session.is_some()
             && !matches!(self.phase, Phase::Authenticating | Phase::StartingSession)
     }
 
@@ -705,7 +737,7 @@ fn cancel_shortcut_key(key: keyboard::Key) -> Option<Message> {
         key.as_ref(),
         keyboard::Key::Named(keyboard::key::Named::Escape)
     )
-    .then_some(Message::CancelPower)
+    .then_some(Message::Escape)
 }
 
 fn discover_accounts() -> Task<Message> {
@@ -752,6 +784,8 @@ mod tests {
             client: None,
             sessions: vec![session()],
             selected_session: Some(session()),
+            session_menu_open: false,
+            session_selector_key: 0,
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
@@ -853,6 +887,7 @@ mod tests {
         assert!(app.input.is_empty());
         assert_ne!(app.attempt, attempt);
         assert!(!app.can_select_account());
+        assert_eq!(app.focus_target, Some(FocusTarget::Session));
 
         let _ = app.update(Message::SelectAccount(account("alice")));
         assert!(app.username.is_empty());
@@ -864,6 +899,7 @@ mod tests {
         assert_eq!(app.phase, Phase::SelectingUser);
         assert!(app.can_select_account());
         assert!(app.selection_session_cancelled);
+        assert_eq!(app.focus_target, Some(FocusTarget::Account(0)));
 
         let _ = app.update(Message::SelectAccount(account("alice")));
 
@@ -928,6 +964,7 @@ mod tests {
         let _ = app.update(Message::RetryUserSelectionCancellation);
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
         assert_eq!(app.message.as_deref(), Some("Changing user…"));
+        assert_eq!(app.focus_target, Some(FocusTarget::Session));
     }
 
     #[test]
@@ -1124,6 +1161,87 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_navigation_and_escape_close_an_open_session_menu() {
+        let mut app = app();
+        app.focus_target = Some(FocusTarget::Session);
+
+        let _ = app.update(Message::SessionMenuOpened);
+        assert!(app.session_menu_open);
+        let key = app.session_selector_key;
+
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Next));
+        assert!(!app.session_menu_open);
+        assert_ne!(app.session_selector_key, key);
+        assert_eq!(
+            app.focus_target,
+            Some(FocusTarget::Power(PowerAction::Suspend))
+        );
+
+        let _ = app.update(Message::SessionMenuOpened);
+        let key = app.session_selector_key;
+        let _ = app.update(Message::Escape);
+        assert!(!app.session_menu_open);
+        assert_ne!(app.session_selector_key, key);
+        assert_eq!(app.focus_target, Some(FocusTarget::Session));
+    }
+
+    #[test]
+    fn asynchronous_prompt_closes_an_open_session_menu() {
+        let mut app = app();
+        app.phase = Phase::CreatingSession;
+        let _ = app.update(Message::SessionMenuOpened);
+        let key = app.session_selector_key;
+
+        let _ = app.update(Message::AuthResult {
+            attempt: app.attempt,
+            result: Ok((
+                None,
+                auth::Response::Prompt {
+                    secret: true,
+                    message: "Password:".into(),
+                },
+            )),
+        });
+
+        assert!(!app.session_menu_open);
+        assert_ne!(app.session_selector_key, key);
+        assert_eq!(app.focus_target, Some(FocusTarget::AuthenticationInput));
+    }
+
+    #[test]
+    fn missing_session_cannot_open_or_focus_an_empty_selector() {
+        let mut app = app();
+        app.phase = Phase::Failed;
+        app.sessions.clear();
+        app.selected_session = None;
+        app.focus_target = Some(FocusTarget::RetrySession);
+
+        let _ = app.update(Message::SessionMenuOpened);
+
+        assert!(!app.can_select_session());
+        assert!(!app.session_menu_open);
+        assert_eq!(app.focus_target, Some(FocusTarget::RetrySession));
+    }
+
+    #[test]
+    fn stale_session_focus_cannot_change_selection_during_authentication() {
+        for phase in [Phase::Authenticating, Phase::StartingSession] {
+            let mut app = app();
+            let mut river = session();
+            river.name = "River".into();
+            river.session_id = "river".into();
+            app.sessions.push(river);
+            app.phase = phase;
+            app.focus_target = Some(FocusTarget::Session);
+            let selected = app.selected_session.clone();
+
+            let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+
+            assert_eq!(app.selected_session, selected, "phase {phase:?}");
+        }
+    }
+
+    #[test]
     fn maps_focus_keys_without_capturing_other_input() {
         use keyboard::key::Named;
 
@@ -1176,8 +1294,53 @@ mod tests {
         );
         assert!(matches!(
             cancel_shortcut_key(keyboard::Key::Named(Named::Escape)),
-            Some(Message::CancelPower)
+            Some(Message::Escape)
         ));
+    }
+
+    #[test]
+    fn captured_navigation_is_routed_only_to_an_active_modal() {
+        use keyboard::key::{Code, Named, Physical};
+
+        let event = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(Named::Tab),
+            modified_key: keyboard::Key::Named(Named::Tab),
+            physical_key: Physical::Code(Code::Tab),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: None,
+        });
+        assert!(matches!(
+            focus::keyboard_navigation(event, event::Status::Captured, window::Id::unique()),
+            Some(Message::NavigateModal(FocusNavigation::Next))
+        ));
+
+        let mut app = app();
+        app.focus_target = Some(FocusTarget::AuthenticationInput);
+        let _ = app.update(Message::NavigateModal(FocusNavigation::Activate));
+        assert_eq!(app.phase, Phase::WaitingForInput);
+
+        app.preview = true;
+        let _ = app.update(Message::AskPower(PowerAction::PowerOff));
+        let _ = app.update(Message::NavigateModal(FocusNavigation::Next));
+        assert_eq!(app.focus_target, Some(FocusTarget::DialogConfirm));
+        let _ = app.update(Message::NavigateModal(FocusNavigation::Activate));
+        assert_eq!(app.power_state, PowerState::Idle);
+    }
+
+    #[test]
+    fn native_input_blur_clears_stale_logical_focus() {
+        let mut app = app();
+
+        let _ = app.update(Message::SyncWidgetFocus);
+        assert_eq!(app.focus_target, None);
+
+        app.focus_target = Some(FocusTarget::AuthenticationInput);
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.focus_target, None);
+
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Next));
+        assert_eq!(app.focus_target, Some(FocusTarget::AuthenticationInput));
     }
 
     #[test]
@@ -1187,7 +1350,7 @@ mod tests {
         app.accounts = vec![account("darwin"), account("alice")];
 
         let _ = app.update(Message::ChangeUser);
-        let _ = app.update(Message::CancelPower);
+        let _ = app.update(Message::Escape);
 
         assert_eq!(app.phase, Phase::SelectingUser);
         assert!(app.username.is_empty());
@@ -1474,7 +1637,7 @@ mod tests {
         let _ = app.update(Message::AskPower(PowerAction::PowerOff));
         assert_eq!(app.focus_target, Some(FocusTarget::DialogCancel));
 
-        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        let _ = app.update(Message::NavigateModal(FocusNavigation::Activate));
         assert_eq!(app.power_state, PowerState::Idle);
         assert_eq!(
             app.focus_target,
@@ -1482,10 +1645,10 @@ mod tests {
         );
 
         let _ = app.update(Message::AskPower(PowerAction::PowerOff));
-        let _ = app.update(Message::NavigateFocus(FocusNavigation::Next));
+        let _ = app.update(Message::NavigateModal(FocusNavigation::Next));
         assert_eq!(app.focus_target, Some(FocusTarget::DialogConfirm));
 
-        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        let _ = app.update(Message::NavigateModal(FocusNavigation::Activate));
         assert_eq!(app.power_state, PowerState::Idle);
         assert_eq!(
             app.power_message.as_deref(),

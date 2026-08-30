@@ -12,6 +12,7 @@ use super::account_tile as tile_widget;
 use super::auth_flow::Phase;
 use super::focus::Target as FocusTarget;
 use super::modal as modal_widget;
+use super::resettable;
 use super::{App, Message, PowerState};
 
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
@@ -27,6 +28,19 @@ enum AccountSelectorState {
     Disabled,
     Hidden,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowControl {
+    Identity,
+    Session,
+    Power,
+}
+
+const FLOW_CONTROL_ORDER: [FlowControl; 3] = [
+    FlowControl::Identity,
+    FlowControl::Session,
+    FlowControl::Power,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScreenLayout {
@@ -143,26 +157,30 @@ impl App {
                     .padding([28, 30]);
                 stack![center, utilities, session, preview].into()
             }
-            ScreenLayout::Flow => scrollable(
-                container(
-                    column![
-                        self.clock(),
-                        self.preview_indicator(),
-                        self.power_controls(),
-                        self.identity(None, Some((size.width - 32.0).max(0.0)), true),
-                        self.session_selector(),
-                    ]
+            ScreenLayout::Flow => {
+                let controls = FLOW_CONTROL_ORDER.map(|control| match control {
+                    FlowControl::Identity => {
+                        self.identity(None, Some((size.width - 32.0).max(0.0)), true)
+                    }
+                    FlowControl::Session => self.session_selector(),
+                    FlowControl::Power => self.power_controls(),
+                });
+                scrollable(
+                    container(
+                        column![self.clock(), self.preview_indicator()]
+                            .extend(controls)
+                            .width(Fill)
+                            .align_x(Alignment::Center)
+                            .spacing(28),
+                    )
                     .width(Fill)
-                    .align_x(Alignment::Center)
-                    .spacing(28),
+                    .padding([24, 16]),
                 )
+                .id(self.page_scroll_id.clone())
                 .width(Fill)
-                .padding([24, 16]),
-            )
-            .id(self.page_scroll_id.clone())
-            .width(Fill)
-            .height(Fill)
-            .into(),
+                .height(Fill)
+                .into()
+            }
         }
     }
 
@@ -470,18 +488,20 @@ impl App {
 
     fn session_selector(&self) -> Element<'_, Message> {
         let selector: Element<'_, Message> = if self.can_select_session() {
-            iced::widget::pick_list(
+            let pick_list = iced::widget::pick_list(
                 self.sessions.as_slice(),
                 self.selected_session.as_ref(),
                 Message::SelectSession,
             )
+            .on_open(Message::SessionMenuOpened)
+            .on_close(Message::SessionMenuClosed)
             .padding([9, 14])
             .style(|theme, status| {
                 theme::selector(theme, status, self.is_focused(FocusTarget::Session))
             })
             .menu_style(theme::selector_menu)
-            .width(Length::Fixed(210.0))
-            .into()
+            .width(Length::Fixed(210.0));
+            resettable::reset(self.session_selector_key, pick_list)
         } else {
             container(
                 text(
@@ -793,6 +813,14 @@ mod tests {
         assert_eq!(screen_layout(Size::new(1280.0, 600.0)), ScreenLayout::Flow);
         assert_eq!(screen_layout(Size::new(1279.0, 700.0)), ScreenLayout::Flow);
         assert_eq!(screen_layout(Size::new(1280.0, 699.0)), ScreenLayout::Flow);
+        assert_eq!(
+            FLOW_CONTROL_ORDER,
+            [
+                FlowControl::Identity,
+                FlowControl::Session,
+                FlowControl::Power,
+            ]
+        );
     }
 
     #[test]
