@@ -250,6 +250,62 @@ test_dev_preview_does_not_inherit_host_identity() {
     fail "make dev must not inject a host-dependent username"
 }
 
+test_preview_evidence_rejects_dead_application() {
+  # shellcheck source=preview-evidence-lib.sh
+  source "$repo_root/scripts/preview-evidence-lib.sh"
+  local case_dir="$tmp_dir/dead-preview"
+  mkdir -p "$case_dir"
+  printf 'renderer failed\n' > "$case_dir/genkan.log"
+
+  if require_running_process 999999 "$case_dir/genkan.log" >/dev/null 2>&1; then
+    fail "preview evidence must reject a dead Genkan process"
+  fi
+}
+
+test_preview_evidence_rejects_blank_frame() {
+  # shellcheck source=preview-evidence-lib.sh
+  source "$repo_root/scripts/preview-evidence-lib.sh"
+  local fixture="$tmp_dir/blank-frame"
+  mkdir -p "$fixture/bin"
+  cat > "$fixture/bin/identify" <<'EOF'
+#!/usr/bin/env bash
+printf '480 600 1'
+EOF
+  chmod +x "$fixture/bin/identify"
+
+  if PATH="$fixture/bin:$PATH" valid_preview_frame ignored.png 480 600; then
+    fail "preview evidence must reject compositor-only frames"
+  fi
+}
+
+test_preview_evidence_requires_consecutive_frames() {
+  # shellcheck source=preview-evidence-lib.sh
+  source "$repo_root/scripts/preview-evidence-lib.sh"
+  local previous=""
+
+  ! advance_frame_stability previous frame-a
+  [[ $previous == frame-a ]]
+  ! advance_frame_stability previous ""
+  [[ -z $previous ]]
+  ! advance_frame_stability previous frame-a
+  [[ $previous == frame-a ]]
+  advance_frame_stability previous frame-a
+}
+
+test_preview_evidence_rejects_unexpected_connections() {
+  # shellcheck source=preview-evidence-lib.sh
+  source "$repo_root/scripts/preview-evidence-lib.sh"
+  local trace="$tmp_dir/connect.trace"
+  local wayland="$tmp_dir/runtime/wayland-preview"
+  printf 'connect(3, {sa_family=AF_UNIX, sun_path="%s"}, 110) = 0\n' "$wayland" > "$trace"
+  check_preview_connections "$trace" "$wayland"
+
+  printf 'connect(4, {sa_family=AF_UNIX, sun_path="/run/dbus/system_bus_socket"}, 110) = -1 ENOENT\n' >> "$trace"
+  if check_preview_connections "$trace" "$wayland" >/dev/null 2>&1; then
+    fail "preview evidence must reject every non-Wayland connection attempt"
+  fi
+}
+
 test_conventional_commit_description
 test_vendor_level_hardware_coverage
 test_vulkan_discovery_timeout
@@ -258,5 +314,9 @@ test_external_output_must_be_active
 test_representative_selection_placement_and_cleanup
 test_ci_watches_all_scripts
 test_dev_preview_does_not_inherit_host_identity
+test_preview_evidence_rejects_dead_application
+test_preview_evidence_rejects_blank_frame
+test_preview_evidence_requires_consecutive_frames
+test_preview_evidence_rejects_unexpected_connections
 
 echo "Shell regression tests passed"

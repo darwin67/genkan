@@ -6,12 +6,14 @@ mod sessions;
 mod theme;
 
 use app::{App, Config, PreviewFixture};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use iced::{window, Theme};
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Arguments {
+    #[arg(long, exclusive = true)]
+    list_preview_fixtures: bool,
     #[arg(long, value_parser = parse_username)]
     username: Option<String>,
     #[arg(long, requires = "username", value_parser = parse_display_name)]
@@ -61,6 +63,18 @@ fn parse_dimension(value: &str) -> Result<u32, String> {
 
 pub fn main() -> iced::Result {
     let arguments = Arguments::parse();
+    if arguments.list_preview_fixtures {
+        for fixture in PreviewFixture::value_variants() {
+            println!(
+                "{}",
+                fixture
+                    .to_possible_value()
+                    .expect("preview fixture has a clap value")
+                    .get_name()
+            );
+        }
+        return Ok(());
+    }
     let windowed = arguments.windowed;
     let window_size = iced::Size::new(
         arguments.width.unwrap_or(DEFAULT_WINDOW_WIDTH) as f32,
@@ -92,6 +106,7 @@ mod tests {
     #[test]
     fn identity_overrides_are_optional() {
         let arguments = Arguments::try_parse_from(["genkan"]).unwrap();
+        assert!(!arguments.list_preview_fixtures);
         assert_eq!(arguments.username, None);
         assert_eq!(arguments.display_name, None);
         assert_eq!(arguments.preview, None);
@@ -123,6 +138,30 @@ mod tests {
         assert!(
             Arguments::try_parse_from(["genkan", "--windowed", "--preview", "unknown",]).is_err()
         );
+    }
+
+    #[test]
+    fn fixture_listing_is_exclusive_and_exhaustive() {
+        let arguments = Arguments::try_parse_from(["genkan", "--list-preview-fixtures"]).unwrap();
+        assert!(arguments.list_preview_fixtures);
+        assert!(
+            Arguments::try_parse_from(["genkan", "--list-preview-fixtures", "--windowed",])
+                .is_err()
+        );
+
+        let names = PreviewFixture::value_variants()
+            .iter()
+            .map(|fixture| {
+                fixture
+                    .to_possible_value()
+                    .expect("preview fixture has a clap value")
+                    .get_name()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 17);
+        assert!(names.contains(&"selected".to_owned()));
+        assert!(names.contains(&"power-confirmation".to_owned()));
     }
 
     #[test]

@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=preview-evidence-lib.sh
+source "${PREVIEW_EVIDENCE_LIB:-$script_dir/preview-evidence-lib.sh}"
+
 : "${GENKAN_BIN:?set GENKAN_BIN to the packaged Genkan executable}"
 : "${PREVIEW_OUTPUT_DIR:?set PREVIEW_OUTPUT_DIR to the screenshot destination}"
 
@@ -36,6 +40,9 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$PREVIEW_OUTPUT_DIR"
+mapfile -t preview_fixtures < <("$GENKAN_BIN" --list-preview-fixtures)
+[[ ${#preview_fixtures[@]} -gt 0 ]]
+declare -A covered_fixtures=()
 
 capture() {
   local name=$1
@@ -45,6 +52,8 @@ capture() {
   local case_dir="$work_dir/$name"
   local socket="wayland-$name"
   local screenshot
+  local previous_hash=""
+  local frame_hash
 
   mkdir -p "$case_dir/home/.cache/fontconfig" "$case_dir/runtime" "$case_dir/capture"
   chmod 700 "$case_dir/runtime"
@@ -104,27 +113,42 @@ EOF
     sleep 0.05
   done
   [[ -s "$case_dir/genkan.pid" ]]
-  sleep 0.5
 
-  (
-    cd "$case_dir/capture"
-    HOME="$case_dir/home" \
-      XDG_RUNTIME_DIR="$case_dir/runtime" \
-      WAYLAND_DISPLAY="$socket" \
-      timeout 5s weston-screenshooter
-  )
-  screenshot=$(find "$case_dir/capture" -maxdepth 1 -name 'wayland-screenshot-*.png' -print -quit)
-  [[ -n $screenshot ]]
-  identify -format '%w %h' "$screenshot" | grep -Fx "$width $height"
+  screenshot=""
+  for _ in $(seq 1 50); do
+    require_running_process "$app_pid" "$case_dir/genkan.log"
+    rm -f "$case_dir/capture"/wayland-screenshot-*.png
+    (
+      cd "$case_dir/capture"
+      HOME="$case_dir/home" \
+        XDG_RUNTIME_DIR="$case_dir/runtime" \
+        WAYLAND_DISPLAY="$socket" \
+        timeout 5s weston-screenshooter
+    )
+    require_running_process "$app_pid" "$case_dir/genkan.log"
+    screenshot=$(find "$case_dir/capture" -maxdepth 1 -name 'wayland-screenshot-*.png' -print -quit)
+    if [[ -n $screenshot ]] && valid_preview_frame "$screenshot" "$width" "$height"; then
+      frame_hash=$(sha256sum "$screenshot" | cut -d' ' -f1)
+      if advance_frame_stability previous_hash "$frame_hash"; then
+        break
+      fi
+    else
+      advance_frame_stability previous_hash "" || true
+    fi
+    screenshot=""
+    sleep 0.1
+  done
+  if [[ -z $screenshot ]]; then
+    cat "$case_dir/genkan.log" >&2
+    echo "Genkan did not render a stable non-blank $name frame" >&2
+    exit 1
+  fi
   mv "$screenshot" "$PREVIEW_OUTPUT_DIR/$name.png"
+  covered_fixtures["$fixture"]=1
 
   cleanup_case
 
-  if grep -Eq 'greetd\.sock|system-bus\.sock' "$case_dir/connect.trace"; then
-    cat "$case_dir/connect.trace" >&2
-    echo "preview fixture $fixture attempted to contact a live service" >&2
-    exit 1
-  fi
+  check_preview_connections "$case_dir/connect.trace" "$case_dir/runtime/$socket"
 }
 
 # Reference states at the default review size.
@@ -140,5 +164,12 @@ capture widescreen-users 1920 1080 users
 capture ultrawide-selected 2560 1080 selected
 capture narrow-selected 480 600 selected
 capture narrow-long-authentication 480 600 long-authentication
+
+# Probe every fixture, including states that do not need a named review capture.
+for fixture in "${preview_fixtures[@]}"; do
+  if [[ ! -v covered_fixtures["$fixture"] ]]; then
+    capture "fixture-$fixture" 1280 800 "$fixture"
+  fi
+done
 
 printf 'Captured %s deterministic preview images\n' "$(find "$PREVIEW_OUTPUT_DIR" -name '*.png' | wc -l)"
