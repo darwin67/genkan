@@ -148,7 +148,7 @@ impl App {
         self.secret = true;
         self.message = Some(bounded_auth_text(&message));
         self.message_is_error = true;
-        Task::none()
+        self.focus_first()
     }
 
     pub(super) fn set_auth_notice(&mut self, message: String, error: bool) {

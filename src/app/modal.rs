@@ -281,4 +281,21 @@ mod tests {
             iced::window::Event::CloseRequested
         )));
     }
+
+    #[test]
+    fn modal_barrier_captures_keyboard_events_for_modal_navigation() {
+        let tab = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+            modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+            physical_key: iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::Tab),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::empty(),
+            text: None,
+        });
+
+        assert_eq!(
+            dispatch(event::Status::Ignored, tab),
+            (event::Status::Captured, 1)
+        );
+    }
 }

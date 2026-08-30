@@ -10,7 +10,8 @@ use crate::power::Action as PowerAction;
 use crate::sessions::Session;
 
 use super::auth_flow::{Attempt, Phase};
-use super::{App, Message, PowerDialogFocus, PowerState};
+use super::focus::Target as FocusTarget;
+use super::{App, Message, PowerState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Fixture {
@@ -63,17 +64,18 @@ pub(super) fn build(
         .as_ref()
         .map(|account| (account.username.clone(), account.display_name.clone()))
         .unwrap_or_else(|| (String::new(), "Select a user".into()));
-    let focus_input = state.phase == Phase::WaitingForInput;
-    let focused_account = (state.selected.is_none() && !state.accounts.is_empty()).then_some(0);
-    let app = App {
+    let power_state = state.power_state;
+    let confirming_power = matches!(power_state, PowerState::Confirming(_));
+    let mut app = App {
         username,
         display_name,
         accounts: state.accounts,
-        focused_account,
+        focus_target: None,
+        focus_before_modal: None,
         account_scroll_id: scrollable::Id::unique(),
         page_scroll_id: scrollable::Id::unique(),
         input: String::new(),
-        input_id: input_id.clone(),
+        input_id,
         prompt: state.prompt,
         message: state.message,
         message_is_error: state.message_is_error,
@@ -86,19 +88,23 @@ pub(super) fn build(
         client: None,
         sessions,
         selected_session,
+        session_menu_open: false,
+        session_selector_key: 0,
         started_at: Instant::now(),
         now: preview_now(),
-        power_state: state.power_state,
-        power_dialog_focus: PowerDialogFocus::Cancel,
+        power_state: PowerState::Idle,
         attempt: Attempt::initial(),
         selection_session_cancelled: false,
         closing: None,
         preview: true,
     };
-    let task = if focus_input {
-        app.focus_input()
+    let base_focus = app.focus_order().first().copied();
+    app.power_state = power_state;
+    let task = if confirming_power {
+        app.focus_before_modal = base_focus;
+        app.set_focus(FocusTarget::DialogCancel)
     } else {
-        Task::none()
+        app.focus_first()
     };
     (app, task)
 }
@@ -360,11 +366,24 @@ mod tests {
         let (authentication, _) = build(Fixture::AuthenticationFailure, None, None);
         assert_eq!(authentication.phase, Phase::Failed);
         assert!(authentication.message_is_error);
+        assert_eq!(
+            authentication.focus_target,
+            Some(FocusTarget::RetryAuthentication)
+        );
+
+        let (discovery, _) = build(Fixture::DiscoveryFailure, None, None);
+        assert_eq!(
+            discovery.focus_target,
+            Some(FocusTarget::RetryAccountSelection)
+        );
+
+        let (session, _) = build(Fixture::SessionFailure, None, None);
+        assert_eq!(session.focus_target, Some(FocusTarget::RetrySession));
 
         let (cancellation, _) = build(Fixture::CancellationProgress, None, None);
         assert_eq!(cancellation.phase, Phase::CancellingForUserSelection);
         assert!(!cancellation.can_select_account());
-        assert_eq!(cancellation.focused_account, Some(0));
+        assert_eq!(cancellation.focus_target, Some(FocusTarget::Session));
 
         let (cancellation_failure, _) = build(Fixture::CancellationFailure, None, None);
         assert_eq!(
@@ -372,12 +391,20 @@ mod tests {
             Phase::UserSelectionCancellationFailed
         );
         assert!(cancellation_failure.message_is_error);
-        assert_eq!(cancellation_failure.focused_account, Some(0));
+        assert_eq!(
+            cancellation_failure.focus_target,
+            Some(FocusTarget::RetryAccountSelection)
+        );
 
         let (power, _) = build(Fixture::PowerConfirmation, None, None);
         assert_eq!(
             power.power_state,
             PowerState::Confirming(PowerAction::PowerOff)
+        );
+        assert_eq!(power.focus_target, Some(FocusTarget::DialogCancel));
+        assert_eq!(
+            power.focus_before_modal,
+            Some(FocusTarget::AuthenticationInput)
         );
     }
 }

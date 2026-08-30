@@ -74,7 +74,7 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
-pub fn selector(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+pub fn selector(_theme: &Theme, status: pick_list::Status, focused: bool) -> pick_list::Style {
     let hovered = matches!(status, pick_list::Status::Hovered);
     let opened = matches!(status, pick_list::Status::Opened);
     pick_list::Style {
@@ -87,7 +87,7 @@ pub fn selector(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
             255,
             if hovered || opened { 0.18 } else { 0.12 },
         )),
-        border: outline(if hovered { 0.5 } else { 0.28 }, opened),
+        border: outline(if hovered { 0.5 } else { 0.28 }, opened || focused),
     }
 }
 
@@ -147,7 +147,7 @@ pub fn account_tile(_theme: &Theme, status: button::Status, focused: bool) -> bu
     }
 }
 
-pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn primary_button(_theme: &Theme, status: button::Status, focused: bool) -> button::Style {
     let alpha = match status {
         button::Status::Hovered => 0.34,
         button::Status::Pressed => 0.42,
@@ -157,7 +157,7 @@ pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(Background::Color(Color::from_rgba8(255, 255, 255, alpha))),
         text_color: primary_text(),
-        border: outline(0.34, false),
+        border: outline(0.34, focused),
         shadow: elevation(),
     }
 }
@@ -168,7 +168,7 @@ pub fn dialog_button(
     focused: bool,
     destructive: bool,
 ) -> button::Style {
-    let mut style = primary_button(theme, status);
+    let mut style = primary_button(theme, status, focused);
     if destructive {
         style.background = Some(Background::Color(Color::from_rgba8(170, 42, 52, 0.72)));
     }
@@ -178,7 +178,7 @@ pub fn dialog_button(
     style
 }
 
-pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn secondary_button(_theme: &Theme, status: button::Status, focused: bool) -> button::Style {
     let alpha = match status {
         button::Status::Hovered => 0.24,
         button::Status::Pressed => 0.3,
@@ -187,7 +187,7 @@ pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style
     button::Style {
         background: Some(Background::Color(Color::from_rgba8(255, 255, 255, alpha))),
         text_color: primary_text(),
-        border: outline(0.28, false),
+        border: outline(0.28, focused),
         shadow: elevation(),
     }
 }
@@ -203,17 +203,19 @@ mod tests {
         let focused_input = input(&theme, text_input::Status::Focused);
         let focused_account = account_tile(&theme, button::Status::Active, true);
         let focused_dialog = dialog_button(&theme, button::Status::Active, true, false);
-        let opened_selector = selector(&theme, pick_list::Status::Opened);
+        let opened_selector = selector(&theme, pick_list::Status::Opened, false);
         let dialog = dialog(&theme);
         let selector_menu = selector_menu(&theme);
 
         assert_eq!(active_input.border.radius, CONTROL_RADIUS.into());
         assert_eq!(
-            primary_button(&theme, button::Status::Active).border.radius,
+            primary_button(&theme, button::Status::Active, false)
+                .border
+                .radius,
             active_input.border.radius
         );
         assert_eq!(
-            secondary_button(&theme, button::Status::Active)
+            secondary_button(&theme, button::Status::Active, false)
                 .border
                 .radius,
             active_input.border.radius
@@ -234,12 +236,25 @@ mod tests {
     #[test]
     fn opened_selector_is_emphasized_without_claiming_keyboard_focus() {
         let theme = Theme::Dark;
-        let closed = selector(&theme, pick_list::Status::Active);
-        let opened = selector(&theme, pick_list::Status::Opened);
+        let closed = selector(&theme, pick_list::Status::Active, false);
+        let opened = selector(&theme, pick_list::Status::Opened, false);
 
         assert_eq!(closed.border.width, 1.0);
         assert_eq!(opened.border.width, EMPHASIS_WIDTH);
         assert_eq!(opened.border.color, Color::from_rgba8(255, 255, 255, 0.95));
+    }
+
+    #[test]
+    fn logical_focus_is_visible_on_non_focusable_iced_controls() {
+        let theme = Theme::Dark;
+        let selector = selector(&theme, pick_list::Status::Active, true);
+        let primary = primary_button(&theme, button::Status::Active, true);
+        let secondary = secondary_button(&theme, button::Status::Active, true);
+
+        for border in [selector.border, primary.border, secondary.border] {
+            assert_eq!(border.width, EMPHASIS_WIDTH);
+            assert_eq!(border.color, Color::from_rgba8(255, 255, 255, 0.95));
+        }
     }
 
     #[test]

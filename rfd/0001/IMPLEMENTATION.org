@@ -60,8 +60,9 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   together as one compact readable unit.
 - [X] Represent account, session, authentication, greetd transport/session,
   power, and preview notices by source and place each according to the RFD table.
-- [X] Preserve input focus across recoverable prompt transitions and power
-  dialog cancellation without accepting input in inactive phases.
+- [X] Preserve input focus across recoverable prompt transitions, preserve an
+  entered response through power confirmation, and restore focus to the dialog
+  opener without accepting input in inactive phases.
 - [X] Verify failed authentication can retry or change account without
   restarting Genkan.
 
@@ -78,9 +79,9 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Input and accessibility
 
-- [ ] Define and test keyboard focus order for account selection, prompt input,
+- [X] Define and test keyboard focus order for account selection, prompt input,
   submit, Change User, session selection, and utility actions.
-- [ ] Test state-specific initial focus, Enter/Space activation, Escape behavior,
+- [X] Test state-specific initial focus, Enter/Space activation, Escape behavior,
   modal focus containment, safe initial modal action, and focus restoration.
 - [X] Ensure every icon action has a visible text or accessible label and no
   action depends only on hover, color, or icon recognition.
