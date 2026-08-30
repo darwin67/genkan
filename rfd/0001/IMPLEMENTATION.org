@@ -37,6 +37,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [ ] Expose a unique semantic accessible name containing display name and
   username for every tile when the iced accessibility backend supports it;
   visible text and application-managed keyboard focus do not satisfy this item.
+  The current framework boundary is recorded in [[file:ACCESSIBILITY.md][accessibility verification]].
 - [X] Keep the selected identity prominent during authentication and provide a
   Change User action whenever another eligible identity can safely be selected.
 - [X] Make Change User immediately invalidate the attempt, clear the response,
@@ -90,9 +91,11 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   iced and the test environment expose those paths.
 - [X] Verify long localized prompts and bounded account labels wrap without
   hiding the current input or status.
-- [ ] Verify unique accessible account names, status announcements where iced
-  exposes them, 4.5:1 normal-text contrast, and 3:1 large-text, focus, and
-  control-boundary contrast over every packaged background.
+- [ ] Verify unique accessible account names and status announcements when iced
+  exposes a supported accessibility backend.
+- [X] Verify 4.5:1 normal-text contrast and 3:1 large-text, focus, and
+  control-boundary contrast over every generated background combination; see
+  [[file:ACCESSIBILITY.md][accessibility verification]].
 
 * Session and power controls
 
@@ -109,9 +112,9 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   dimensions without relying on one fixed screenshot geometry.
 - [X] Add deterministic view-model or widget-state regressions for selection,
   authentication, account switching, disabled controls, and wrapped content.
-- [ ] Run ~make verify~ on x86_64-linux and the packaged graphics smoke check on
+- [X] Run ~make verify~ on x86_64-linux and the packaged graphics smoke check on
   both x86_64-linux and aarch64-linux; do not treat ARM graphics smoke as full
-  ARM verification.
+  ARM verification. Both native CI jobs passed for [[https://github.com/darwin67/genkan/pull/11][PR #11]].
 - [X] Run ~make e2e~ to verify real greetd/PAM failure recovery, successful
   authentication, and session environment behavior after lifecycle changes.
 - [ ] Run ~make hardware-smoke~ on available connected AMD/NVIDIA outputs for
