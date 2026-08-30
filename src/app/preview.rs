@@ -10,7 +10,8 @@ use crate::power::Action as PowerAction;
 use crate::sessions::Session;
 
 use super::auth_flow::{Attempt, Phase};
-use super::{App, Message, PowerDialogFocus, PowerState};
+use super::focus::Target as FocusTarget;
+use super::{App, Message, PowerState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Fixture {
@@ -64,12 +65,21 @@ pub(super) fn build(
         .map(|account| (account.username.clone(), account.display_name.clone()))
         .unwrap_or_else(|| (String::new(), "Select a user".into()));
     let focus_input = state.phase == Phase::WaitingForInput;
-    let focused_account = (state.selected.is_none() && !state.accounts.is_empty()).then_some(0);
-    let app = App {
+    let base_focus = if focus_input {
+        Some(FocusTarget::AuthenticationInput)
+    } else {
+        (state.selected.is_none() && !state.accounts.is_empty()).then_some(FocusTarget::Account(0))
+    };
+    let confirming_power = matches!(state.power_state, PowerState::Confirming(_));
+    let focus_target = confirming_power
+        .then_some(FocusTarget::DialogCancel)
+        .or(base_focus);
+    let mut app = App {
         username,
         display_name,
         accounts: state.accounts,
-        focused_account,
+        focus_target,
+        focus_before_modal: confirming_power.then_some(base_focus).flatten(),
         account_scroll_id: scrollable::Id::unique(),
         page_scroll_id: scrollable::Id::unique(),
         input: String::new(),
@@ -89,7 +99,6 @@ pub(super) fn build(
         started_at: Instant::now(),
         now: preview_now(),
         power_state: state.power_state,
-        power_dialog_focus: PowerDialogFocus::Cancel,
         attempt: Attempt::initial(),
         selection_session_cancelled: false,
         closing: None,
@@ -364,7 +373,7 @@ mod tests {
         let (cancellation, _) = build(Fixture::CancellationProgress, None, None);
         assert_eq!(cancellation.phase, Phase::CancellingForUserSelection);
         assert!(!cancellation.can_select_account());
-        assert_eq!(cancellation.focused_account, Some(0));
+        assert_eq!(cancellation.focused_account(), Some(0));
 
         let (cancellation_failure, _) = build(Fixture::CancellationFailure, None, None);
         assert_eq!(
@@ -372,7 +381,7 @@ mod tests {
             Phase::UserSelectionCancellationFailed
         );
         assert!(cancellation_failure.message_is_error);
-        assert_eq!(cancellation_failure.focused_account, Some(0));
+        assert_eq!(cancellation_failure.focused_account(), Some(0));
 
         let (power, _) = build(Fixture::PowerConfirmation, None, None);
         assert_eq!(

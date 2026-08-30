@@ -10,8 +10,9 @@ use crate::{background, theme};
 
 use super::account_tile as tile_widget;
 use super::auth_flow::Phase;
+use super::focus::Target as FocusTarget;
 use super::modal as modal_widget;
-use super::{App, Message, PowerDialogFocus, PowerState};
+use super::{App, Message, PowerState};
 
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
 const ACCOUNT_GRID_GAP: f32 = 18.0;
@@ -63,7 +64,7 @@ impl App {
                                     theme::dialog_button(
                                         theme,
                                         status,
-                                        self.power_dialog_focus == PowerDialogFocus::Cancel,
+                                        self.is_focused(FocusTarget::DialogCancel),
                                         false,
                                     )
                                 }),
@@ -75,7 +76,7 @@ impl App {
                                     theme::dialog_button(
                                         theme,
                                         status,
-                                        self.power_dialog_focus == PowerDialogFocus::Confirm,
+                                        self.is_focused(FocusTarget::DialogConfirm),
                                         true,
                                     )
                                 }),
@@ -205,9 +206,21 @@ impl App {
         let power_interactive = self.can_request_power();
         column![
             row![
-                power_button(PowerAction::Suspend, power_interactive),
-                power_button(PowerAction::Reboot, power_interactive),
-                power_button(PowerAction::PowerOff, power_interactive),
+                power_button(
+                    PowerAction::Suspend,
+                    power_interactive,
+                    self.is_focused(FocusTarget::Power(PowerAction::Suspend))
+                ),
+                power_button(
+                    PowerAction::Reboot,
+                    power_interactive,
+                    self.is_focused(FocusTarget::Power(PowerAction::Reboot))
+                ),
+                power_button(
+                    PowerAction::PowerOff,
+                    power_interactive,
+                    self.is_focused(FocusTarget::Power(PowerAction::PowerOff))
+                ),
             ]
             .spacing(10),
             notice(self.power_message.as_deref(), self.power_message_is_error),
@@ -261,7 +274,13 @@ impl App {
                         .then_some(message),
                 )
                 .padding([10, 18])
-                .style(theme::secondary_button)
+                .style(|theme, status| {
+                    theme::secondary_button(
+                        theme,
+                        status,
+                        self.is_focused(FocusTarget::RetryAccountSelection),
+                    )
+                })
                 .into()
         } else {
             Space::new(Length::Shrink, Length::Fixed(0.0)).into()
@@ -273,7 +292,7 @@ impl App {
                 account_grid(
                     &self.accounts,
                     interactive,
-                    self.focused_account,
+                    self.focused_account(),
                     grid_height,
                     grid_width,
                     &self.account_scroll_id,
@@ -330,7 +349,13 @@ impl App {
                                 .on_press_maybe(interactive.then_some(Message::Submit))
                                 .padding([12, 18])
                                 .width(Length::Fixed(AUTH_ACTION_WIDTH))
-                                .style(theme::primary_button),
+                                .style(|theme, status| {
+                                    theme::primary_button(
+                                        theme,
+                                        status,
+                                        self.is_focused(FocusTarget::Submit),
+                                    )
+                                }),
                         ]
                         .spacing(8)
                         .width(Fill),
@@ -341,7 +366,13 @@ impl App {
                 AuthenticationControls::Retry => button(text("Retry").size(16))
                     .on_press_maybe(interactive.then_some(Message::Retry))
                     .padding([12, 18])
-                    .style(theme::primary_button)
+                    .style(|theme, status| {
+                        theme::primary_button(
+                            theme,
+                            status,
+                            self.is_focused(FocusTarget::RetryAuthentication),
+                        )
+                    })
                     .into(),
                 AuthenticationControls::Progress(label) => {
                     text(label).size(15).color(theme::secondary_text()).into()
@@ -354,7 +385,9 @@ impl App {
             button(text("Change User").size(14))
                 .on_press(Message::ChangeUser)
                 .padding([8, 14])
-                .style(theme::secondary_button)
+                .style(|theme, status| {
+                    theme::secondary_button(theme, status, self.is_focused(FocusTarget::ChangeUser))
+                })
                 .into()
         } else {
             Space::new(Length::Shrink, Length::Fixed(0.0)).into()
@@ -443,7 +476,9 @@ impl App {
                 Message::SelectSession,
             )
             .padding([9, 14])
-            .style(theme::selector)
+            .style(|theme, status| {
+                theme::selector(theme, status, self.is_focused(FocusTarget::Session))
+            })
             .menu_style(theme::selector_menu)
             .width(Length::Fixed(210.0))
             .into()
@@ -470,7 +505,13 @@ impl App {
                             .then_some(Message::RetrySession),
                     )
                     .padding([7, 12])
-                    .style(theme::secondary_button)
+                    .style(|theme, status| {
+                        theme::secondary_button(
+                            theme,
+                            status,
+                            self.is_focused(FocusTarget::RetrySession),
+                        )
+                    })
                     .into()
             } else {
                 Space::new(Length::Shrink, Length::Fixed(0.0)).into()
@@ -666,11 +707,15 @@ fn modal<'a>(
     .into()
 }
 
-fn power_button(action: PowerAction, interactive: bool) -> Element<'static, Message> {
+fn power_button(
+    action: PowerAction,
+    interactive: bool,
+    focused: bool,
+) -> Element<'static, Message> {
     button(text(action.label()).size(14))
         .on_press_maybe(interactive.then_some(Message::AskPower(action)))
         .padding([9, 15])
-        .style(theme::secondary_button)
+        .style(move |theme, status| theme::secondary_button(theme, status, focused))
         .into()
 }
 
