@@ -93,8 +93,10 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   hiding the current input or status.
 - [ ] Verify unique accessible account names and status announcements when iced
   exposes a supported accessibility backend.
-- [X] Verify 4.5:1 normal-text contrast and 3:1 large-text, focus, and
-  control-boundary contrast over every generated background combination; see
+- [ ] Prove 4.5:1 normal-text contrast and 3:1 large-text, focus, and
+  control-boundary contrast over continuously antialiased background coverage.
+- [X] Verify those contrast targets over 125 representative generated background
+  combinations, both iced blend spaces, and bright overlay underlays; see
   [[file:ACCESSIBILITY.md][accessibility verification]].
 
 * Session and power controls

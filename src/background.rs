@@ -81,36 +81,6 @@ impl<Message> canvas::Program<Message> for Background {
 }
 
 #[cfg(test)]
-pub(crate) fn contrast_backdrops() -> Vec<Color> {
-    const COVERAGE_STEPS: u8 = 4;
-
-    let mut backdrops = Vec::with_capacity((usize::from(COVERAGE_STEPS) + 1).pow(3));
-    for first in 0..=COVERAGE_STEPS {
-        for second in 0..=COVERAGE_STEPS {
-            for third in 0..=COVERAGE_STEPS {
-                let coverage = [first, second, third];
-                let mut color = BASE_COLOR;
-                for (blob, coverage) in BLOB_COLORS.into_iter().zip(coverage) {
-                    color = composite(
-                        Color {
-                            a: blob.a * f32::from(coverage) / f32::from(COVERAGE_STEPS),
-                            ..blob
-                        },
-                        color,
-                    );
-                }
-                backdrops.push(composite(DIM_COLOR, color));
-            }
-        }
-    }
-    backdrops
-}
-
-#[cfg(test)]
-fn composite(foreground: Color, background: Color) -> Color {
-    Color::from_rgb(
-        foreground.r * foreground.a + background.r * (1.0 - foreground.a),
-        foreground.g * foreground.a + background.g * (1.0 - foreground.a),
-        foreground.b * foreground.a + background.b * (1.0 - foreground.a),
-    )
+pub(crate) fn contrast_palette() -> (Color, [Color; 3], Color) {
+    (BASE_COLOR, BLOB_COLORS, DIM_COLOR)
 }
