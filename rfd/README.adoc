@@ -10,6 +10,9 @@ authoritative merely because it exists; its `state` says how it should be read.
 
 |link:0001/README.adoc[1: Tahoe-inspired greeter interaction and visual design]
 |Account selection, authentication states, visual hierarchy, and greeter controls
+
+|link:0002/README.adoc[2: Animated 4K greeter wallpaper]
+|Full-resolution video wallpaper playback, packaging, fallback behavior, and verification
 |===
 
 == Source format

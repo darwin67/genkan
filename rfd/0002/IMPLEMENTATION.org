@@ -1,0 +1,70 @@
+#+TITLE: RFD 0002 implementation checklist
+#+STARTUP: showall
+
+Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
+
+* Asset and package
+
+- [ ] Select and acquire the original 4K Tahoe Default Beach MOV; record its
+  source URL, byte size, cryptographic hash, container, codec, dimensions,
+  frame rate, duration, color metadata, and audio streams.
+- [ ] Establish a stable fixed-output source or separately maintained release
+  artifact when the upstream Google Drive URL is not reproducible.
+- [ ] Install the video under ~share/genkan/wallpapers~ without embedding it in
+  the executable or fetching it at runtime.
+- [ ] Add pinned GStreamer libraries and the exact decoder, converter, and sink
+  plugins to the Nix build and runtime closure.
+- [ ] Verify package construction on x86_64-linux and aarch64-linux and record
+  the resulting package and closure-size changes.
+
+* Playback
+
+- [ ] Add a GStreamer library pipeline for silent asynchronous decode through
+  ~appsink~ without invoking a shell, external player, or pipeline string from
+  configuration.
+- [ ] Hand off only the latest decoded frame through a bounded channel or slot;
+  never queue video frames behind authentication work.
+- [ ] Upload new frames to iced, request redraw only when required, and retain
+  no application-owned frame history.
+- [ ] Scale with aspect-preserving cover semantics and center-crop at laptop,
+  1080p, 4K, ultrawide, and narrow output sizes.
+- [ ] Loop with a bounded end-of-stream seek and verify repeated loops do not
+  leak memory, grow queues, or stall interaction.
+- [ ] Preserve the current generated background until the first frame and after
+  initialization, decode, stream, or seek failure.
+- [ ] Bound diagnostics and retries for missing, corrupt, or unsupported media
+  without exiting the greeter.
+
+* Presentation and configuration
+
+- [ ] Place video beneath a uniform contrast-preserving darkening layer and all
+  existing greeter content.
+- [ ] Add a local-file administrative wallpaper override that rejects URIs,
+  playlists, and pipeline descriptions; use the packaged path by default.
+- [ ] Add a static or reduced-motion setting that renders the poster without
+  initializing GStreamer.
+- [ ] Keep ordinary preview deterministic and decoder-free with a fixed poster
+  frame and generated fallback.
+- [ ] Add an explicitly animated preview mode while keeping fixture time,
+  authentication, account discovery, and power behavior simulated.
+- [ ] Document packaged, animated-preview, static, override, and fallback
+  behavior in the README and command help.
+
+* Accessibility and verification
+
+- [ ] Select representative brightest, darkest, and high-local-contrast video
+  frames and extend renderer-aware contrast checks to those underlays.
+- [ ] Verify all existing text, focus, control-boundary, menu, and dialog
+  contrast targets with the video darkening treatment.
+- [ ] Add deterministic tests for pipeline state transitions, first-frame
+  fallback, latest-frame replacement, looping, failure, and bounded retry.
+- [ ] Add animated evidence that observes distinct valid frames without
+  weakening the stable deterministic screenshot checks.
+- [ ] Measure startup latency, steady-state CPU/GPU use, frame delivery, and
+  memory across repeated loops under software Vulkan and available hardware
+  decoding; prefer frame drops over input latency.
+- [ ] Verify keyboard, pointer, touch, prompt transitions, and modal interaction
+  remain responsive during playback.
+- [ ] Run ~make verify~, ~make e2e~, and packaged graphics smoke tests.
+- [ ] Run ~make hardware-smoke~ with animation on available connected AMD and
+  NVIDIA outputs and record output mode, decoder path, and result.
