@@ -2,7 +2,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{
     button, column, container, responsive, row, scrollable, stack, text, text_input, Space,
 };
-use iced::{Alignment, Element, Fill, Length, Size};
+use iced::{padding, Alignment, Element, Fill, Length, Size};
 
 use crate::accounts::Account;
 use crate::power::Action as PowerAction;
@@ -70,7 +70,9 @@ impl App {
                 let dialog_interactive = self.power_dialog_interactive();
                 let confirmation = container(
                     column![
-                        text(format!("{} this computer?", action.label())).size(24),
+                        text(format!("{} this computer?", action.label()))
+                            .size(24)
+                            .color(theme::primary_text()),
                         row![
                             button("Cancel")
                                 .on_press_maybe(dialog_interactive.then_some(Message::CancelPower))
@@ -106,7 +108,9 @@ impl App {
             }
             PowerState::Executing(action) => {
                 let progress = container(
-                    text(format!("Requesting {}…", action.label().to_lowercase())).size(22),
+                    text(format!("Requesting {}…", action.label().to_lowercase()))
+                        .size(22)
+                        .color(theme::primary_text()),
                 )
                 .padding(30)
                 .style(theme::dialog);
@@ -179,6 +183,7 @@ impl App {
                 .id(self.page_scroll_id.clone())
                 .width(Fill)
                 .height(Fill)
+                .style(theme::scrollbar)
                 .into()
             }
         }
@@ -357,6 +362,7 @@ impl App {
                     column![
                         text(&self.prompt)
                             .size(15)
+                            .color(theme::primary_text())
                             .width(Fill)
                             .align_x(Alignment::Center)
                             .wrapping(Wrapping::WordOrGlyph),
@@ -593,6 +599,7 @@ fn account_grid<'a>(
             .id(scroll_id.clone())
             .width(Fill)
             .height(Fill)
+            .style(theme::scrollbar)
             .into()
         }))
         .width(Fill)
@@ -716,13 +723,15 @@ fn modal<'a>(
 ) -> Element<'a, Message> {
     stack![
         main_content.into(),
-        modal_widget::barrier(
+        modal_widget::barrier(stack![
+            container(Space::new(Fill, Fill)).style(theme::modal_scrim),
             container(dialog)
                 .width(Fill)
                 .height(Fill)
+                .padding(padding::bottom(120))
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
-        )
+        ])
     ]
     .into()
 }
