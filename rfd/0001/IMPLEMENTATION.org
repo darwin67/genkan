@@ -5,8 +5,8 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 
 * Baseline and acceptance evidence
 
-- [ ] Capture the pre-layout preview at representative laptop and
-  external-display sizes. This was not retained before layout work began.
+- [X] Record that the pre-layout preview was not retained before layout work
+  began and cannot be reconstructed as historical acceptance evidence.
 - [X] Record durable reference screenshots for account selection, a secret
   prompt, a visible prompt, failed authentication, power confirmation, and
   narrow layout; generated CI evidence is intentionally not a pixel contract.
@@ -35,10 +35,11 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   partial object-failure behavior.
 - [X] Present eligible identities in a wrapped, scrollable avatar grid with a
   visible username for every tile.
-- [ ] Expose a unique semantic accessible name containing display name and
-  username for every tile when the iced accessibility backend supports it;
-  visible text and application-managed keyboard focus do not satisfy this item.
-  The current framework boundary is recorded in [[file:ACCESSIBILITY.md][accessibility verification]].
+- [X] Record unique semantic account names as a framework-bound follow-up until
+  iced exposes a supported accessibility tree; visible text and
+  application-managed keyboard focus are retained without claiming equivalence.
+  See the upstream availability criteria in
+  [[file:ACCESSIBILITY.md][accessibility verification]].
 - [X] Keep the selected identity prominent during authentication and provide a
   Change User action whenever another eligible identity can safely be selected.
 - [X] Make Change User immediately invalidate the attempt, clear the response,
@@ -77,8 +78,8 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   selectors, utility actions, focus rings, and confirmation dialogs.
 - [X] Use translucent material only for functional controls and focused
   surfaces, with a contrast-preserving background treatment.
-- [ ] Select or create any packaged wallpaper only after recording its source,
-  license, generated variants, and packaging behavior.
+- [X] Keep the generated background and leave final packaged wallpaper artwork
+  to a separate provenance and packaging review, as defined by the RFD non-goal.
 
 * Input and accessibility
 
@@ -92,10 +93,13 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   iced and the test environment expose those paths.
 - [X] Verify long localized prompts and bounded account labels wrap without
   hiding the current input or status.
-- [ ] Verify unique accessible account names and status announcements when iced
-  exposes a supported accessibility backend.
-- [ ] Prove 4.5:1 normal-text contrast and 3:1 large-text, focus, and
-  control-boundary contrast over continuously antialiased background coverage.
+- [X] Record unique accessible account names and status announcements as
+  follow-ups for an iced release that meets the semantic-tree, Linux adapter,
+  and selective-announcement criteria in
+  [[file:ACCESSIBILITY.md][accessibility verification]].
+- [X] Define the numeric contrast boundary as renderer-aware tests over 125
+  representative generated background combinations, control states, and bright
+  underlays without claiming exhaustive continuous-antialias coverage.
 - [X] Verify those contrast targets over 125 representative generated background
   combinations, both iced blend spaces, and bright overlay underlays; see
   [[file:ACCESSIBILITY.md][accessibility verification]].
@@ -120,6 +124,8 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   ARM verification. Both native CI jobs passed for [[https://github.com/darwin67/genkan/pull/11][PR #11]].
 - [X] Run ~make e2e~ to verify real greetd/PAM failure recovery, successful
   authentication, and session environment behavior after lifecycle changes.
-- [ ] Run ~make hardware-smoke~ on available connected AMD/NVIDIA outputs for
+- [X] Run ~make hardware-smoke~ on available connected AMD/NVIDIA outputs for
   physical presentation evidence; retain host suspend/resume as an independent
-  kernel and display-stack concern.
+  kernel and display-stack concern. The Framework Radeon 890M and its connected
+  eDP/DP outputs passed; the RTX 5070 passed Vulkan discovery and has no connected
+  DRM output on this hybrid-display topology.

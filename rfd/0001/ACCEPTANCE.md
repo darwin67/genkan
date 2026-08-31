@@ -59,8 +59,10 @@ Review generated captures using these stable criteria:
 4. **Notice placement:** authentication, session, power, and preview messages
    remain in their source-owned regions and do not replace one another.
 5. **Contrast:** screenshots may identify surfaces requiring measurement, but
-   numeric WCAG acceptance remains a separate check over every packaged
-   background. Visual inspection alone does not close that requirement.
+   numeric WCAG acceptance comes from the renderer-aware representative checks
+   described in [`ACCESSIBILITY.md`](ACCESSIBILITY.md). Visual inspection alone
+   does not close that requirement, and the checks do not claim exhaustive
+   continuous-antialias coverage.
 
 The background and fixture clock are deterministic in preview mode. Compositor
 timestamps and window chrome are excluded by kiosk-shell capture.

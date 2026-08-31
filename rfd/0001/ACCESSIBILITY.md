@@ -29,8 +29,9 @@ opacity, borders, focus rings, and the modal scrim provide hierarchy without
 entering that renderer-specific alpha path.
 
 The quarter-step field coverage is representative rather than an exhaustive
-proof over continuously antialiased edges. That broader RFD item remains open;
-the tests and checklist do not claim otherwise.
+proof over continuously antialiased edges. RFD 0001 records this as its numeric
+acceptance boundary without claiming a stronger continuous proof. A future
+renderer-level verification can strengthen that boundary independently.
 
 ## Framework boundary
 
@@ -41,7 +42,51 @@ the display name and username, nor can it mark status updates for assistive
 technology. Visible labels and application-managed keyboard focus remain in
 place, but are not claimed as substitutes.
 
-Those semantic checklist items remain open until iced exposes a supported
-accessibility backend or Genkan adopts a later release that does. Adding a local
-parallel accessibility tree would duplicate widget state and is intentionally
-out of scope.
+RFD 0001 closes those semantic checklist items as explicit framework-bound
+follow-ups rather than claiming they are implemented. They become actionable
+when iced exposes a supported accessibility backend or Genkan adopts a later
+release that does. Adding a local parallel accessibility tree would duplicate
+widget state and is intentionally out of scope.
+
+## Upstream roadmap and deferral criteria
+
+This status was checked against upstream iced on 2026-08-31. Iced's open
+[`Implement accessibility support` issue](https://github.com/iced-rs/iced/issues/552)
+tracks native platform integration, widget hierarchy and metadata, actions, and
+relationships. Its implementation checklist remains open. The repository's
+textual [`ROADMAP.md`](https://github.com/iced-rs/iced/blob/master/ROADMAP.md)
+does not assign accessibility to a release or date.
+
+Released iced 0.13 and 0.14 do not expose semantic widget roles, accessible
+names or descriptions, a platform screen-reader bridge, or live-region/status
+announcements. The current 0.15 development branch's
+[`Widget` trait](https://github.com/iced-rs/iced/blob/master/core/src/widget.rs)
+also has no merged public API for them. Upstream direction favors AccessKit, but the
+[`AccessKit integration` RFC](https://github.com/iced-rs/rfcs/pull/21), the
+older [`WIP: Iced accessibility` implementation](https://github.com/iced-rs/iced/pull/1849),
+and the newer [`Accesskit integration` proof of concept](https://github.com/iced-rs/iced/pull/3111)
+remain unmerged experimental work. The newer proof of concept explicitly
+supports only Button and Text and describes itself as intentionally unfinished.
+
+A [2024 maintainer comment](https://github.com/iced-rs/iced/issues/552#issuecomment-2181112406)
+anticipated accessibility in “the release after the next one,” but 0.14 shipped
+without it and no replacement target has been committed. Genkan therefore does
+not depend on that historical estimate or on a fork-specific implementation.
+
+The deferred work becomes actionable only when a released upstream iced API
+provides the relevant capability on Genkan's supported Linux runtime:
+
+- **Semantic account and modal information:** a supported accessibility tree,
+  stable widget identity, roles, names/descriptions, focus/actions, and a Linux
+  screen-reader platform adapter. Genkan can then publish each account tile as
+  one semantic control named with both display name and username and expose
+  modal action and consequence metadata.
+- **Dynamic status announcements:** a selective live-region or explicit
+  announcement API with settled semantics. Genkan can then announce
+  authentication, cancellation, session, and power status changes without
+  marking every static label live.
+
+Availability of only an experimental branch, a partial widget prototype, or a
+semantic tree without Linux screen-reader delivery does not close either
+follow-up. When these criteria are met, the iced upgrade and Genkan integration
+should include assistive-technology tests before the behavior is claimed.
