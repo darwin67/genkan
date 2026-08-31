@@ -80,6 +80,7 @@
             packages = [
               pkgs.git-cliff
               pkgs.jq
+              pkgs.util-linux
               rustToolchain
             ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;

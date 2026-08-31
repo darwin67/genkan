@@ -2,7 +2,7 @@ PREVIEW ?= selected
 WIDTH ?= 1280
 HEIGHT ?= 800
 
-.PHONY: dev check fmt fmt-fix lint test scripts-test check-rfds smoke evidence hardware-smoke e2e build package verify changelog next-version clean
+.PHONY: dev check fmt fmt-fix lint test scripts-test check-rfds smoke evidence update-reference-images hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
 	cargo run --bin genkan -- --windowed --preview "$(PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)"
@@ -29,12 +29,16 @@ scripts-test:
 check-rfds:
 	@./scripts/check-rfd-status.sh
 	@./scripts/check-rfd-status-test.sh
+	@./scripts/check-reference-images.sh
 
 smoke:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).graphics-smoke --print-build-logs
 
 evidence:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).preview-evidence --print-build-logs
+
+update-reference-images:
+	./scripts/update-reference-images.sh
 
 hardware-smoke:
 	nix run .#hardware-smoke

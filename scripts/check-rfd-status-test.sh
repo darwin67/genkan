@@ -89,6 +89,20 @@ cat >> "$rfd_root/0001/IMPLEMENTATION.org" <<'EOF'
 EOF
 run_success "0001  discussion       2/3"
 
+sed -i.bak 's/= RFD 1 Valid RFD/= RFD 1 A deliberately long title that exceeds the minimum table width/' \
+  "$rfd_root/0001/README.adoc"
+rm "$rfd_root/0001/README.adoc.bak"
+run_success
+header=$(grep '^RFD ' "$output")
+row=$(grep '^0001 ' "$output")
+header_before_labels=${header%%Labels*}
+row_before_labels=${row%%software, process*}
+if [[ ${#header_before_labels} -ne ${#row_before_labels} ]]; then
+  cat "$output" >&2
+  printf 'RFD checker Labels column is not aligned\n' >&2
+  exit 1
+fi
+
 reset_fixtures; write_valid_rfd prediscussion "" md
 run_success "0001  prediscussion    0/1"
 

@@ -65,6 +65,25 @@ Review generated captures using these stable criteria:
 The background and fixture clock are deterministic in preview mode. Compositor
 timestamps and window chrome are excluded by kiosk-shell capture.
 
+## Durable reference images
+
+The six primary acceptance views are retained in
+[`reference-images/`](reference-images/) for review across later design changes:
+
+| View | Reference |
+|---|---|
+| Account selection | [`account-selection.png`](reference-images/account-selection.png) |
+| Secret prompt | [`secret-prompt.png`](reference-images/secret-prompt.png) |
+| Visible prompt | [`visible-prompt.png`](reference-images/visible-prompt.png) |
+| Authentication failure | [`authentication-failure.png`](reference-images/authentication-failure.png) |
+| Power confirmation | [`power-confirmation.png`](reference-images/power-confirmation.png) |
+| Narrow flow layout | [`narrow-selected.png`](reference-images/narrow-selected.png) |
+
+Run `make update-reference-images` to deliberately refresh them from the current
+packaged `preview-evidence` output. `make check-rfds` verifies the exact manifest,
+PNG headers, and dimensions. It does not compare pixels: these images preserve
+review context without turning compositor output into a brittle visual test.
+
 ## Recorded review outcome
 
 The generated captures were reviewed on 2026-08-30 with these results:
@@ -77,6 +96,6 @@ The generated captures were reviewed on 2026-08-30 with these results:
 | 480×600 selected account | Content uses the vertical flow without horizontal clipping; the page scrollbar remains available. |
 | 480×600 long authentication | Long identity and PAM text wrap; focus reveal leaves the input and submit action fully visible with bottom margin. |
 
-These textual outcomes are durable, but the generated images are not retained
-as a baseline. The corresponding baseline and reference-image checklist items
-therefore remain open.
+These textual outcomes and the six primary review images are durable. The
+historical pre-layout baseline remains unavailable because it was not captured
+before implementation began; current images are not presented as substitutes.
