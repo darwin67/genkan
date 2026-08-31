@@ -5,19 +5,23 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 image_dir=${REFERENCE_IMAGE_DIR:-$repo_root/rfd/0001/reference-images}
 
-declare -A expected=(
-  [account-selection.png]='1280 800'
-  [authentication-failure.png]='1280 800'
-  [narrow-selected.png]='480 600'
-  [power-confirmation.png]='1280 800'
-  [secret-prompt.png]='1280 800'
-  [visible-prompt.png]='1280 800'
-)
+# shellcheck source=reference-images-manifest.sh
+source "$repo_root/scripts/reference-images-manifest.sh"
+
+declare -A expected=()
+for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
+  read -r name width height <<< "$entry"
+  expected[$name]="$width $height"
+done
 
 for name in "${!expected[@]}"; do
   image="$image_dir/$name"
-  [[ -f $image ]] || {
+  if [[ ! -e $image && ! -L $image ]]; then
     echo "missing reference image: $name" >&2
+    exit 1
+  fi
+  [[ -f $image && ! -L $image ]] || {
+    echo "reference image must be a regular non-symlink: $name" >&2
     exit 1
   }
 
@@ -36,12 +40,12 @@ for name in "${!expected[@]}"; do
   }
 done
 
-while IFS= read -r image; do
+while IFS= read -r -d '' image; do
   name=${image##*/}
   [[ -v expected[$name] ]] || {
     echo "unexpected reference image: $name" >&2
     exit 1
   }
-done < <(find "$image_dir" -maxdepth 1 -type f -name '*.png' -print)
+done < <(find "$image_dir" -maxdepth 1 -mindepth 1 -name '*.png' -print0)
 
 echo "Reference image manifest passed"

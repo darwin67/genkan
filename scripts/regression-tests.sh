@@ -321,6 +321,104 @@ test_reference_image_manifest_rejects_missing_and_invalid_images() {
     env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
 }
 
+make_reference_fixture() {
+  local fixture=$1
+  rm -rf "$fixture"
+  cp -R "$repo_root/rfd/0001/reference-images" "$fixture"
+}
+
+reference_fixture_digest() {
+  local fixture=$1
+  (
+    cd "$fixture"
+    find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
+  )
+}
+
+test_reference_image_manifest_rejects_dimensions_and_extra_entries() {
+  local fixture="$tmp_dir/reference-manifest"
+  make_reference_fixture "$fixture"
+  cp "$fixture/visible-prompt.png" "$fixture/unexpected.png"
+  expect_failure "unexpected reference image: unexpected.png" \
+    env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
+
+  rm "$fixture/unexpected.png"
+  printf '\x00\x00\x00\x01' | \
+    dd of="$fixture/visible-prompt.png" bs=1 seek=16 conv=notrunc status=none
+  expect_failure "unexpected reference dimensions for visible-prompt.png: 1x800" \
+    env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
+}
+
+test_reference_image_manifest_rejects_symlinks() {
+  local fixture="$tmp_dir/reference-symlinks"
+  make_reference_fixture "$fixture"
+  rm "$fixture/secret-prompt.png"
+  ln -s visible-prompt.png "$fixture/secret-prompt.png"
+  expect_failure "reference image must be a regular non-symlink: secret-prompt.png" \
+    env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
+
+  make_reference_fixture "$fixture"
+  ln -s visible-prompt.png "$fixture/unexpected.png"
+  expect_failure "unexpected reference image: unexpected.png" \
+    env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
+}
+
+make_reference_nix_stub() {
+  local bin_dir=$1
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/nix" <<'EOF'
+#!/usr/bin/env bash
+if [[ $1 == eval ]]; then
+  printf 'x86_64-linux'
+elif [[ $1 == build ]]; then
+  printf '%s\n' "$REFERENCE_SOURCE"
+else
+  exit 2
+fi
+EOF
+  chmod +x "$bin_dir/nix"
+}
+
+test_reference_image_refresh_is_failure_safe_and_removes_stale_files() {
+  local source="$tmp_dir/reference-source"
+  local destination="$tmp_dir/reference-destination"
+  local bin_dir="$tmp_dir/reference-bin"
+  local failing_bin_dir="$tmp_dir/reference-failing-bin"
+  make_reference_fixture "$source"
+  make_reference_fixture "$destination"
+  make_reference_nix_stub "$bin_dir"
+
+  local original_digest
+  original_digest=$(reference_fixture_digest "$destination")
+  printf 'not a PNG\n' > "$source/account-selection.png"
+  expect_failure "invalid reference PNG header: account-selection.png" \
+    env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+      REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/update-reference-images.sh"
+  [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
+    fail "failed refresh must preserve the original reference directory"
+
+  make_reference_fixture "$source"
+  make_reference_nix_stub "$failing_bin_dir"
+  cat > "$failing_bin_dir/install" <<'EOF'
+#!/usr/bin/env bash
+echo "injected install failure" >&2
+exit 1
+EOF
+  chmod +x "$failing_bin_dir/install"
+  expect_failure "injected install failure" \
+    env PATH="$failing_bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+      REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/update-reference-images.sh"
+  [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
+    fail "failed install must preserve the original reference directory"
+
+  cp "$destination/visible-prompt.png" "$destination/stale.png"
+  env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+    REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/update-reference-images.sh" > /dev/null
+  env REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/check-reference-images.sh" > /dev/null
+  [[ ! -e $destination/stale.png ]] ||
+    fail "successful refresh must remove stale reference images"
+}
+
 test_conventional_commit_description
 test_vendor_level_hardware_coverage
 test_vulkan_discovery_timeout
@@ -334,5 +432,8 @@ test_preview_evidence_rejects_blank_frame
 test_preview_evidence_requires_consecutive_frames
 test_preview_evidence_rejects_unexpected_connections
 test_reference_image_manifest_rejects_missing_and_invalid_images
+test_reference_image_manifest_rejects_dimensions_and_extra_entries
+test_reference_image_manifest_rejects_symlinks
+test_reference_image_refresh_is_failure_safe_and_removes_stale_files
 
 echo "Shell regression tests passed"
