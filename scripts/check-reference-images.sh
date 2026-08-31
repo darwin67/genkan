@@ -42,7 +42,7 @@ done
 
 entries=$(mktemp)
 trap 'rm -f "$entries"' EXIT
-if ! find "$image_dir" -maxdepth 1 -mindepth 1 -name '*.png' -print0 > "$entries"; then
+if ! find "$image_dir" -maxdepth 1 -mindepth 1 -print0 > "$entries"; then
   echo "failed to enumerate reference images" >&2
   exit 1
 fi

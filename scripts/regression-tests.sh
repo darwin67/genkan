@@ -363,6 +363,11 @@ test_reference_image_manifest_rejects_dimensions_and_extra_entries() {
     dd of="$fixture/visible-prompt.png" bs=1 seek=16 conv=notrunc status=none
   expect_failure "unexpected reference dimensions for visible-prompt.png: 1x800" \
     env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
+
+  make_reference_fixture "$fixture"
+  printf 'unexpected\n' > "$fixture/notes.txt"
+  expect_failure "unexpected reference image: notes.txt" \
+    env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
 }
 
 test_reference_image_manifest_rejects_symlinks() {
@@ -444,6 +449,12 @@ EOF
   [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
     fail "failed install must preserve the original reference directory"
 
+  local original_image_digest replacement_digest
+  original_image_digest=$(sha256sum "$destination/account-selection.png" | cut -d ' ' -f 1)
+  cp "$source/visible-prompt.png" "$source/account-selection.png"
+  replacement_digest=$(sha256sum "$source/account-selection.png" | cut -d ' ' -f 1)
+  [[ $replacement_digest != "$original_image_digest" ]] ||
+    fail "source replacement fixture must differ from the destination"
   cp "$destination/visible-prompt.png" "$destination/stale.png"
   env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
     REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/update-reference-images.sh" > /dev/null
@@ -452,6 +463,8 @@ EOF
     fail "successful refresh must remove stale reference images"
   [[ $(stat -c '%a' "$destination") == 755 ]] ||
     fail "successful refresh must leave the reference directory traversable"
+  [[ $(sha256sum "$destination/account-selection.png" | cut -d ' ' -f 1) == "$replacement_digest" ]] ||
+    fail "successful refresh must install the corresponding source bytes"
 }
 
 test_reference_image_refresh_rolls_back_replacement_failures() {
