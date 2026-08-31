@@ -10,7 +10,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [X] Record durable reference screenshots for account selection, a secret
   prompt, a visible prompt, failed authentication, power confirmation, and
   narrow layout; generated CI evidence is intentionally not a pixel contract.
-  See [[file:ACCEPTANCE.md][acceptance evidence]].
+  See [[file:ACCEPTANCE.adoc][acceptance evidence]].
 - [X] Define reviewable acceptance checks for hierarchy, focus order, wrapping,
   WCAG contrast targets, and notice placement without treating screenshot
   pixels as the behavioral contract.
@@ -39,7 +39,7 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   iced exposes a supported accessibility tree; visible text and
   application-managed keyboard focus are retained without claiming equivalence.
   See the upstream availability criteria in
-  [[file:ACCESSIBILITY.md][accessibility verification]].
+  [[file:ACCESSIBILITY.adoc][accessibility verification]].
 - [X] Keep the selected identity prominent during authentication and provide a
   Change User action whenever another eligible identity can safely be selected.
 - [X] Make Change User immediately invalidate the attempt, clear the response,
@@ -96,13 +96,13 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
 - [X] Record unique accessible account names and status announcements as
   follow-ups for an iced release that meets the semantic-tree, Linux adapter,
   and selective-announcement criteria in
-  [[file:ACCESSIBILITY.md][accessibility verification]].
+  [[file:ACCESSIBILITY.adoc][accessibility verification]].
 - [X] Define the numeric contrast boundary as renderer-aware tests over 125
   representative generated background combinations, control states, and bright
   underlays without claiming exhaustive continuous-antialias coverage.
 - [X] Verify those contrast targets over 125 representative generated background
   combinations, both iced blend spaces, and bright overlay underlays; see
-  [[file:ACCESSIBILITY.md][accessibility verification]].
+  [[file:ACCESSIBILITY.adoc][accessibility verification]].
 
 * Session and power controls
 

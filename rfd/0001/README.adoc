@@ -98,7 +98,7 @@ identical initials from becoming ambiguous. The pinned iced backend does not
 expose semantic accessible names; publishing a combined display-name and
 username label remains a framework-bound follow-up rather than a parallel tree
 that could diverge from widget state. The upstream availability criteria are
-recorded in link:ACCESSIBILITY.md[accessibility verification]. Keyboard focus,
+recorded in link:ACCESSIBILITY.adoc[accessibility verification]. Keyboard focus,
 pointer activation, and touch activation have equivalent results.
 
 The tiles form a wrapped, scrollable grid for large account sets. Scrolling
@@ -252,7 +252,7 @@ visibly presents its action and consequence, and restores focus to its opener
 when dismissed. Semantic modal and status announcements remain a follow-up for
 an iced backend that meets the semantic-tree, Linux screen-reader adapter, and
 selective-announcement criteria in
-link:ACCESSIBILITY.md[accessibility verification].
+link:ACCESSIBILITY.adoc[accessibility verification].
 
 Normal text targets at least 4.5:1 contrast and large text, focus indicators,
 and meaningful control boundaries target at least 3:1 against adjacent colors.

@@ -1,18 +1,18 @@
-# RFD 0001 accessibility verification
+= RFD 0001 accessibility verification
 
-## Supported checks
+== Supported checks
 
 Genkan enforces the WCAG contrast requirements that can be verified from its
 current presentation model:
 
-- normal text and placeholders: at least 4.5:1;
-- focus indicators, control boundaries, avatars, and selector handles: at least
+* normal text and placeholders: at least 4.5:1;
+* focus indicators, control boundaries, avatars, and selector handles: at least
   3:1;
-- 125 combinations of the base background and three animated color fields,
+* 125 combinations of the base background and three animated color fields,
   including absent, partial, and full coverage after global dimming;
-- every active, hovered, pressed, and disabled control style, plus dialogs,
+* every active, hovered, pressed, and disabled control style, plus dialogs,
   menus, selected menu rows, selected input text, and scrollbar thumb states;
-- menus over both dark and white page content, and modal dialogs over the same
+* menus over both dark and white page content, and modal dialogs over the same
   extremes after applying the production scrim.
 
 The tests alpha-composite each foreground and material token over the sampled
@@ -33,7 +33,7 @@ proof over continuously antialiased edges. RFD 0001 records this as its numeric
 acceptance boundary without claiming a stronger continuous proof. A future
 renderer-level verification can strengthen that boundary independently.
 
-## Framework boundary
+== Framework boundary
 
 The pinned iced 0.13 widget and window backends do not expose an accessibility
 tree, roles, accessible names, descriptions, or live-region/status announcement
@@ -48,27 +48,27 @@ when iced exposes a supported accessibility backend or Genkan adopts a later
 release that does. Adding a local parallel accessibility tree would duplicate
 widget state and is intentionally out of scope.
 
-## Upstream roadmap and deferral criteria
+== Upstream roadmap and deferral criteria
 
 This status was checked against upstream iced on 2026-08-31. Iced's open
-[`Implement accessibility support` issue](https://github.com/iced-rs/iced/issues/552)
+https://github.com/iced-rs/iced/issues/552[Implement accessibility support issue]
 tracks native platform integration, widget hierarchy and metadata, actions, and
 relationships. Its implementation checklist remains open. The repository's
-textual [`ROADMAP.md`](https://github.com/iced-rs/iced/blob/master/ROADMAP.md)
+textual https://github.com/iced-rs/iced/blob/master/ROADMAP.md[ROADMAP.md]
 does not assign accessibility to a release or date.
 
 Released iced 0.13 and 0.14 do not expose semantic widget roles, accessible
 names or descriptions, a platform screen-reader bridge, or live-region/status
 announcements. The current 0.15 development branch's
-[`Widget` trait](https://github.com/iced-rs/iced/blob/master/core/src/widget.rs)
+https://github.com/iced-rs/iced/blob/master/core/src/widget.rs[Widget trait]
 also has no merged public API for them. Upstream direction favors AccessKit, but the
-[`AccessKit integration` RFC](https://github.com/iced-rs/rfcs/pull/21), the
-older [`WIP: Iced accessibility` implementation](https://github.com/iced-rs/iced/pull/1849),
-and the newer [`Accesskit integration` proof of concept](https://github.com/iced-rs/iced/pull/3111)
+https://github.com/iced-rs/rfcs/pull/21[AccessKit integration RFC], the older
+https://github.com/iced-rs/iced/pull/1849[WIP: Iced accessibility implementation],
+and the newer https://github.com/iced-rs/iced/pull/3111[Accesskit integration proof of concept]
 remain unmerged experimental work. The newer proof of concept explicitly
 supports only Button and Text and describes itself as intentionally unfinished.
 
-A [2024 maintainer comment](https://github.com/iced-rs/iced/issues/552#issuecomment-2181112406)
+A https://github.com/iced-rs/iced/issues/552#issuecomment-2181112406[2024 maintainer comment]
 anticipated accessibility in “the release after the next one,” but 0.14 shipped
 without it and no replacement target has been committed. Genkan therefore does
 not depend on that historical estimate or on a fork-specific implementation.
@@ -76,12 +76,12 @@ not depend on that historical estimate or on a fork-specific implementation.
 The deferred work becomes actionable only when a released upstream iced API
 provides the relevant capability on Genkan's supported Linux runtime:
 
-- **Semantic account and modal information:** a supported accessibility tree,
+* *Semantic account and modal information:* a supported accessibility tree,
   stable widget identity, roles, names/descriptions, focus/actions, and a Linux
   screen-reader platform adapter. Genkan can then publish each account tile as
   one semantic control named with both display name and username and expose
   modal action and consequence metadata.
-- **Dynamic status announcements:** a selective live-region or explicit
+* *Dynamic status announcements:* a selective live-region or explicit
   announcement API with settled semantics. Genkan can then announce
   authentication, cancellation, session, and power status changes without
   marking every static label live.
@@ -91,4 +91,4 @@ semantic tree without Linux screen-reader delivery does not close either
 follow-up. When these criteria are met, the iced upgrade and Genkan integration
 should include assistive-technology tests before the behavior is claimed. These
 items are tracked centrally in
-[`Deferred Work`](../../docs/deferred.md#iced-semantic-accessibility-and-announcements).
+link:../../docs/deferred.md#iced-semantic-accessibility-and-announcements[Deferred Work].

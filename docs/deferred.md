@@ -28,7 +28,7 @@ as implemented merely because an experimental dependency branch exists.
   identity, roles, names/descriptions, focus/actions, Linux screen-reader
   delivery, and a selective announcement mechanism as applicable to each
   follow-up. Verify the behavior with assistive technology before claiming it.
-- **Source:** [RFD 0001 accessibility verification](../rfd/0001/ACCESSIBILITY.md#upstream-roadmap-and-deferral-criteria).
+- **Source:** [RFD 0001 accessibility verification](../rfd/0001/ACCESSIBILITY.adoc#upstream-roadmap-and-deferral-criteria).
 
 ## Physical ARM graphics validation
 
@@ -74,7 +74,7 @@ as implemented merely because an experimental dependency branch exists.
 - **Resume when:** The renderer, blend path, background model, or packaged
   artwork changes materially, or the project adopts exhaustive continuous
   coverage as an acceptance requirement.
-- **Source:** [RFD 0001 accessibility verification](../rfd/0001/ACCESSIBILITY.md#supported-checks).
+- **Source:** [RFD 0001 accessibility verification](../rfd/0001/ACCESSIBILITY.adoc#supported-checks).
 
 ## Not deferred
 
