@@ -15,21 +15,7 @@ if ! flock -n "$lock_fd"; then
   exit 1
 fi
 
-system=$(nix eval --raw --impure --expr builtins.currentSystem)
-output=$(
-  cd "$repo_root"
-  nix build ".#checks.$system.preview-evidence" --no-link --print-out-paths
-)
-
-for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
-  read -r image _ <<< "$entry"
-  [[ -f $output/$image ]] || {
-    echo "preview evidence is missing $image" >&2
-    exit 1
-  }
-done
-
-stage=$(mktemp -d "$destination_parent/.reference-images.stage.XXXXXX")
+stage=""
 backup_root=""
 backup=""
 committed=false
@@ -63,12 +49,28 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+system=$(nix eval --raw --impure --expr builtins.currentSystem)
+output=$(
+  cd "$repo_root"
+  nix build ".#checks.$system.preview-evidence" --no-link --print-out-paths
+)
+
+for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
+  read -r image _ <<< "$entry"
+  [[ -f $output/$image ]] || {
+    echo "preview evidence is missing $image" >&2
+    exit 1
+  }
+done
+
+stage=$(mktemp -d "$destination_parent/.reference-images.stage.XXXXXX")
 for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
   read -r image _ <<< "$entry"
   install -m 0644 "$output/$image" "$stage/$image"
 done
 
 REFERENCE_IMAGE_DIR="$stage" "$repo_root/scripts/check-reference-images.sh"
+chmod 0755 "$stage"
 
 if [[ -e $destination || -L $destination ]]; then
   backup_root=$(mktemp -d "$destination_parent/.reference-images.backup.XXXXXX")

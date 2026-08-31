@@ -24,6 +24,22 @@ expect_failure() {
   }
 }
 
+expect_failure_status() {
+  local expected_status=$1
+  local expected=$2
+  shift 2
+  local status=0
+  "$@" > "$tmp_dir/command.log" 2>&1 || status=$?
+  [[ $status -eq $expected_status ]] || {
+    cat "$tmp_dir/command.log" >&2
+    fail "expected status $expected_status, got $status: $*"
+  }
+  grep -Fq "$expected" "$tmp_dir/command.log" || {
+    cat "$tmp_dir/command.log" >&2
+    fail "missing expected failure: $expected"
+  }
+}
+
 run_commit_check() {
   local repository=$1
   local base=$2
@@ -434,6 +450,8 @@ EOF
   env REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/check-reference-images.sh" > /dev/null
   [[ ! -e $destination/stale.png ]] ||
     fail "successful refresh must remove stale reference images"
+  [[ $(stat -c '%a' "$destination") == 755 ]] ||
+    fail "successful refresh must leave the reference directory traversable"
 }
 
 test_reference_image_refresh_rolls_back_replacement_failures() {
@@ -520,18 +538,101 @@ exec "$real_mv" "\$@"
 EOF
   chmod +x "$bin_dir/mv"
 
-  local signal destination original_digest
-  for signal in TERM HUP; do
-    destination="$tmp_dir/interruption-${signal,,}-destination"
+  local signal expected_status transaction_parent destination original_digest
+  for signal in HUP INT TERM; do
+    case $signal in
+      HUP) expected_status=129 ;;
+      INT) expected_status=130 ;;
+      TERM) expected_status=143 ;;
+    esac
+    transaction_parent="$tmp_dir/interruption-${signal,,}"
+    destination="$transaction_parent/reference-images"
+    mkdir -p "$transaction_parent"
     make_reference_fixture "$destination"
     original_digest=$(reference_fixture_digest "$destination")
-    expect_failure "injected $signal transaction interruption" \
+    expect_failure_status "$expected_status" "injected $signal transaction interruption" \
       env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
         REFERENCE_IMAGE_DIR="$destination" MV_COUNTER="$tmp_dir/interruption-$signal-counter" \
         INTERRUPT_SIGNAL="$signal" "$repo_root/scripts/update-reference-images.sh"
     [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
       fail "$signal interruption must restore the original reference directory"
+    [[ -z $(find "$transaction_parent" -maxdepth 1 -name '.reference-images.*' -print -quit) ]] ||
+      fail "$signal interruption must remove transaction artifacts"
   done
+}
+
+test_reference_image_refresh_preserves_failed_rollback() {
+  local source="$tmp_dir/rollback-source"
+  local transaction_parent="$tmp_dir/rollback-transaction"
+  local destination="$transaction_parent/reference-images"
+  local bin_dir="$tmp_dir/rollback-bin"
+  local real_mv backup
+  real_mv=$(command -v mv)
+  mkdir -p "$transaction_parent"
+  make_reference_fixture "$source"
+  make_reference_fixture "$destination"
+  make_reference_nix_stub "$bin_dir"
+  cat > "$bin_dir/mv" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ ! -f \$MV_COUNTER ]] || read -r count < "\$MV_COUNTER"
+count=\$((count + 1))
+printf '%s\n' "\$count" > "\$MV_COUNTER"
+if [[ \$count -eq 2 ]]; then
+  echo "injected replacement failure" >&2
+  exit 1
+fi
+if [[ \$count -eq 3 ]]; then
+  echo "injected rollback failure" >&2
+  exit 1
+fi
+exec "$real_mv" "\$@"
+EOF
+  chmod +x "$bin_dir/mv"
+
+  local original_digest
+  original_digest=$(reference_fixture_digest "$destination")
+  expect_failure "failed to restore reference images" \
+    env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+      REFERENCE_IMAGE_DIR="$destination" MV_COUNTER="$tmp_dir/rollback-counter" \
+      "$repo_root/scripts/update-reference-images.sh"
+  backup=$(find "$transaction_parent" -maxdepth 2 -type d -name original -print -quit)
+  [[ -n $backup ]] || fail "failed rollback must preserve the original backup"
+  [[ $(reference_fixture_digest "$backup") == "$original_digest" ]] ||
+    fail "failed rollback must preserve the original backup byte-for-byte"
+}
+
+test_reference_image_refresh_retries_committed_cleanup() {
+  local source="$tmp_dir/cleanup-source"
+  local transaction_parent="$tmp_dir/cleanup-transaction"
+  local destination="$transaction_parent/reference-images"
+  local bin_dir="$tmp_dir/cleanup-bin"
+  local real_rm
+  real_rm=$(command -v rm)
+  mkdir -p "$transaction_parent"
+  make_reference_fixture "$source"
+  make_reference_fixture "$destination"
+  make_reference_nix_stub "$bin_dir"
+  cat > "$bin_dir/rm" <<EOF
+#!/usr/bin/env bash
+for argument in "\$@"; do
+  if [[ \$argument == *'.reference-images.backup.'* && ! -f \$RM_FAILED ]]; then
+    : > "\$RM_FAILED"
+    echo "injected committed cleanup failure" >&2
+    exit 1
+  fi
+done
+exec "$real_rm" "\$@"
+EOF
+  chmod +x "$bin_dir/rm"
+
+  expect_failure "injected committed cleanup failure" \
+    env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+      REFERENCE_IMAGE_DIR="$destination" RM_FAILED="$tmp_dir/rm-failed" \
+      "$repo_root/scripts/update-reference-images.sh"
+  env REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/check-reference-images.sh" > /dev/null
+  [[ -z $(find "$transaction_parent" -maxdepth 1 -name '.reference-images.*' -print -quit) ]] ||
+    fail "committed cleanup retry must remove transaction artifacts"
 }
 
 test_reference_image_refresh_rejects_concurrent_update() {
@@ -578,6 +679,8 @@ test_reference_image_refresh_is_failure_safe_and_removes_stale_files
 test_reference_image_refresh_rolls_back_replacement_failures
 test_reference_image_refresh_survives_backup_preparation_failure
 test_reference_image_refresh_rolls_back_interruption
+test_reference_image_refresh_preserves_failed_rollback
+test_reference_image_refresh_retries_committed_cleanup
 test_reference_image_refresh_rejects_concurrent_update
 
 echo "Shell regression tests passed"
