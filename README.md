@@ -177,3 +177,6 @@ until the check's controlled timeout; `ICED_BACKEND=wgpu` prevents a successful
 tiny-skia fallback from masking Vulkan failure. A child PID marker and mapped
 Lavapipe library prove Cage started Genkan and iced initialized the intended
 driver. Early compositor, loader, or application failure fails the derivation.
+
+Valid work that is waiting on an upstream capability, physical hardware, or a
+separate product decision is recorded in [Deferred Work](docs/deferred.md).

@@ -16,7 +16,8 @@ Allowed decision states:
 - **Severity:** Low
 - **Decision:** AMD, NVIDIA, and external-display validation addressed on the
   Framework workstation. Physical ARM validation remains deferred until an ARM
-  Linux device is available.
+  Linux device is available and is tracked in
+  [Deferred Work](deferred.md#physical-arm-graphics-validation).
 - **Finding:** Both architectures build, but CI does not launch Genkan under
   Cage and graphics-driver discovery has not been validated broadly.
 - **Recommendation:** Add the Nix driver runpath where appropriate and perform

@@ -89,4 +89,6 @@ provides the relevant capability on Genkan's supported Linux runtime:
 Availability of only an experimental branch, a partial widget prototype, or a
 semantic tree without Linux screen-reader delivery does not close either
 follow-up. When these criteria are met, the iced upgrade and Genkan integration
-should include assistive-technology tests before the behavior is claimed.
+should include assistive-technology tests before the behavior is claimed. These
+items are tracked centrally in
+[`Deferred Work`](../../docs/deferred.md#iced-semantic-accessibility-and-announcements).
