@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: published
+:state: committed
 :discussion: https://github.com/darwin67/genkan/pull/5
 :labels: greeter, authentication, interaction, visual-design, accessibility
 
@@ -91,12 +91,15 @@ other valid accounts; when none remain, the first discovery error is reported,
 or the empty eligible-set error is reported when discovery itself succeeded.
 
 Tiles use bounded display names and generated initials; the
-credential-handling process does not decode user-controlled avatar files. Every
-tile has a unique accessible name containing both display name and username.
-The username is also visible as secondary text whenever the display name differs
-and may be visually de-emphasized, preventing duplicate or truncated names and
-identical initials from becoming ambiguous. Keyboard focus, pointer activation,
-and touch activation have equivalent results.
+credential-handling process does not decode user-controlled avatar files. The
+username is visible as secondary text whenever the display name differs and may
+be visually de-emphasized, preventing duplicate or truncated names and
+identical initials from becoming ambiguous. The pinned iced backend does not
+expose semantic accessible names; publishing a combined display-name and
+username label remains a framework-bound follow-up rather than a parallel tree
+that could diverge from widget state. The upstream availability criteria are
+recorded in link:ACCESSIBILITY.adoc[accessibility verification]. Keyboard focus,
+pointer activation, and touch activation have equivalent results.
 
 The tiles form a wrapped, scrollable grid for large account sets. Scrolling
 keeps the instruction and utility regions stable, preserves a visible focused
@@ -245,14 +248,18 @@ power confirmation. Tab and Shift-Tab follow visual reading order. Enter or
 Space activates focused tiles and buttons. Escape from account selection returns
 to the prior selected account only when its attempt remains valid; after Change
 User invalidates an attempt, Escape does not resurrect it. A modal traps focus,
-is announced with its action and consequence, and restores focus to its opener
-when dismissed. Status and error changes are announced where iced exposes an
-accessibility announcement mechanism.
+visibly presents its action and consequence, and restores focus to its opener
+when dismissed. Semantic modal and status announcements remain a follow-up for
+an iced backend that meets the semantic-tree, Linux screen-reader adapter, and
+selective-announcement criteria in
+link:ACCESSIBILITY.adoc[accessibility verification].
 
 Normal text targets at least 4.5:1 contrast and large text, focus indicators,
 and meaningful control boundaries target at least 3:1 against adjacent colors.
-The dimming layer or control material must satisfy those targets over every
-packaged background, not only a representative screenshot.
+Renderer-aware tests exercise 125 generated background combinations, control
+states, and bright overlay underlays in both iced blend spaces. This is the
+numeric acceptance boundary for the generated background; it does not claim an
+exhaustive proof over every continuously antialiased edge.
 
 Suspend, restart, and shutdown remain explicit, labelled actions with a
 confirmation step. Preview mode continues to simulate them. Production actions
