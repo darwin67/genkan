@@ -56,7 +56,7 @@ shopt -u nullglob
 
 for entry in "${entries[@]}"; do
   entry_name=$(basename "$entry")
-  [[ $entry_name == README.md ]] && continue
+  [[ $entry_name == README.adoc ]] && continue
   if [[ ! -d $entry || ! $entry_name =~ ^[0-9]{4}$ ]]; then
     problem "invalid RFD entry: ${entry_name}"
     continue
