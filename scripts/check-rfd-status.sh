@@ -8,6 +8,12 @@ states='prediscussion|ideation|discussion|published|committed|abandoned'
 discussion_pattern='^https?://[^/?#[:space:]]+([/?#][^[:space:]]*)?$'
 
 failures=0
+row_rfds=()
+row_states=()
+row_tasks=()
+row_titles=()
+row_labels=()
+title_width=35
 
 problem() {
   printf '%s\n' "$*" >&2
@@ -42,9 +48,6 @@ if [[ ! -d $rfd_root ]]; then
   printf 'RFD directory not found: %s\n' "$rfd_root" >&2
   exit 1
 fi
-
-printf '%-4s  %-13s  %5s  %-35s  %s\n' RFD State Tasks Title Labels
-printf '%-4s  %-13s  %5s  %-35s  %s\n' ---- ------------- ----- ----------------------------------- --------------------
 
 found=0
 shopt -s nullglob
@@ -159,7 +162,28 @@ for entry in "${entries[@]}"; do
     problem "implementation checkboxes belong in a separate implementation document: ${entry_name}/README.adoc"
   fi
 
-  printf '%-4s  %-13s  %5s  %-35s  %s\n' "$entry_name" "${state:-\(missing\)}" "$task_summary" "$title" "${labels:-\(missing labels\)}"
+  row_rfds+=("$entry_name")
+  row_states+=("${state:-\(missing\)}")
+  row_tasks+=("$task_summary")
+  row_titles+=("$title")
+  row_labels+=("${labels:-\(missing labels\)}")
+  if [[ ${#title} -gt $title_width ]]; then
+    title_width=${#title}
+  fi
+done
+
+printf -v title_rule '%*s' "$title_width" ''
+title_rule=${title_rule// /-}
+printf '%-4s  %-13s  %5s  %-*s  %s\n' RFD State Tasks "$title_width" Title Labels
+printf '%-4s  %-13s  %5s  %-*s  %s\n' ---- ------------- ----- "$title_width" "$title_rule" --------------------
+for index in "${!row_rfds[@]}"; do
+  printf '%-4s  %-13s  %5s  %-*s  %s\n' \
+    "${row_rfds[$index]}" \
+    "${row_states[$index]}" \
+    "${row_tasks[$index]}" \
+    "$title_width" \
+    "${row_titles[$index]}" \
+    "${row_labels[$index]}"
 done
 
 if [[ $found -eq 0 ]]; then
