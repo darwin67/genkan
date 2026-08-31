@@ -306,6 +306,21 @@ test_preview_evidence_rejects_unexpected_connections() {
   fi
 }
 
+test_reference_image_manifest_rejects_missing_and_invalid_images() {
+  "$repo_root/scripts/check-reference-images.sh" > /dev/null
+
+  local fixture="$tmp_dir/reference-images"
+  cp -R "$repo_root/rfd/0001/reference-images" "$fixture"
+  rm "$fixture/secret-prompt.png"
+  expect_failure "missing reference image: secret-prompt.png" \
+    env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
+
+  cp "$repo_root/rfd/0001/reference-images/secret-prompt.png" "$fixture/secret-prompt.png"
+  printf 'not a PNG\n' > "$fixture/account-selection.png"
+  expect_failure "invalid reference PNG header: account-selection.png" \
+    env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
+}
+
 test_conventional_commit_description
 test_vendor_level_hardware_coverage
 test_vulkan_discovery_timeout
@@ -318,5 +333,6 @@ test_preview_evidence_rejects_dead_application
 test_preview_evidence_rejects_blank_frame
 test_preview_evidence_requires_consecutive_frames
 test_preview_evidence_rejects_unexpected_connections
+test_reference_image_manifest_rejects_missing_and_invalid_images
 
 echo "Shell regression tests passed"
