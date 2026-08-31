@@ -36,25 +36,32 @@ committed=false
 
 cleanup() {
   local status=$?
-  trap - EXIT INT TERM
+  trap - EXIT HUP INT TERM
 
   if [[ $committed != true && -n $backup && ( -e $backup || -L $backup ) ]]; then
     if ! rm -rf -- "$destination"; then
       echo "failed to remove incomplete reference images; original remains at $backup" >&2
-      return 1
-    fi
-    if ! mv -T -- "$backup" "$destination"; then
+      status=1
+    elif ! mv -T -- "$backup" "$destination"; then
       echo "failed to restore reference images from $backup" >&2
-      return 1
+      status=1
+    else
+      backup=""
     fi
-    backup=""
   fi
-  [[ -z $stage ]] || rm -rf -- "$stage"
-  [[ -z $backup_root || -n $backup ]] || rm -rf -- "$backup_root"
+  if [[ -n $stage ]] && ! rm -rf -- "$stage"; then
+    status=1
+  fi
+  if [[ -n $backup_root && ( $committed == true || ( ! -e $backup && ! -L $backup ) ) ]] &&
+    ! rm -rf -- "$backup_root"; then
+    status=1
+  fi
   return "$status"
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
   read -r image _ <<< "$entry"

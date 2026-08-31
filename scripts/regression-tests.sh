@@ -472,35 +472,37 @@ EOF
 
 test_reference_image_refresh_survives_backup_preparation_failure() {
   local source="$tmp_dir/preparation-source"
-  local destination="$tmp_dir/preparation-destination"
+  local transaction_parent="$tmp_dir/preparation-transaction"
+  local destination="$transaction_parent/reference-images"
   local bin_dir="$tmp_dir/preparation-bin"
+  mkdir -p "$transaction_parent"
   make_reference_fixture "$source"
   make_reference_fixture "$destination"
   make_reference_nix_stub "$bin_dir"
-  cat > "$bin_dir/rmdir" <<'EOF'
+  cat > "$bin_dir/mv" <<EOF
 #!/usr/bin/env bash
-echo "injected backup preparation failure" >&2
+echo "injected backup move failure" >&2
 exit 1
 EOF
-  chmod +x "$bin_dir/rmdir"
+  chmod +x "$bin_dir/mv"
 
   local original_digest
   original_digest=$(reference_fixture_digest "$destination")
-  env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
-    REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/update-reference-images.sh" \
-    > /dev/null 2>&1 || true
+  expect_failure "injected backup move failure" \
+    env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+      REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/update-reference-images.sh"
   [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
     fail "backup preparation failure must preserve the original reference directory"
+  [[ -z $(find "$transaction_parent" -maxdepth 1 -name '.reference-images.*' -print -quit) ]] ||
+    fail "backup preparation failure must remove transaction artifacts"
 }
 
 test_reference_image_refresh_rolls_back_interruption() {
   local source="$tmp_dir/interruption-source"
-  local destination="$tmp_dir/interruption-destination"
   local bin_dir="$tmp_dir/interruption-bin"
   local real_mv
   real_mv=$(command -v mv)
   make_reference_fixture "$source"
-  make_reference_fixture "$destination"
   make_reference_nix_stub "$bin_dir"
   cat > "$bin_dir/mv" <<EOF
 #!/usr/bin/env bash
@@ -510,22 +512,26 @@ count=\$((count + 1))
 printf '%s\n' "\$count" > "\$MV_COUNTER"
 if [[ \$count -eq 1 ]]; then
   "$real_mv" "\$@"
-  echo "injected transaction interruption" >&2
-  kill -TERM "\$PPID"
+  echo "injected \$INTERRUPT_SIGNAL transaction interruption" >&2
+  kill "-\$INTERRUPT_SIGNAL" "\$PPID"
   exit 0
 fi
 exec "$real_mv" "\$@"
 EOF
   chmod +x "$bin_dir/mv"
 
-  local original_digest
-  original_digest=$(reference_fixture_digest "$destination")
-  expect_failure "injected transaction interruption" \
-    env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
-      REFERENCE_IMAGE_DIR="$destination" MV_COUNTER="$tmp_dir/interruption-counter" \
-      "$repo_root/scripts/update-reference-images.sh"
-  [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
-    fail "interrupted replacement must restore the original reference directory"
+  local signal destination original_digest
+  for signal in TERM HUP; do
+    destination="$tmp_dir/interruption-${signal,,}-destination"
+    make_reference_fixture "$destination"
+    original_digest=$(reference_fixture_digest "$destination")
+    expect_failure "injected $signal transaction interruption" \
+      env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+        REFERENCE_IMAGE_DIR="$destination" MV_COUNTER="$tmp_dir/interruption-$signal-counter" \
+        INTERRUPT_SIGNAL="$signal" "$repo_root/scripts/update-reference-images.sh"
+    [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
+      fail "$signal interruption must restore the original reference directory"
+  done
 }
 
 test_reference_image_refresh_rejects_concurrent_update() {
