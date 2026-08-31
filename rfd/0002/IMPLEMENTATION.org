@@ -5,13 +5,19 @@ Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
 
 * Asset and package
 
-- [ ] Select and acquire the original 4K Tahoe Default Beach MOV; record its
-  source URL, byte size, cryptographic hash, container, codec, dimensions,
-  frame rate, duration, color metadata, and audio streams.
-- [ ] Establish a stable fixed-output source or separately maintained release
-  artifact when the upstream Google Drive URL is not reproducible.
-- [ ] Install the video under ~share/genkan/wallpapers~ without embedding it in
-  the executable or fetching it at runtime.
+- [ ] Acquire the original 4K Tahoe Default Beach and Sequoia Sunrise, Morning,
+  and Night MOV files; record each source URL, byte size, cryptographic hash,
+  container, codec, dimensions, frame rate, duration, color metadata, and audio
+  streams.
+- [ ] Enable a dedicated Cloudflare R2 bucket and upload all four videos under
+  immutable logical-name and content-hash object keys.
+- [ ] Record an asset manifest with source and R2 URLs, SHA-256 hashes, media
+  metadata, poster frames, and independently verified loop transition metadata.
+- [ ] Configure a stable public R2 download domain and verify full-object and
+  range requests without making the running greeter network-dependent.
+- [ ] Fetch every R2 object as a hash-pinned Nix fixed-output source.
+- [ ] Install all four videos under ~share/genkan/wallpapers~ without embedding
+  them in the executable or fetching them at runtime.
 - [ ] Add pinned GStreamer libraries and the exact decoder, converter, and sink
   plugins to the Nix build and runtime closure.
 - [ ] Verify package construction on x86_64-linux and aarch64-linux and record
@@ -28,8 +34,10 @@ Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
   no application-owned frame history.
 - [ ] Scale with aspect-preserving cover semantics and center-crop at laptop,
   1080p, 4K, ultrawide, and narrow output sizes.
+- [ ] Inspect every video's end-to-start transition; use direct seeking for a
+  seamless source and a held-final-frame crossfade for a non-seamless source.
 - [ ] Loop with a bounded end-of-stream seek and verify repeated loops do not
-  leak memory, grow queues, or stall interaction.
+  visibly jump, leak memory, grow queues, or stall interaction.
 - [ ] Preserve the current generated background until the first frame and after
   initialization, decode, stream, or seek failure.
 - [ ] Bound diagnostics and retries for missing, corrupt, or unsupported media
@@ -41,6 +49,8 @@ Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
   existing greeter content.
 - [ ] Add a local-file administrative wallpaper override that rejects URIs,
   playlists, and pipeline descriptions; use the packaged path by default.
+- [ ] Add an administrative catalog selector for Tahoe Beach and all three
+  Sequoia variants, defaulting to Tahoe Beach.
 - [ ] Add a static or reduced-motion setting that renders the poster without
   initializing GStreamer.
 - [ ] Keep ordinary preview deterministic and decoder-free with a fixed poster
@@ -52,8 +62,9 @@ Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
 
 * Accessibility and verification
 
-- [ ] Select representative brightest, darkest, and high-local-contrast video
-  frames and extend renderer-aware contrast checks to those underlays.
+- [ ] Select representative brightest, darkest, and high-local-contrast frames
+  from every catalog entry and extend renderer-aware contrast checks to those
+  underlays.
 - [ ] Verify all existing text, focus, control-boundary, menu, and dialog
   contrast targets with the video darkening treatment.
 - [ ] Add deterministic tests for pipeline state transitions, first-frame

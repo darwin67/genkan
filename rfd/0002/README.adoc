@@ -12,10 +12,10 @@ wallpaper while preserving responsive login controls, readable foreground
 content, deterministic preview evidence, and reliable startup in the greetd
 environment.
 
-The first implementation uses an original-resolution 4K macOS wallpaper video
-rather than downscaling it to 1080p. Playback is a presentation concern only; it
-must not affect authentication, account discovery, session selection, or power
-operations.
+The first implementation uses the original-resolution 4K Tahoe Beach and
+Sequoia Sunrise, Morning, and Night wallpaper videos rather than downscaling
+them to 1080p. Playback is a presentation concern only; it must not affect
+authentication, account discovery, session selection, or power operations.
 
 Implementation progress is tracked in
 link:IMPLEMENTATION.org[the implementation checklist].
@@ -52,16 +52,25 @@ packaging treatment must be recorded before implementation is marked complete.
 == Decision
 
 Genkan will support a silent looping video as the bottom layer of the greeter.
-The initial packaged artwork will be the original 4K Tahoe Default Beach MOV.
-It most directly continues RFD 1's Tahoe reference, is continuously animated,
-and is comparable in size to the smallest Sequoia video. The source video will
-not be downscaled merely to reduce package size.
+The initial asset catalog contains the original 4K Tahoe Default Beach MOV and
+all three original 4K Sequoia MOV variants: Sunrise, Morning, and Night. Tahoe
+Beach is the default because it most directly continues RFD 1's Tahoe reference.
+An administrative setting selects any catalog entry without accepting an
+arbitrary remote asset. The source videos will not be downscaled merely to
+reduce package size.
 
-The implementation may remux the file without changing its encoded video, but
-it will not initially reduce spatial resolution, frame rate, or visual quality.
+The implementation may remux a file without changing its encoded video, but it
+will not initially reduce spatial resolution, frame rate, or visual quality.
 Any later transcode is accepted only with side-by-side evidence that it avoids
 visible degradation on a 4K output and materially improves compatibility or
 runtime cost.
+
+Each source is inspected to determine whether its final and initial frames form
+a visually seamless loop. A seamless source seeks directly to its beginning. A
+non-seamless source holds its final frame while seeking and crossfades that
+frame over the newly decoded opening frames. Playback then continues; Genkan
+never exposes a hard end-to-start jump. Loop timing and crossfade duration are
+asset metadata so each video can use independently verified transition values.
 
 The wallpaper fills the output using aspect-preserving cover semantics: scale
 until both dimensions are covered, center the frame, and crop overflow. Genkan
@@ -121,22 +130,30 @@ close the greeter or disable any interaction.
 
 == Asset and packaging model
 
-The original media is a package input with a pinned cryptographic hash. Builds
-must not perform an unpinned network download and the running greeter never
-contacts the network. The package installs the video under
-`share/genkan/wallpapers` instead of embedding it in the executable.
+The four original media files are package inputs with pinned cryptographic
+hashes. Builds must not perform an unpinned network download and the running
+greeter never contacts the network. The package installs the videos under
+`share/genkan/wallpapers` instead of embedding them in the executable.
 
-The source file is too large for ordinary Git object storage. Nix therefore
-acquires it as a fixed-output source or from a separately maintained release
-artifact, verifies its hash, and installs it alongside Genkan. If the upstream
-Google Drive URL cannot support reproducible fetching, a stable project mirror
-is required before the packaged wallpaper is enabled. Creating or publishing
-that mirror is an explicit release action, not an implicit build step.
+The source files are too large for ordinary Git object storage. A dedicated
+Cloudflare R2 bucket stores all four as immutable objects. Object keys include a
+stable logical name and content hash; replacement bytes always receive a new
+key. The repository retains a manifest containing each logical identifier,
+source page, R2 URL, SHA-256 hash, byte size, media metadata, poster frame, and
+loop transition metadata.
 
-Development builds accept an administrative wallpaper path so the exact media
-can be tested without copying it into the repository. The packaged service uses
-the installed default path. This is a file path only, not a URI: network
-schemes, playlists, and GStreamer pipeline descriptions are not accepted.
+Nix acquires each object from R2 as a fixed-output source, verifies its hash, and
+installs it alongside Genkan. The upstream Google Drive links are acquisition
+references only and are not part of reproducible package builds. Publishing or
+replacing an R2 object is an explicit release action, not an implicit build
+step. The bucket may use a custom public download domain, but object integrity
+depends on the pinned hash rather than transport or account trust.
+
+Development builds accept an administrative wallpaper path so exact media can
+be tested without copying it into the repository. The packaged service selects
+one of the installed catalog identifiers and defaults to Tahoe Beach. The path
+override is a file path only, not a URI: network schemes, playlists, and
+GStreamer pipeline descriptions are not accepted.
 
 == Preview and configuration behavior
 
@@ -201,13 +218,14 @@ bounded so a permanently invalid asset cannot create a busy loop.
 
 The implementation must provide evidence for:
 
-* metadata and cryptographic identity of the packaged 4K source;
+* metadata and cryptographic identity of all four packaged 4K sources;
 * deterministic static preview with no media decoder or service connections;
 * animated preview producing distinct valid frames while keeping fixture time
   and simulated side effects fixed;
 * successful cover scaling at laptop, 1080p, 4K, ultrawide, and narrow output
   dimensions;
-* continuous looping without unbounded memory growth;
+* continuous looping without a visible end-to-start jump or unbounded memory
+  growth for every catalog entry;
 * responsive keyboard, authentication, and modal interaction during software
   decoding;
 * fallback behavior for missing media, missing plugins, decode failure, and
