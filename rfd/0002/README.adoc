@@ -146,8 +146,23 @@ Nix acquires each object from R2 as a fixed-output source, verifies its hash, an
 installs it alongside Genkan. The upstream Google Drive links are acquisition
 references only and are not part of reproducible package builds. Publishing or
 replacing an R2 object is an explicit release action, not an implicit build
-step. The bucket may use a custom public download domain, but object integrity
-depends on the pinned hash rather than transport or account trust.
+step.
+
+The R2 bucket is exposed through `assets.chaba.io`, with wallpaper objects under
+`/genkan/wallpapers/`. Each object name ends in its SHA-256 hash and is served
+with the original media type plus
+`Cache-Control: public, max-age=31536000, immutable`. A Cloudflare Cache Rule for
+that hostname and path marks the responses eligible for edge caching and honors
+the immutable origin TTL. Versioned object URLs are never overwritten or purged
+during ordinary releases; a changed file receives a new URL.
+
+Cloudflare must cache both complete and byte-range requests without changing
+content length, range semantics, or object bytes. Verification checks repeated
+requests for a cache hit and confirms that every source remains below the
+account plan's maximum cacheable object size. R2 remains the origin of record,
+but routine Nix downloads should be served from Cloudflare's CDN after the first
+regional miss. Object integrity depends on the pinned hash rather than the CDN,
+transport, DNS, or account trust.
 
 Development builds accept an administrative wallpaper path so exact media can
 be tested without copying it into the repository. The packaged service selects
