@@ -40,12 +40,20 @@ for name in "${!expected[@]}"; do
   }
 done
 
+entries=$(mktemp)
+trap 'rm -f "$entries"' EXIT
+if ! find "$image_dir" -maxdepth 1 -mindepth 1 -name '*.png' -print0 > "$entries"; then
+  echo "failed to enumerate reference images" >&2
+  exit 1
+fi
 while IFS= read -r -d '' image; do
   name=${image##*/}
   [[ -v expected[$name] ]] || {
     echo "unexpected reference image: $name" >&2
     exit 1
   }
-done < <(find "$image_dir" -maxdepth 1 -mindepth 1 -name '*.png' -print0)
+done < "$entries"
+rm -f "$entries"
+trap - EXIT
 
 echo "Reference image manifest passed"

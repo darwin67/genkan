@@ -6,12 +6,20 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=reference-images-manifest.sh
 source "$repo_root/scripts/reference-images-manifest.sh"
 
+destination=${REFERENCE_IMAGE_DIR:-$repo_root/rfd/0001/reference-images}
+destination_parent=$(dirname "$destination")
+mkdir -p "$destination_parent"
+exec {lock_fd}< "$destination_parent"
+if ! flock -n "$lock_fd"; then
+  echo "another reference image refresh is in progress" >&2
+  exit 1
+fi
+
 system=$(nix eval --raw --impure --expr builtins.currentSystem)
 output=$(
   cd "$repo_root"
   nix build ".#checks.$system.preview-evidence" --no-link --print-out-paths
 )
-destination=${REFERENCE_IMAGE_DIR:-$repo_root/rfd/0001/reference-images}
 
 for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
   read -r image _ <<< "$entry"
@@ -21,9 +29,8 @@ for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
   }
 done
 
-destination_parent=$(dirname "$destination")
-mkdir -p "$destination_parent"
 stage=$(mktemp -d "$destination_parent/.reference-images.stage.XXXXXX")
+backup_root=""
 backup=""
 committed=false
 
@@ -31,15 +38,19 @@ cleanup() {
   local status=$?
   trap - EXIT INT TERM
 
-  if [[ $committed != true && -n $backup && -e $backup ]]; then
-    rm -rf "$destination"
-    if ! mv "$backup" "$destination"; then
+  if [[ $committed != true && -n $backup && ( -e $backup || -L $backup ) ]]; then
+    if ! rm -rf -- "$destination"; then
+      echo "failed to remove incomplete reference images; original remains at $backup" >&2
+      return 1
+    fi
+    if ! mv -T -- "$backup" "$destination"; then
       echo "failed to restore reference images from $backup" >&2
       return 1
     fi
+    backup=""
   fi
-  [[ -z $stage ]] || rm -rf "$stage"
-  [[ $committed != true || -z $backup ]] || rm -rf "$backup"
+  [[ -z $stage ]] || rm -rf -- "$stage"
+  [[ -z $backup_root || -n $backup ]] || rm -rf -- "$backup_root"
   return "$status"
 }
 trap cleanup EXIT
@@ -53,15 +64,16 @@ done
 REFERENCE_IMAGE_DIR="$stage" "$repo_root/scripts/check-reference-images.sh"
 
 if [[ -e $destination || -L $destination ]]; then
-  backup=$(mktemp -d "$destination_parent/.reference-images.backup.XXXXXX")
-  rmdir "$backup"
-  mv "$destination" "$backup"
+  backup_root=$(mktemp -d "$destination_parent/.reference-images.backup.XXXXXX")
+  backup="$backup_root/original"
+  mv -T -- "$destination" "$backup"
 fi
 
-mv "$stage" "$destination"
+mv -T -- "$stage" "$destination"
 stage=""
 committed=true
-[[ -z $backup ]] || rm -rf "$backup"
+[[ -z $backup_root ]] || rm -rf -- "$backup_root"
+backup_root=""
 backup=""
 
 echo "Updated durable RFD 0001 reference images from $output"

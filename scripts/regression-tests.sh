@@ -363,6 +363,23 @@ test_reference_image_manifest_rejects_symlinks() {
     env REFERENCE_IMAGE_DIR="$fixture" "$repo_root/scripts/check-reference-images.sh"
 }
 
+test_reference_image_manifest_propagates_enumeration_failure() {
+  local fixture="$tmp_dir/reference-enumeration"
+  local bin_dir="$tmp_dir/reference-find-bin"
+  make_reference_fixture "$fixture"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/find" <<'EOF'
+#!/usr/bin/env bash
+echo "injected enumeration failure" >&2
+exit 1
+EOF
+  chmod +x "$bin_dir/find"
+
+  expect_failure "failed to enumerate reference images" \
+    env PATH="$bin_dir:$PATH" REFERENCE_IMAGE_DIR="$fixture" \
+      "$repo_root/scripts/check-reference-images.sh"
+}
+
 make_reference_nix_stub() {
   local bin_dir=$1
   mkdir -p "$bin_dir"
@@ -419,6 +436,122 @@ EOF
     fail "successful refresh must remove stale reference images"
 }
 
+test_reference_image_refresh_rolls_back_replacement_failures() {
+  local source="$tmp_dir/replacement-source"
+  local destination="$tmp_dir/replacement-destination"
+  local bin_dir="$tmp_dir/replacement-bin"
+  local real_mv
+  real_mv=$(command -v mv)
+  make_reference_fixture "$source"
+  make_reference_fixture "$destination"
+  make_reference_nix_stub "$bin_dir"
+
+  cat > "$bin_dir/mv" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ ! -f \$MV_COUNTER ]] || read -r count < "\$MV_COUNTER"
+count=\$((count + 1))
+printf '%s\n' "\$count" > "\$MV_COUNTER"
+if [[ \$count -eq 2 ]]; then
+  echo "injected replacement failure" >&2
+  exit 1
+fi
+exec "$real_mv" "\$@"
+EOF
+  chmod +x "$bin_dir/mv"
+
+  local original_digest
+  original_digest=$(reference_fixture_digest "$destination")
+  expect_failure "injected replacement failure" \
+    env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+      REFERENCE_IMAGE_DIR="$destination" MV_COUNTER="$tmp_dir/mv-counter" \
+      "$repo_root/scripts/update-reference-images.sh"
+  [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
+    fail "failed replacement must restore the original reference directory"
+}
+
+test_reference_image_refresh_survives_backup_preparation_failure() {
+  local source="$tmp_dir/preparation-source"
+  local destination="$tmp_dir/preparation-destination"
+  local bin_dir="$tmp_dir/preparation-bin"
+  make_reference_fixture "$source"
+  make_reference_fixture "$destination"
+  make_reference_nix_stub "$bin_dir"
+  cat > "$bin_dir/rmdir" <<'EOF'
+#!/usr/bin/env bash
+echo "injected backup preparation failure" >&2
+exit 1
+EOF
+  chmod +x "$bin_dir/rmdir"
+
+  local original_digest
+  original_digest=$(reference_fixture_digest "$destination")
+  env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+    REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/update-reference-images.sh" \
+    > /dev/null 2>&1 || true
+  [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
+    fail "backup preparation failure must preserve the original reference directory"
+}
+
+test_reference_image_refresh_rolls_back_interruption() {
+  local source="$tmp_dir/interruption-source"
+  local destination="$tmp_dir/interruption-destination"
+  local bin_dir="$tmp_dir/interruption-bin"
+  local real_mv
+  real_mv=$(command -v mv)
+  make_reference_fixture "$source"
+  make_reference_fixture "$destination"
+  make_reference_nix_stub "$bin_dir"
+  cat > "$bin_dir/mv" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ ! -f \$MV_COUNTER ]] || read -r count < "\$MV_COUNTER"
+count=\$((count + 1))
+printf '%s\n' "\$count" > "\$MV_COUNTER"
+if [[ \$count -eq 1 ]]; then
+  "$real_mv" "\$@"
+  echo "injected transaction interruption" >&2
+  kill -TERM "\$PPID"
+  exit 0
+fi
+exec "$real_mv" "\$@"
+EOF
+  chmod +x "$bin_dir/mv"
+
+  local original_digest
+  original_digest=$(reference_fixture_digest "$destination")
+  expect_failure "injected transaction interruption" \
+    env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+      REFERENCE_IMAGE_DIR="$destination" MV_COUNTER="$tmp_dir/interruption-counter" \
+      "$repo_root/scripts/update-reference-images.sh"
+  [[ $(reference_fixture_digest "$destination") == "$original_digest" ]] ||
+    fail "interrupted replacement must restore the original reference directory"
+}
+
+test_reference_image_refresh_rejects_concurrent_update() {
+  local source="$tmp_dir/concurrent-source"
+  local destination="$tmp_dir/concurrent-destination"
+  local bin_dir="$tmp_dir/concurrent-bin"
+  local lock_runner="$tmp_dir/hold-reference-lock"
+  make_reference_fixture "$source"
+  make_reference_fixture "$destination"
+  make_reference_nix_stub "$bin_dir"
+  cat > "$lock_runner" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+parent=$1
+shift
+exec 8< "$parent"
+flock -n 8
+exec "$@"
+EOF
+  chmod +x "$lock_runner"
+
+  expect_failure "another reference image refresh is in progress" \
+    "$lock_runner" "$tmp_dir" env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+      REFERENCE_IMAGE_DIR="$destination" "$repo_root/scripts/update-reference-images.sh"
+}
+
 test_conventional_commit_description
 test_vendor_level_hardware_coverage
 test_vulkan_discovery_timeout
@@ -434,6 +567,11 @@ test_preview_evidence_rejects_unexpected_connections
 test_reference_image_manifest_rejects_missing_and_invalid_images
 test_reference_image_manifest_rejects_dimensions_and_extra_entries
 test_reference_image_manifest_rejects_symlinks
+test_reference_image_manifest_propagates_enumeration_failure
 test_reference_image_refresh_is_failure_safe_and_removes_stale_files
+test_reference_image_refresh_rolls_back_replacement_failures
+test_reference_image_refresh_survives_backup_preparation_failure
+test_reference_image_refresh_rolls_back_interruption
+test_reference_image_refresh_rejects_concurrent_update
 
 echo "Shell regression tests passed"
