@@ -8,7 +8,18 @@ license = "MIT"
 [features]
 default = ["gui"]
 e2e = ["tokio/macros", "tokio/rt"]
-gui = ["dep:chrono", "dep:iced", "dep:rclip-desktop-entry", "dep:rustix", "dep:unicode-general-category", "dep:zbus"]
+gui = [
+    "dep:bytes",
+    "dep:chrono",
+    "dep:gstreamer",
+    "dep:gstreamer-app",
+    "dep:gstreamer-video",
+    "dep:iced",
+    "dep:rclip-desktop-entry",
+    "dep:rustix",
+    "dep:unicode-general-category",
+    "dep:zbus",
+]
 
 [[bin]]
 name = "genkan"
@@ -21,10 +32,14 @@ path = "src/bin/greetd-e2e.rs"
 required-features = ["e2e"]
 
 [dependencies]
+bytes = { version = "1.10.1", optional = true }
 chrono = { version = "0.4.38", default-features = false, features = ["clock"], optional = true }
 clap = { version = "4.5.23", features = ["derive"] }
 greetd_ipc = { version = "0.10.3", features = ["tokio-codec"] }
-iced = { version = "0.13.1", features = ["advanced", "canvas", "lazy", "tokio"], optional = true }
+gstreamer = { version = "0.24.2", features = ["v1_26"], optional = true }
+gstreamer-app = { version = "0.24.2", features = ["v1_26"], optional = true }
+gstreamer-video = { version = "0.24.2", features = ["v1_26"], optional = true }
+iced = { version = "0.13.1", features = ["advanced", "canvas", "image-without-codecs", "lazy", "tokio"], optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
 rustix = { version = "1.1.4", features = ["fs"], optional = true }
 thiserror = "2.0.9"

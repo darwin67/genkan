@@ -58,7 +58,10 @@ pub(super) enum AuthenticationControls {
 
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        let background = background::Background::new(self.background_elapsed()).view();
+        let background = self
+            .wallpaper
+            .view()
+            .unwrap_or_else(|| background::Background::new(self.background_elapsed()).view());
         let content = responsive(move |size| self.content(size));
         stack![background, content].into()
     }

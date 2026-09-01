@@ -8,6 +8,7 @@ use iced::Task;
 use crate::accounts::Account;
 use crate::power::Action as PowerAction;
 use crate::sessions::Session;
+use crate::wallpaper;
 
 use super::auth_flow::{Attempt, Phase};
 use super::focus::Target as FocusTarget;
@@ -90,6 +91,7 @@ pub(super) fn build(
         selected_session,
         session_menu_open: false,
         session_selector_key: 0,
+        wallpaper: wallpaper::State::disabled(),
         started_at: Instant::now(),
         now: preview_now(),
         power_state: PowerState::Idle,
@@ -268,6 +270,7 @@ mod tests {
             let (app, _) = build(*fixture, None, None);
             assert!(app.preview, "fixture {fixture:?}");
             assert!(app.client.is_none(), "fixture {fixture:?}");
+            assert!(app.wallpaper.is_disabled(), "fixture {fixture:?}");
             assert_eq!(app.now.format("%-I:%M").to_string(), "9:41");
             assert_eq!(
                 app.now.format("%A, %B %-d").to_string(),

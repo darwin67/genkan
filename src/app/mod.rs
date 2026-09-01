@@ -18,6 +18,7 @@ use iced::{event, keyboard, time, window, Subscription, Task};
 use crate::accounts::{self, Account};
 use crate::power::{self, Action as PowerAction};
 use crate::sessions::{self, Session};
+use crate::wallpaper;
 use genkan::auth::{self, Client};
 
 pub(crate) use preview::Fixture as PreviewFixture;
@@ -95,6 +96,7 @@ pub(crate) struct App {
     selected_session: Option<Session>,
     session_menu_open: bool,
     session_selector_key: u64,
+    wallpaper: wallpaper::State,
     started_at: Instant,
     now: chrono::DateTime<Local>,
     power_state: PowerState,
@@ -107,6 +109,7 @@ pub(crate) struct App {
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Tick,
+    WallpaperFrameReady,
     InputChanged(String),
     Submit,
     Retry,
@@ -194,6 +197,7 @@ impl App {
             selected_session,
             session_menu_open: false,
             session_selector_key: 0,
+            wallpaper: wallpaper::State::start_default(),
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
@@ -214,7 +218,10 @@ impl App {
 
     pub(crate) fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
-            time::every(Duration::from_millis(50)).map(|_| Message::Tick),
+            time::every(self.tick_interval()).map(|_| Message::Tick),
+            self.wallpaper
+                .subscription()
+                .map(|()| Message::WallpaperFrameReady),
             window::close_requests().map(Message::CloseRequested),
             event::listen_with(focus::keyboard_navigation),
             event::listen_with(focus::pointer_focus_sync),
@@ -254,6 +261,7 @@ impl App {
                 (
                     _,
                     Message::Tick
+                    | Message::WallpaperFrameReady
                     | Message::AuthResult { .. }
                     | Message::AccountsResult(_)
                     | Message::CloseRequested(_)
@@ -274,6 +282,10 @@ impl App {
         }
 
         match message {
+            Message::WallpaperFrameReady => {
+                self.wallpaper.receive_latest();
+                Task::none()
+            }
             Message::Tick if self.preview => Task::none(),
             Message::Tick => {
                 self.now = Local::now();
@@ -556,6 +568,14 @@ impl App {
         }
     }
 
+    fn tick_interval(&self) -> Duration {
+        if self.wallpaper.has_frame() {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_millis(50)
+        }
+    }
+
     fn select_account(&mut self, account: Account) -> Task<Message> {
         let replacing_account = !self.username.is_empty();
         self.username = account.username;
@@ -786,6 +806,7 @@ mod tests {
             selected_session: Some(session()),
             session_menu_open: false,
             session_selector_key: 0,
+            wallpaper: wallpaper::State::disabled(),
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
