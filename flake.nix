@@ -55,7 +55,9 @@
               wayland
             ]
             ++ gstreamerPackages;
-          gstreamerPluginPath = pkgs.lib.makeSearchPath "lib/gstreamer-1.0" gstreamerPackages;
+          gstreamerPluginPath = pkgs.lib.makeSearchPath "lib/gstreamer-1.0" (
+            map pkgs.lib.getLib gstreamerPackages
+          );
           wallpapers = map (
             wallpaper:
             let
