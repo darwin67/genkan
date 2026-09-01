@@ -81,6 +81,7 @@
               pkgs.git-cliff
               pkgs.jq
               pkgs.util-linux
+              pkgs.awscli2
               rustToolchain
             ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;
