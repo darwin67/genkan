@@ -3,7 +3,9 @@
 
 Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
 
-* Asset and package
+The phases are ordered; complete each phase before beginning the next.
+
+* Phase 1: Asset and package
 
 - [ ] Acquire the original 4K Tahoe Default Beach and Sequoia Sunrise, Morning,
   and Night MOV files; record each source URL, byte size, cryptographic hash,
@@ -31,7 +33,7 @@ Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
 - [ ] Verify package construction on x86_64-linux and aarch64-linux and record
   the resulting package and closure-size changes.
 
-* Playback
+* Phase 2: Playback
 
 - [ ] Add a GStreamer library pipeline for silent asynchronous decode through
   ~appsink~ without invoking a shell, external player, or pipeline string from
@@ -51,7 +53,7 @@ Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
 - [ ] Bound diagnostics and retries for missing, corrupt, or unsupported media
   without exiting the greeter.
 
-* Presentation and configuration
+* Phase 3: Presentation and configuration
 
 - [ ] Place video beneath a uniform contrast-preserving darkening layer and all
   existing greeter content.
@@ -68,7 +70,7 @@ Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
 - [ ] Document packaged, animated-preview, static, override, and fallback
   behavior in the README and command help.
 
-* Accessibility and verification
+* Phase 4: Accessibility and verification
 
 - [ ] Select representative brightest, darkest, and high-local-contrast frames
   from every catalog entry and extend renderer-aware contrast checks to those
