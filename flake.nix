@@ -10,9 +10,14 @@
   };
 
   outputs =
-    { self, nixpkgs, rust-overlay }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+    }:
     let
       packageVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+      wallpaperManifest = builtins.fromTOML (builtins.readFile ./assets/wallpapers/manifest.toml);
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -35,11 +40,43 @@
             cargo = rustToolchain;
             rustc = rustToolchain;
           };
-          runtimeLibraries = with pkgs; [
-            libxkbcommon
-            vulkan-loader
-            wayland
+          gstreamerPackages = with pkgs.gst_all_1; [
+            gstreamer
+            gst-plugins-base
+            gst-plugins-good
+            gst-plugins-bad
+            gst-libav
           ];
+          runtimeLibraries =
+            with pkgs;
+            [
+              libxkbcommon
+              vulkan-loader
+              wayland
+            ]
+            ++ gstreamerPackages;
+          gstreamerPluginPath = pkgs.lib.makeSearchPath "lib/gstreamer-1.0" gstreamerPackages;
+          wallpapers = map (
+            wallpaper:
+            let
+              posterSource = ./assets/wallpapers + "/${wallpaper.poster.file}";
+            in
+            assert wallpaper.byte_size < wallpaperManifest.delivery.maximum_cacheable_object_bytes;
+            assert builtins.hashFile "sha256" posterSource == wallpaper.poster.sha256;
+            wallpaper
+            // {
+              videoSource = pkgs.fetchurl {
+                name = wallpaper.install_name;
+                url = wallpaper.r2_url;
+                hash = wallpaper.nix_hash;
+              };
+              inherit posterSource;
+            }
+          ) wallpaperManifest.wallpaper;
+          installWallpaper = wallpaper: ''
+            ln -s ${wallpaper.videoSource} "$wallpaperDirectory/${wallpaper.install_name}"
+            ln -s ${wallpaper.posterSource} "$wallpaperDirectory/${wallpaper.poster.file}"
+          '';
         in
         {
           inherit pkgs;
@@ -52,10 +89,18 @@
             nativeBuildInputs = [
               pkgs.addDriverRunpath
               pkgs.makeWrapper
+              pkgs.pkg-config
             ];
+            buildInputs = gstreamerPackages;
             postInstall = ''
+              wallpaperDirectory=$out/share/genkan/wallpapers
+              mkdir -p "$wallpaperDirectory"
+              install -m 0444 ${./assets/wallpapers/manifest.toml} "$wallpaperDirectory/manifest.toml"
+              ${pkgs.lib.concatMapStringsSep "\n" installWallpaper wallpapers}
+
               wrapProgram $out/bin/genkan \
                 --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries} \
+                --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${gstreamerPluginPath} \
                 --suffix VK_ADD_DRIVER_FILES : ${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d
             '';
             postFixup = ''
@@ -80,11 +125,14 @@
             packages = [
               pkgs.git-cliff
               pkgs.jq
+              pkgs.pkg-config
               pkgs.util-linux
               pkgs.awscli2
               rustToolchain
-            ];
+            ]
+            ++ gstreamerPackages;
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;
+            GST_PLUGIN_SYSTEM_PATH_1_0 = gstreamerPluginPath;
           };
         };
     in
