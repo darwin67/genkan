@@ -1,0 +1,220 @@
+schema_version = 1
+catalog_id = "genkan-wallpapers"
+default_wallpaper = "tahoe-beach"
+verified_at = "2026-09-01"
+
+[delivery]
+r2_bucket = "genkan-assets"
+base_url = "https://assets.genkan.dwu.sh/wallpapers/"
+content_type = "video/quicktime"
+cache_control = "public, max-age=31536000, immutable"
+cache_rule_id = "36ea271e0e884369ae43b5328d2c817f"
+cache_rule_expression = "(http.host eq \"assets.genkan.dwu.sh\" and starts_with(http.request.uri.path, \"/wallpapers/\"))"
+smart_tiered_cache = true
+maximum_cacheable_object_bytes = 536870912
+maximum_cacheable_object_source = "Cloudflare Free plan 512 MB cacheable file-size limit"
+verification = "Complete responses were SHA-256 checked against the source files; repeated complete and 1 MiB byte-range requests returned CDN HIT responses with unchanged lengths, ranges, and bytes."
+
+[[wallpaper]]
+id = "tahoe-beach"
+name = "Tahoe Beach"
+source_page_url = "https://mrmacintosh.com/download-the-new-macos-tahoe-wallpaper-desktop-pictures-5k/"
+source_file_url = "https://drive.google.com/file/d/1uuApUmafIUDskzYPfNPDhsGhQ0eef6jx/view"
+rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/tahoe-beach-5917a9d17ec32b6a4552c530c81515aff4517fa4cd3ebd712d69d0ab2e6618cc.mov"
+install_name = "tahoe-beach.mov"
+sha256 = "5917a9d17ec32b6a4552c530c81515aff4517fa4cd3ebd712d69d0ab2e6618cc"
+nix_hash = "sha256-WRep0X7DK2pFUsUwyBUVr/RRf6TNPr1xLWnQqy5mGMw="
+byte_size = 170198367
+cacheable_under_plan_limit = true
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "240/1"
+time_base = "1/240000"
+frame_count = 28801
+duration_seconds = 120.004167
+stream_bit_rate = 11320994
+container_bit_rate = 11346163
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt709"
+color_primaries = "bt709"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "tahoe-beach-poster.jpg"
+sha256 = "911a3c3a329448e9f359588a03151ef07c7655f6a87a77d85165b3a8571e0b9e"
+width = 3840
+height = 2160
+source_timestamp_seconds = 120.000000
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.568323
+verification = "The decoded first and final frames are not seamless. A held-final-frame 2 s dissolve into the opening frames was visually checked without a hard jump, blank frame, or corruption."
+
+[[wallpaper]]
+id = "sequoia-sunrise"
+name = "Sequoia Sunrise"
+source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
+source_file_url = "https://drive.google.com/file/d/1qZg0jWnUwHKaB4F2xFzfBqFHEKgXeFoT/view"
+rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/sequoia-sunrise-40c8e66d5b1b90c078493355884bc75ee2ec2688003708a8decbd7c45c837435.mov"
+install_name = "sequoia-sunrise.mov"
+sha256 = "40c8e66d5b1b90c078493355884bc75ee2ec2688003708a8decbd7c45c837435"
+nix_hash = "sha256-QMjmbVsbkMB4STNViEvHXuLsJogANwio3svXxFyDdDU="
+byte_size = 179107597
+cacheable_under_plan_limit = true
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "240/1"
+time_base = "1/240000"
+frame_count = 28806
+duration_seconds = 120.008333
+stream_bit_rate = 11912803
+container_bit_rate = 11939677
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt470m"
+color_primaries = "smpte432"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "sequoia-sunrise-poster.jpg"
+sha256 = "6039f6866838784846d57f90085df97406f2f12f83f24254e87c17a93b6ab221"
+width = 3840
+height = 2160
+source_timestamp_seconds = 120.004167
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 1000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.192111
+verification = "The decoded first and final frames are not seamless. A held-final-frame 1 s dissolve limits double-exposed trunks while avoiding a hard jump, blank frame, or corruption under the planned darkening layer."
+
+[[wallpaper]]
+id = "sequoia-morning"
+name = "Sequoia Morning"
+source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
+source_file_url = "https://drive.google.com/file/d/1q6oUEsY62qC6RnJIJex1I5vhRXwDJe5o/view"
+rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/sequoia-morning-8362ed905f4d541a936db43efe7b5ca563ab9fd3eb6cd23fb7fd19f01544080a.mov"
+install_name = "sequoia-morning.mov"
+sha256 = "8362ed905f4d541a936db43efe7b5ca563ab9fd3eb6cd23fb7fd19f01544080a"
+nix_hash = "sha256-g2LtkF9NVBqTbbQ+/ntcpWOrn9PrbNI/t/0Z8BVECAo="
+byte_size = 368419794
+cacheable_under_plan_limit = true
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "240/1"
+time_base = "1/240000"
+frame_count = 58401
+duration_seconds = 243.336667
+stream_bit_rate = 12087059
+container_bit_rate = 12112265
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt470m"
+color_primaries = "smpte432"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "sequoia-morning-poster.jpg"
+sha256 = "def6caa26fdeb9e7978980d5a9f95583c9aeaccecf29cea54d330310ea2c731e"
+width = 3840
+height = 2160
+source_timestamp_seconds = 243.333333
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 1000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.185277
+verification = "The decoded first and final frames are not seamless. A held-final-frame 1 s dissolve limits double-exposed trunks while avoiding a hard jump, blank frame, or corruption under the planned darkening layer."
+
+[[wallpaper]]
+id = "sequoia-night"
+name = "Sequoia Night"
+source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
+source_file_url = "https://drive.google.com/file/d/16R5qX4--VdAEr7lUe4AsukqK_MVYtKEi/view"
+rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/sequoia-night-652c8bbc8f93d2c50394c8f314a0f07f83845844d1b25ae3b92ae546ccaefe23.mov"
+install_name = "sequoia-night.mov"
+sha256 = "652c8bbc8f93d2c50394c8f314a0f07f83845844d1b25ae3b92ae546ccaefe23"
+nix_hash = "sha256-ZSyLvI+T0sUDlMjzFKDwf4OEWETRslrjuSrlRsyu/iM="
+byte_size = 432531222
+cacheable_under_plan_limit = true
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "240/1"
+time_base = "1/240000"
+frame_count = 69985
+duration_seconds = 291.603333
+stream_bit_rate = 11841083
+container_bit_rate = 11866290
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt470m"
+color_primaries = "smpte432"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "sequoia-night-poster.jpg"
+sha256 = "fa70c8868e460ec025cfbd5210f9ed135fb0cf8f0bef6b0cb2db8b7790aad457"
+width = 3840
+height = 2160
+source_timestamp_seconds = 291.600000
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.462603
+verification = "The decoded first and final frames are not seamless. A held-final-frame 2 s dissolve into the opening frames was visually checked without a hard jump, blank frame, or corruption."

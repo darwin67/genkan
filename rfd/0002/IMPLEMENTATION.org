@@ -1,0 +1,122 @@
+#+TITLE: RFD 0002 implementation checklist
+#+STARTUP: showall
+
+Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
+
+The phases are ordered; complete each phase before beginning the next.
+
+* Phase 1: Asset and package
+
+- [X] Acquire the original 4K Tahoe Default Beach and Sequoia Sunrise, Morning,
+  and Night MOV files; record each source URL, byte size, cryptographic hash,
+  container, codec, dimensions, frame rate, duration, color metadata, and audio
+  streams.
+- [X] Enable a dedicated Cloudflare R2 bucket and upload all four videos under
+  immutable logical-name and content-hash object keys.
+- [X] Record an asset manifest with source and R2 URLs, SHA-256 hashes, media
+  metadata, poster frames, and independently verified loop transition metadata.
+- [X] Attach ~assets.genkan.dwu.sh~ to the bucket and publish the catalog below
+  ~/wallpapers/~ with content-hashed immutable object names.
+- [X] Serve every video object with its original media type and
+  ~Cache-Control: public, max-age=31536000, immutable~.
+- [X] Add a Cloudflare Cache Rule for the wallpaper path and verify repeated
+  full-object and byte-range requests are CDN cache hits with unchanged bytes,
+  lengths, and range semantics.
+- [X] Enable Smart Tiered Cache for the ~dwu.sh~ zone.
+- [X] Verify every source is below the account plan's maximum cacheable object
+  size and record the result in the asset manifest.
+- [X] Fetch every R2 object as a hash-pinned Nix fixed-output source.
+- [X] Install all four videos under ~share/genkan/wallpapers~ without embedding
+  them in the executable or fetching them at runtime.
+- [X] Add pinned GStreamer libraries and the exact decoder, converter, and sink
+  plugins to the Nix build and runtime closure.
+- [X] Verify package construction on x86_64-linux and aarch64-linux and record
+  the resulting package and closure-size changes.
+
+** Phase 1 verification record
+
+- The machine-readable [[file:../../assets/wallpapers/manifest.toml][asset manifest]] records all four source and
+  immutable R2 URLs, SHA-256 and Nix hashes, exact media and poster metadata,
+  the 536,870,912-byte plan limit, and per-video loop analysis. Decoded endpoint
+  comparison rejected direct seeking for every source. Visual transition checks
+  selected a 2 s held-frame crossfade for Tahoe Beach and Sequoia Night and a
+  1 s crossfade for Sequoia Sunrise and Morning.
+- On 2026-09-01, complete CDN responses matched the source SHA-256 hashes and
+  content lengths. Repeated complete requests returned ~200~ and ~HIT~;
+  repeated 1 MiB requests returned ~206~, ~HIT~, the requested
+  ~Content-Range~, and bytes matching the corresponding source ranges. The
+  largest source is 432,531,222 bytes, below the recorded plan limit.
+- The pinned development environment exposed and inspected ~qtdemux~,
+  ~h265parse~, ~avdec_h265~, ~videoconvert~, and ~appsink~. A bounded Tahoe
+  sample decoded through that complete software pipeline to RGBA without
+  relying on host plugins.
+- Native package, graphics-smoke, and preview-evidence builds passed on
+  [[https://github.com/darwin67/genkan/actions/runs/33550235307/job/99997588252][x86_64-linux]] and
+  [[https://github.com/darwin67/genkan/actions/runs/33550235307/job/99997588265][aarch64-linux]]. Local ~make verify~ and
+  ~nix flake check --no-build --all-systems~ also passed.
+
+| Measurement         | Before Phase 1 | After Phase 1 | Change         |
+|---------------------+----------------+---------------+----------------|
+| Package NAR bytes   |     20,067,344 |    20,082,920 |        +15,576 |
+| Runtime closure     |     88,867,656 | 2,172,935,200 | +2,084,067,544 |
+
+The videos and posters are symlinked fixed-output store paths, so their bytes
+increase the runtime closure rather than duplicating roughly 1.15 GB of video
+inside the package output.
+
+* Phase 2: Playback
+
+- [ ] Add a GStreamer library pipeline for silent asynchronous decode through
+  ~appsink~ without invoking a shell, external player, or pipeline string from
+  configuration.
+- [ ] Hand off only the latest decoded frame through a bounded channel or slot;
+  never queue video frames behind authentication work.
+- [ ] Upload new frames to iced, request redraw only when required, and retain
+  no application-owned frame history.
+- [ ] Scale with aspect-preserving cover semantics and center-crop at laptop,
+  1080p, 4K, ultrawide, and narrow output sizes.
+- [ ] Inspect every video's end-to-start transition; use direct seeking for a
+  seamless source and a held-final-frame crossfade for a non-seamless source.
+- [ ] Loop with a bounded end-of-stream seek and verify repeated loops do not
+  visibly jump, leak memory, grow queues, or stall interaction.
+- [ ] Preserve the current generated background until the first frame and after
+  initialization, decode, stream, or seek failure.
+- [ ] Bound diagnostics and retries for missing, corrupt, or unsupported media
+  without exiting the greeter.
+
+* Phase 3: Presentation and configuration
+
+- [ ] Place video beneath a uniform contrast-preserving darkening layer and all
+  existing greeter content.
+- [ ] Add a local-file administrative wallpaper override that rejects URIs,
+  playlists, and pipeline descriptions; use the packaged path by default.
+- [ ] Add an administrative catalog selector for Tahoe Beach and all three
+  Sequoia variants, defaulting to Tahoe Beach.
+- [ ] Add a static or reduced-motion setting that renders the poster without
+  initializing GStreamer.
+- [ ] Keep ordinary preview deterministic and decoder-free with a fixed poster
+  frame and generated fallback.
+- [ ] Add an explicitly animated preview mode while keeping fixture time,
+  authentication, account discovery, and power behavior simulated.
+- [ ] Document packaged, animated-preview, static, override, and fallback
+  behavior in the README and command help.
+
+* Phase 4: Accessibility and verification
+
+- [ ] Select representative brightest, darkest, and high-local-contrast frames
+  from every catalog entry and extend renderer-aware contrast checks to those
+  underlays.
+- [ ] Verify all existing text, focus, control-boundary, menu, and dialog
+  contrast targets with the video darkening treatment.
+- [ ] Add deterministic tests for pipeline state transitions, first-frame
+  fallback, latest-frame replacement, looping, failure, and bounded retry.
+- [ ] Add animated evidence that observes distinct valid frames without
+  weakening the stable deterministic screenshot checks.
+- [ ] Measure startup latency, steady-state CPU/GPU use, frame delivery, and
+  memory across repeated loops under software Vulkan and available hardware
+  decoding; prefer frame drops over input latency.
+- [ ] Verify keyboard, pointer, touch, prompt transitions, and modal interaction
+  remain responsive during playback.
+- [ ] Run ~make verify~, ~make e2e~, and packaged graphics smoke tests.
+- [ ] Run ~make hardware-smoke~ with animation on available connected AMD and
+  NVIDIA outputs and record output mode, decoder path, and result.

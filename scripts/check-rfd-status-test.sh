@@ -12,7 +12,7 @@ trap 'rm -rf "$test_root"' EXIT
 reset_fixtures() {
   rm -rf "$rfd_root"
   mkdir -p "$rfd_root"
-  printf '# Test RFDs\n' > "$rfd_root/README.md"
+  printf '= Test RFDs\n' > "$rfd_root/README.adoc"
 }
 
 run_success() {

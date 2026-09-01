@@ -1,0 +1,295 @@
+:authors: Darwin D. Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/darwin67/genkan/pull/15
+:labels: greeter, visual-design, animation, video, packaging, graphics
+
+= RFD 2 Animated 4K greeter wallpaper
+
+== Goal
+
+Replace Genkan's generated color-field background with a full-screen animated
+wallpaper while preserving responsive login controls, readable foreground
+content, deterministic preview evidence, and reliable startup in the greetd
+environment.
+
+The first implementation uses the original-resolution 4K Tahoe Beach and
+Sequoia Sunrise, Morning, and Night wallpaper videos rather than downscaling
+them to 1080p. Playback is a presentation concern only; it must not affect
+authentication, account discovery, session selection, or power operations.
+
+Implementation progress is tracked in
+link:IMPLEMENTATION.org[the implementation checklist].
+
+== Context
+
+RFD 1 deliberately retained a generated background and deferred final wallpaper
+selection until artwork provenance, packaging, and behavior could be reviewed
+together. The generated canvas is technically animated in production, but its
+three large translucent circles move through a roughly seven-minute cycle and
+have flat, visibly overlapping edges. Development preview freezes elapsed time
+at zero so screenshot evidence remains deterministic. Consequently, `make dev`
+does not demonstrate motion and the production result does not resemble a
+photographic macOS aerial wallpaper.
+
+Apple ships its recent wallpapers in two materially different forms:
+
+* HEIC dynamic wallpapers contain still variants selected by appearance or time
+  of day. They do not provide continuous camera or environmental motion.
+* MOV aerial wallpapers contain continuous video and can provide the intended
+  animated login background.
+
+The evaluated reference downloads are:
+
+* https://mrmacintosh.com/download-the-new-macos-tahoe-wallpaper-desktop-pictures-5k/[macOS Tahoe wallpaper downloads], including the 170.2 MB Tahoe Default Beach MOV;
+* https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/[macOS Sequoia wallpaper downloads], including the 171.9 MB Sunrise, 368.4 MB Morning, and 432.5 MB Night MOV files; and
+* https://basicappleguy.com/basicappleblog/dynamic-tahoe-wallpapers[Basic Apple Guy's dynamic Tahoe wallpapers], which package Dawn, Day, Dusk, and Night stills in HEIC rather than continuous video.
+
+These pages mirror or derive their downloads from artwork shipped with macOS;
+they are reference and acquisition sources, not evidence of an open-content
+license. The selected asset and its exact origin, hash, media metadata, and
+packaging treatment must be recorded before implementation is marked complete.
+
+== Decision
+
+Genkan will support a silent looping video as the bottom layer of the greeter.
+The initial asset catalog contains the original 4K Tahoe Default Beach MOV and
+all three original 4K Sequoia MOV variants: Sunrise, Morning, and Night. Tahoe
+Beach is the default because it most directly continues RFD 1's Tahoe reference.
+An administrative setting selects any catalog entry without accepting an
+arbitrary remote asset. The source videos will not be downscaled merely to
+reduce package size.
+
+The implementation may remux a file without changing its encoded video, but it
+will not initially reduce spatial resolution, frame rate, or visual quality.
+Any later transcode is accepted only with side-by-side evidence that it avoids
+visible degradation on a 4K output and materially improves compatibility or
+runtime cost.
+
+Each source is inspected to determine whether its final and initial frames form
+a visually seamless loop. A seamless source seeks directly to its beginning. A
+non-seamless source holds its final frame while seeking and crossfades that
+frame over the newly decoded opening frames. Playback then continues; Genkan
+never exposes a hard end-to-start jump. Loop timing and crossfade duration are
+asset metadata so each video can use independently verified transition values.
+
+The wallpaper fills the output using aspect-preserving cover semantics: scale
+until both dimensions are covered, center the frame, and crop overflow. Genkan
+does not stretch the image or expose letterboxing. The existing darkening layer
+remains above the video and below all controls so foreground contrast does not
+depend on a favorable frame.
+
+[source,text]
+----
++--------------------------------------------------------------+
+|  looping 4K video, scaled to cover and center-cropped         |
+|  +--------------------------------------------------------+  |
+|  | uniform contrast-preserving darkening layer            |  |
+|  |  +--------------------------------------------------+  |  |
+|  |  | clock, identity, authentication, session, power  |  |  |
+|  |  +--------------------------------------------------+  |  |
+|  +--------------------------------------------------------+  |
++--------------------------------------------------------------+
+----
+
+== Playback architecture
+
+Genkan will use GStreamer through its Rust bindings. It will construct the
+pipeline through the library API and receive decoded frames through `appsink`;
+it will not invoke `gst-launch`, FFmpeg, a shell, or an external media player.
+The pipeline disables audio, decodes video asynchronously, converts frames to a
+pixel format accepted by iced, and seeks to the beginning at end of stream.
+
+A bounded latest-frame handoff separates media callbacks from the iced update
+loop. The decoder may replace an unconsumed frame, but it may not queue an
+unbounded sequence or block authentication event handling. The iced thread
+uploads at most the newest frame and requests redraw only when a new frame is
+available. Output resizing recomputes cover geometry without restarting
+playback.
+
+[source,text]
+----
+packaged MOV -> GStreamer decode -> latest-frame slot -> iced texture
+                                                        |
+generated fallback -------------------------------------+
+                                                        |
+                                                        v
+                                             darkening layer and UI
+----
+
+GStreamer plugin and codec requirements become explicit Nix runtime
+dependencies. The package must work without relying on a desktop session's
+environment or per-user plugin installation. Hardware decoding is desirable
+but not required for correctness; the same package must retain a software
+decode path for supported systems and CI.
+
+The first-frame deadline is bounded. Until a decoded frame arrives, Genkan
+renders the existing generated background. Decode initialization, stream,
+seek, or device errors leave that fallback visible and produce a diagnostic
+that contains no credentials or user-controlled media metadata. They do not
+close the greeter or disable any interaction.
+
+== Asset and packaging model
+
+The four original media files are package inputs with pinned cryptographic
+hashes. Builds must not perform an unpinned network download and the running
+greeter never contacts the network. The package installs the videos under
+`share/genkan/wallpapers` instead of embedding them in the executable.
+
+The source files are too large for ordinary Git object storage. A dedicated
+Cloudflare R2 bucket stores all four as immutable objects. Object keys include a
+stable logical name and content hash; replacement bytes always receive a new
+key. The repository retains a manifest containing each logical identifier,
+source page, R2 URL, SHA-256 hash, byte size, media metadata, poster frame, and
+loop transition metadata.
+
+Nix acquires each object from R2 as a fixed-output source, verifies its hash, and
+installs it alongside Genkan. The upstream Google Drive links are acquisition
+references only and are not part of reproducible package builds. Publishing or
+replacing an R2 object is an explicit release action, not an implicit build
+step.
+
+The R2 bucket is exposed through `assets.genkan.dwu.sh`, with wallpaper objects
+under `/wallpapers/`. Each object name ends in its SHA-256 hash and is served
+with the original media type plus
+`Cache-Control: public, max-age=31536000, immutable`. A Cloudflare Cache Rule for
+that hostname and path marks the responses eligible for edge caching and honors
+the immutable origin TTL. Versioned object URLs are never overwritten or purged
+during ordinary releases; a changed file receives a new URL.
+
+Cloudflare must cache both complete and byte-range requests without changing
+content length, range semantics, or object bytes. Verification checks repeated
+requests for a cache hit and confirms that every source remains below the
+account plan's maximum cacheable object size. R2 remains the origin of record,
+but routine Nix downloads should be served from Cloudflare's CDN after the first
+regional miss. Object integrity depends on the pinned hash rather than the CDN,
+transport, DNS, or account trust.
+
+Development builds accept an administrative wallpaper path so exact media can
+be tested without copying it into the repository. The packaged service selects
+one of the installed catalog identifiers and defaults to Tahoe Beach. The path
+override is a file path only, not a URI: network schemes, playlists, and
+GStreamer pipeline descriptions are not accepted.
+
+== Preview and configuration behavior
+
+Ordinary preview remains deterministic. It does not start the decoder and
+renders a fixed poster frame representing the packaged video, with the current
+generated background as a fallback when that poster is unavailable. Existing
+reference screenshots can therefore settle and remain reviewable.
+
+A separate animated-preview option enables real playback for local review. It
+does not unfreeze the fixture clock, contact AccountsService, greetd, or logind,
+or make simulated authentication and power actions real. The distinction must
+be visible in `--help` and documented next to `make dev`.
+
+The production default plays animation. An administrative reduced-motion or
+static setting shows the poster frame without initializing GStreamer. Decode
+failure automatically has the same visual result but is reported separately so
+operators can distinguish preference from failure.
+
+== Performance and resource boundaries
+
+Keeping the source at 4K preserves detail on native 4K displays but does not
+require rendering hidden pixels at all output sizes. GStreamer may scale decoded
+frames to the current cover target before CPU-to-GPU transfer. Genkan retains at
+most the displayed texture, one pending frame, decoder-owned working memory,
+and the static fallback; application code does not retain prior frames.
+
+Acceptance is based on measured behavior rather than an assumed hardware decode
+path. On the software Vulkan CI path and the available physical graphics hosts,
+playback must not starve keyboard input, delay PAM prompt transitions, grow
+memory over repeated loops, or terminate when seeking. Frame drops are
+preferable to queuing stale frames or delaying interaction.
+
+== Accessibility and contrast
+
+Motion remains behind all controls and does not encode state or instructions.
+The static setting provides equivalent information because the video is purely
+decorative. The global darkening treatment must satisfy the existing text,
+focus, boundary, dialog, and menu contrast targets across representative bright
+and dark frames from the selected video.
+
+The current generated-background contrast model is not sufficient evidence for
+photographic video. Tests will sample at least the brightest, darkest, and
+highest-local-contrast retained frames, including frames behind each major
+foreground region. Renderer-aware compositing checks remain the numeric source
+of truth; screenshots support visual review without replacing those checks.
+
+== Security and failure boundaries
+
+The wallpaper decoder runs before authentication and therefore processes only
+the pinned packaged asset by default. Media bytes, tags, paths, decoder output,
+and errors never enter greetd requests or logs containing PAM responses. The
+feature does not broaden session-command discovery, invoke a shell, read account
+icons, or transfer authentication ownership away from greetd.
+
+An invalid administrative path, unsupported codec, missing plugin, corrupt
+stream, unavailable hardware decoder, or failed loop seek is a presentation
+failure. Genkan records a bounded diagnostic, releases failed playback
+resources, and continues with the generated fallback. Decoder retries are
+bounded so a permanently invalid asset cannot create a busy loop.
+
+== Verification
+
+The implementation must provide evidence for:
+
+* metadata and cryptographic identity of all four packaged 4K sources;
+* deterministic static preview with no media decoder or service connections;
+* animated preview producing distinct valid frames while keeping fixture time
+  and simulated side effects fixed;
+* successful cover scaling at laptop, 1080p, 4K, ultrawide, and narrow output
+  dimensions;
+* continuous looping without a visible end-to-start jump or unbounded memory
+  growth for every catalog entry;
+* responsive keyboard, authentication, and modal interaction during software
+  decoding;
+* fallback behavior for missing media, missing plugins, decode failure, and
+  failed seek;
+* contrast over representative retained video frames and all existing control
+  states; and
+* packaged launch under nested Cage plus physical AMD/NVIDIA validation where
+  connected outputs are available.
+
+The existing real-greetd end-to-end test remains required because playback must
+not alter PAM failure recovery, successful authentication, or session startup.
+
+== Alternatives considered
+
+=== Keep the generated canvas
+
+This has no media dependencies and already degrades safely, but its flat color
+fields do not meet the desired animated-wallpaper appearance. It remains the
+runtime fallback rather than the primary presentation.
+
+=== Use a dynamic HEIC
+
+HEIC variants provide day, dusk, and night changes with much smaller assets,
+but they are still images rather than continuous animation and add a separate
+metadata interpretation and decoder path. They may be considered later as a
+static time-of-day mode.
+
+=== Downscale to 1080p
+
+This reduces decode and package cost but visibly sacrifices detail on a 4K
+output. The initial implementation retains original resolution and measures the
+actual cost before accepting that tradeoff.
+
+=== Recreate the appearance with a shader
+
+A procedural shader is compact and avoids media decoding, but it would create a
+different abstract animation instead of the selected photographic aerial. It
+does not satisfy the decision to use the available reference video.
+
+=== Delegate playback to the compositor
+
+Cage intentionally provides a narrow kiosk environment and does not own
+wallpaper policy. Adding another process complicates layering, startup,
+failure handling, and lifecycle ownership. Genkan owns its decorative layer and
+keeps compositor configuration independent.
+
+== Non-goals
+
+This RFD does not add audio, remote URLs, playlists, user-selectable wallpaper
+browsing, lock-screen behavior, per-account media, arbitrary GStreamer pipeline
+input, or desktop-session wallpaper configuration. It does not change greetd,
+PAM, AccountsService, session validation, or logind behavior.
