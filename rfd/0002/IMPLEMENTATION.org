@@ -7,31 +7,62 @@ The phases are ordered; complete each phase before beginning the next.
 
 * Phase 1: Asset and package
 
-- [ ] Acquire the original 4K Tahoe Default Beach and Sequoia Sunrise, Morning,
+- [X] Acquire the original 4K Tahoe Default Beach and Sequoia Sunrise, Morning,
   and Night MOV files; record each source URL, byte size, cryptographic hash,
   container, codec, dimensions, frame rate, duration, color metadata, and audio
   streams.
 - [X] Enable a dedicated Cloudflare R2 bucket and upload all four videos under
   immutable logical-name and content-hash object keys.
-- [ ] Record an asset manifest with source and R2 URLs, SHA-256 hashes, media
+- [X] Record an asset manifest with source and R2 URLs, SHA-256 hashes, media
   metadata, poster frames, and independently verified loop transition metadata.
 - [X] Attach ~assets.genkan.dwu.sh~ to the bucket and publish the catalog below
   ~/wallpapers/~ with content-hashed immutable object names.
 - [X] Serve every video object with its original media type and
   ~Cache-Control: public, max-age=31536000, immutable~.
-- [ ] Add a Cloudflare Cache Rule for the wallpaper path and verify repeated
+- [X] Add a Cloudflare Cache Rule for the wallpaper path and verify repeated
   full-object and byte-range requests are CDN cache hits with unchanged bytes,
   lengths, and range semantics.
 - [X] Enable Smart Tiered Cache for the ~dwu.sh~ zone.
-- [ ] Verify every source is below the account plan's maximum cacheable object
+- [X] Verify every source is below the account plan's maximum cacheable object
   size and record the result in the asset manifest.
-- [ ] Fetch every R2 object as a hash-pinned Nix fixed-output source.
-- [ ] Install all four videos under ~share/genkan/wallpapers~ without embedding
+- [X] Fetch every R2 object as a hash-pinned Nix fixed-output source.
+- [X] Install all four videos under ~share/genkan/wallpapers~ without embedding
   them in the executable or fetching them at runtime.
-- [ ] Add pinned GStreamer libraries and the exact decoder, converter, and sink
+- [X] Add pinned GStreamer libraries and the exact decoder, converter, and sink
   plugins to the Nix build and runtime closure.
-- [ ] Verify package construction on x86_64-linux and aarch64-linux and record
+- [X] Verify package construction on x86_64-linux and aarch64-linux and record
   the resulting package and closure-size changes.
+
+** Phase 1 verification record
+
+- The machine-readable [[file:../../assets/wallpapers/manifest.toml][asset manifest]] records all four source and
+  immutable R2 URLs, SHA-256 and Nix hashes, exact media and poster metadata,
+  the 536,870,912-byte plan limit, and per-video loop analysis. Decoded endpoint
+  comparison rejected direct seeking for every source. Visual transition checks
+  selected a 2 s held-frame crossfade for Tahoe Beach and Sequoia Night and a
+  1 s crossfade for Sequoia Sunrise and Morning.
+- On 2026-09-01, complete CDN responses matched the source SHA-256 hashes and
+  content lengths. Repeated complete requests returned ~200~ and ~HIT~;
+  repeated 1 MiB requests returned ~206~, ~HIT~, the requested
+  ~Content-Range~, and bytes matching the corresponding source ranges. The
+  largest source is 432,531,222 bytes, below the recorded plan limit.
+- The pinned development environment exposed and inspected ~qtdemux~,
+  ~h265parse~, ~avdec_h265~, ~videoconvert~, and ~appsink~. A bounded Tahoe
+  sample decoded through that complete software pipeline to RGBA without
+  relying on host plugins.
+- Native package, graphics-smoke, and preview-evidence builds passed on
+  [[https://github.com/darwin67/genkan/actions/runs/33550235307/job/99997588252][x86_64-linux]] and
+  [[https://github.com/darwin67/genkan/actions/runs/33550235307/job/99997588265][aarch64-linux]]. Local ~make verify~ and
+  ~nix flake check --no-build --all-systems~ also passed.
+
+| Measurement         | Before Phase 1 | After Phase 1 | Change         |
+|---------------------+----------------+---------------+----------------|
+| Package NAR bytes   |     20,067,344 |    20,082,920 |        +15,576 |
+| Runtime closure     |     88,867,656 | 2,172,935,200 | +2,084,067,544 |
+
+The videos and posters are symlinked fixed-output store paths, so their bytes
+increase the runtime closure rather than duplicating roughly 1.15 GB of video
+inside the package output.
 
 * Phase 2: Playback
 
