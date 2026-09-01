@@ -9,17 +9,18 @@ Implements [[file:README.adoc][RFD 2: Animated 4K greeter wallpaper]].
   and Night MOV files; record each source URL, byte size, cryptographic hash,
   container, codec, dimensions, frame rate, duration, color metadata, and audio
   streams.
-- [ ] Enable a dedicated Cloudflare R2 bucket and upload all four videos under
+- [X] Enable a dedicated Cloudflare R2 bucket and upload all four videos under
   immutable logical-name and content-hash object keys.
 - [ ] Record an asset manifest with source and R2 URLs, SHA-256 hashes, media
   metadata, poster frames, and independently verified loop transition metadata.
-- [ ] Attach ~assets.genkan.dwu.sh~ to the bucket and publish the catalog below
+- [X] Attach ~assets.genkan.dwu.sh~ to the bucket and publish the catalog below
   ~/wallpapers/~ with content-hashed immutable object names.
-- [ ] Serve every object with its original media type and
+- [X] Serve every video object with its original media type and
   ~Cache-Control: public, max-age=31536000, immutable~.
 - [ ] Add a Cloudflare Cache Rule for the wallpaper path and verify repeated
   full-object and byte-range requests are CDN cache hits with unchanged bytes,
   lengths, and range semantics.
+- [X] Enable Smart Tiered Cache for the ~dwu.sh~ zone.
 - [ ] Verify every source is below the account plan's maximum cacheable object
   size and record the result in the asset manifest.
 - [ ] Fetch every R2 object as a hash-pinned Nix fixed-output source.
