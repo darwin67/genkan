@@ -19,6 +19,10 @@ const OUTPUT_FRAMES_PER_SECOND: i32 = 30;
 const MAX_DIAGNOSTIC_CHARS: usize = 240;
 const LOOP_LEAD: Duration = Duration::from_millis(50);
 const LOOP_MESSAGE: &str = "genkan-wallpaper-loop";
+const AUTOMATIC_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+const SOFTWARE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+const SEEK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy)]
 struct PlaybackSpec {
@@ -135,8 +139,6 @@ impl State {
 }
 
 struct Player {
-    pipeline: gst::Pipeline,
-    bus: gst::Bus,
     shared: Arc<Shared>,
     signal: watch::Receiver<u64>,
     stopping: Arc<AtomicBool>,
@@ -159,170 +161,28 @@ impl Player {
             "GStreamer initialization failed; using generated background".to_owned()
         })?;
 
-        let pipeline = gst::Pipeline::new();
-        let source = element("filesrc")?;
-        source.set_property("location", path.to_string_lossy().as_ref());
-        let demux = element("qtdemux")?;
-        let parser = element("h265parse")?;
-        let decoder = element("decodebin")?;
-        let convert = element("videoconvert")?;
-        let rate = element("videorate")?;
-
-        let caps = gst::Caps::builder("video/x-raw")
-            .field("format", "RGBA")
-            .field("framerate", gst::Fraction::new(OUTPUT_FRAMES_PER_SECOND, 1))
-            .build();
-        let appsink = gst_app::AppSink::builder()
-            .caps(&caps)
-            .max_buffers(1)
-            .drop(true)
-            .enable_last_sample(false)
-            .sync(true)
-            .build();
-
-        pipeline
-            .add_many([
-                &source,
-                &demux,
-                &parser,
-                &decoder,
-                &convert,
-                &rate,
-                appsink.upcast_ref(),
-            ])
-            .map_err(|_| pipeline_error("could not assemble the decode pipeline"))?;
-        source
-            .link(&demux)
-            .map_err(|_| pipeline_error("could not link the wallpaper source"))?;
-        parser
-            .link(&decoder)
-            .map_err(|_| pipeline_error("could not link the wallpaper decoder"))?;
-        gst::Element::link_many([&rate, &convert, appsink.upcast_ref()])
-            .map_err(|_| pipeline_error("could not link the wallpaper decoder"))?;
-        let bus = pipeline
-            .bus()
-            .ok_or_else(|| pipeline_error("the decode pipeline has no event bus"))?;
-
         let (signal_sender, signal) = watch::channel(0);
         let shared = Arc::new(Shared::default());
-
-        let parser_sink = parser
-            .static_pad("sink")
-            .ok_or_else(|| pipeline_error("the HEVC parser has no input"))?;
-        let pad_shared = Arc::clone(&shared);
-        let pad_signal = signal_sender.clone();
-        demux.connect_pad_added(move |_demux, source_pad| {
-            if parser_sink.is_linked() {
-                return;
-            }
-            let caps = source_pad
-                .current_caps()
-                .unwrap_or_else(|| source_pad.query_caps(None));
-            let is_hevc = caps
-                .structure(0)
-                .is_some_and(|structure| structure.name() == "video/x-h265");
-            if is_hevc && source_pad.link(&parser_sink).is_err() {
-                fail_once(
-                    &pad_shared,
-                    &pad_signal,
-                    "wallpaper stream could not be linked; using generated background",
-                );
-            }
-        });
-
-        let rate_sink = rate
-            .static_pad("sink")
-            .ok_or_else(|| pipeline_error("the frame-rate converter has no input"))?;
-        let decode_shared = Arc::clone(&shared);
-        let decode_signal = signal_sender.clone();
-        decoder.connect_pad_added(move |_decoder, source_pad| {
-            if rate_sink.is_linked() {
-                return;
-            }
-            let caps = source_pad
-                .current_caps()
-                .unwrap_or_else(|| source_pad.query_caps(None));
-            let is_video = caps
-                .structure(0)
-                .is_some_and(|structure| structure.name().starts_with("video/x-raw"));
-            if is_video && source_pad.link(&rate_sink).is_err() {
-                fail_once(
-                    &decode_shared,
-                    &decode_signal,
-                    "wallpaper decoder output could not be linked; using generated background",
-                );
-            }
-        });
-
-        let sample_shared = Arc::clone(&shared);
-        let sample_signal = signal_sender.clone();
-        let sample_bus = bus.clone();
-        appsink.set_callbacks(
-            gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    if sample_shared.failed.load(Ordering::Acquire) {
-                        return Err(gst::FlowError::Flushing);
-                    }
-                    let result = sink
-                        .pull_sample()
-                        .map_err(|_| gst::FlowError::Eos)
-                        .and_then(|sample| decoded_frame(&sample))
-                        .map(
-                            |frame| match loop_frame_action(&sample_shared, &frame, duration) {
-                                LoopFrameAction::Publish => {
-                                    publish_frame(&sample_shared, &sample_signal, frame);
-                                }
-                                LoopFrameAction::Request => {
-                                    if publish_frame(&sample_shared, &sample_signal, frame) {
-                                        request_loop_before_eos(&sample_bus);
-                                    }
-                                }
-                                LoopFrameAction::Drop => {}
-                            },
-                        );
-                    if result.is_err() {
-                        fail_once(
-                            &sample_shared,
-                            &sample_signal,
-                            "wallpaper frame decoding failed; using generated background",
-                        );
-                    }
-                    result.map(|_| gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
-
-        if pipeline.set_state(gst::State::Playing).is_err() {
-            let _ = pipeline.set_state(gst::State::Null);
-            return Err(pipeline_error("the decode pipeline did not start"));
-        }
-
         let stopping = Arc::new(AtomicBool::new(false));
-        let worker_pipeline = pipeline.clone();
-        let worker_bus = bus.clone();
+        let worker_path = path.to_owned();
         let worker_shared = Arc::clone(&shared);
         let worker_signal = signal_sender;
         let worker_stopping = Arc::clone(&stopping);
         let worker = thread::Builder::new()
             .name("wallpaper-events".into())
             .spawn(move || {
-                run_bus(
-                    &worker_pipeline,
-                    &worker_bus,
+                run_playback(
+                    &worker_path,
+                    duration,
+                    crossfade,
                     &worker_shared,
                     &worker_signal,
                     &worker_stopping,
-                    crossfade,
                 )
             })
-            .map_err(|_| {
-                let _ = pipeline.set_state(gst::State::Null);
-                pipeline_error("could not start the wallpaper event worker")
-            })?;
+            .map_err(|_| pipeline_error("could not start the wallpaper event worker"))?;
 
         Ok(Self {
-            pipeline,
-            bus,
             shared,
             signal,
             stopping,
@@ -348,8 +208,6 @@ impl Player {
 impl Drop for Player {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Release);
-        let _ = self.pipeline.set_state(gst::State::Null);
-        self.bus.set_flushing(true);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -369,6 +227,8 @@ struct SharedState {
     pending: Option<Update>,
     last_frame: Option<Frame>,
     transition: Option<LoopTransition>,
+    last_frame_at: Option<Instant>,
+    awaiting_opening_since: Option<Instant>,
 }
 
 struct LoopTransition {
@@ -390,11 +250,187 @@ struct Frame {
     pts: Option<Duration>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecoderMode {
+    Automatic,
+    Software,
+}
+
+impl DecoderMode {
+    fn startup_timeout(self) -> Duration {
+        match self {
+            Self::Automatic => AUTOMATIC_STARTUP_TIMEOUT,
+            Self::Software => SOFTWARE_STARTUP_TIMEOUT,
+        }
+    }
+}
+
+struct PlaybackPipeline {
+    pipeline: gst::Pipeline,
+    bus: gst::Bus,
+    faulted: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackOutcome {
+    Stopped,
+    Failed(&'static str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stall {
+    Startup,
+    Frame,
+    Seek,
+}
+
 fn element(factory: &str) -> Result<gst::Element, String> {
     gst::ElementFactory::make(factory).build().map_err(|_| {
         pipeline_error(&format!(
             "required GStreamer element {factory} is unavailable"
         ))
+    })
+}
+
+fn build_pipeline(
+    path: &Path,
+    duration: Duration,
+    mode: DecoderMode,
+    shared: &Arc<Shared>,
+    signal: &watch::Sender<u64>,
+) -> Result<PlaybackPipeline, String> {
+    let pipeline = gst::Pipeline::new();
+    let source = element("filesrc")?;
+    source.set_property("location", path.to_string_lossy().as_ref());
+    let demux = element("qtdemux")?;
+    let parser = element("h265parse")?;
+    let decoder = element(match mode {
+        DecoderMode::Automatic => "decodebin",
+        DecoderMode::Software => "avdec_h265",
+    })?;
+    let convert = element("videoconvert")?;
+    let rate = element("videorate")?;
+    let caps = gst::Caps::builder("video/x-raw")
+        .field("format", "RGBA")
+        .field("framerate", gst::Fraction::new(OUTPUT_FRAMES_PER_SECOND, 1))
+        .build();
+    let appsink = gst_app::AppSink::builder()
+        .caps(&caps)
+        .max_buffers(1)
+        .drop(true)
+        .enable_last_sample(false)
+        .sync(true)
+        .build();
+
+    pipeline
+        .add_many([
+            &source,
+            &demux,
+            &parser,
+            &decoder,
+            &convert,
+            &rate,
+            appsink.upcast_ref(),
+        ])
+        .map_err(|_| pipeline_error("could not assemble the decode pipeline"))?;
+    source
+        .link(&demux)
+        .map_err(|_| pipeline_error("could not link the wallpaper source"))?;
+    parser
+        .link(&decoder)
+        .map_err(|_| pipeline_error("could not link the wallpaper decoder"))?;
+    gst::Element::link_many([&rate, &convert, appsink.upcast_ref()])
+        .map_err(|_| pipeline_error("could not link the wallpaper decoder"))?;
+    let bus = pipeline
+        .bus()
+        .ok_or_else(|| pipeline_error("the decode pipeline has no event bus"))?;
+    let faulted = Arc::new(AtomicBool::new(false));
+
+    let parser_sink = parser
+        .static_pad("sink")
+        .ok_or_else(|| pipeline_error("the HEVC parser has no input"))?;
+    let demux_faulted = Arc::clone(&faulted);
+    demux.connect_pad_added(move |_demux, source_pad| {
+        if parser_sink.is_linked() {
+            return;
+        }
+        let caps = source_pad
+            .current_caps()
+            .unwrap_or_else(|| source_pad.query_caps(None));
+        let is_hevc = caps
+            .structure(0)
+            .is_some_and(|structure| structure.name() == "video/x-h265");
+        if is_hevc && source_pad.link(&parser_sink).is_err() {
+            demux_faulted.store(true, Ordering::Release);
+        }
+    });
+
+    let rate_sink = rate
+        .static_pad("sink")
+        .ok_or_else(|| pipeline_error("the frame-rate converter has no input"))?;
+    if mode == DecoderMode::Automatic {
+        let decode_faulted = Arc::clone(&faulted);
+        decoder.connect_pad_added(move |_decoder, source_pad| {
+            if rate_sink.is_linked() {
+                return;
+            }
+            let caps = source_pad
+                .current_caps()
+                .unwrap_or_else(|| source_pad.query_caps(None));
+            let is_video = caps
+                .structure(0)
+                .is_some_and(|structure| structure.name().starts_with("video/x-raw"));
+            if is_video && source_pad.link(&rate_sink).is_err() {
+                decode_faulted.store(true, Ordering::Release);
+            }
+        });
+    } else {
+        decoder
+            .link(&rate)
+            .map_err(|_| pipeline_error("could not link the software decoder"))?;
+    }
+
+    let sample_shared = Arc::clone(shared);
+    let sample_signal = signal.clone();
+    let sample_bus = bus.clone();
+    let sample_faulted = Arc::clone(&faulted);
+    appsink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                if sample_shared.failed.load(Ordering::Acquire) {
+                    return Err(gst::FlowError::Flushing);
+                }
+                let result = sink
+                    .pull_sample()
+                    .map_err(|_| gst::FlowError::Eos)
+                    .and_then(|sample| decoded_frame(&sample))
+                    .map(
+                        |frame| match loop_frame_action(&sample_shared, &frame, duration) {
+                            LoopFrameAction::Publish => {
+                                publish_frame(&sample_shared, &sample_signal, frame);
+                            }
+                            LoopFrameAction::Request => {
+                                if publish_frame(&sample_shared, &sample_signal, frame)
+                                    && !request_loop_before_eos(&sample_bus)
+                                {
+                                    sample_faulted.store(true, Ordering::Release);
+                                }
+                            }
+                            LoopFrameAction::Drop => {}
+                        },
+                    );
+                if result.is_err() {
+                    sample_faulted.store(true, Ordering::Release);
+                }
+                result.map(|_| gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+
+    Ok(PlaybackPipeline {
+        pipeline,
+        bus,
+        faulted,
     })
 }
 
@@ -464,6 +500,8 @@ fn publish_frame(shared: &Shared, signal: &watch::Sender<u64>, frame: Frame) -> 
         state.transition = transition;
     }
     state.last_frame = Some(frame.clone());
+    state.last_frame_at = Some(Instant::now());
+    state.awaiting_opening_since = None;
     state.pending = Some(Update::Frame(frame));
     drop(state);
     notify(shared, signal);
@@ -493,9 +531,9 @@ fn loop_frame_action(shared: &Shared, frame: &Frame, duration: Duration) -> Loop
     }
 }
 
-fn request_loop_before_eos(bus: &gst::Bus) {
+fn request_loop_before_eos(bus: &gst::Bus) -> bool {
     let message = gst::message::Application::new(gst::Structure::new_empty(LOOP_MESSAGE));
-    let _ = bus.post(message);
+    bus.post(message).is_ok()
 }
 
 fn transition_progress(transition: &LoopTransition, pts: Option<Duration>) -> u16 {
@@ -526,28 +564,118 @@ fn blend(held: &Frame, opening: Frame, opening_weight: u16) -> Frame {
 }
 
 fn begin_loop(shared: &Shared, crossfade: Duration) {
+    begin_loop_at(shared, crossfade, Instant::now());
+}
+
+fn begin_loop_at(shared: &Shared, crossfade: Duration, now: Instant) {
     let mut state = lock(&shared.state);
     state.transition = state.last_frame.clone().map(|held| LoopTransition {
         held,
-        started_at: Instant::now(),
+        started_at: now,
         duration: crossfade,
     });
+    state.awaiting_opening_since = Some(now);
 }
 
-fn run_bus(
-    pipeline: &gst::Pipeline,
-    bus: &gst::Bus,
-    shared: &Shared,
+fn run_playback(
+    path: &Path,
+    duration: Duration,
+    crossfade: Duration,
+    shared: &Arc<Shared>,
     signal: &watch::Sender<u64>,
     stopping: &AtomicBool,
-    crossfade: Duration,
 ) {
-    while !stopping.load(Ordering::Acquire) {
-        if shared.failed.load(Ordering::Acquire) {
-            let _ = pipeline.set_state(gst::State::Null);
+    let mut mode = DecoderMode::Automatic;
+    loop {
+        if stopping.load(Ordering::Acquire) {
             return;
         }
-        let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) else {
+        shared.loop_requested.store(false, Ordering::Release);
+        let outcome = run_attempt(path, duration, crossfade, mode, shared, signal, stopping);
+        if outcome == PlaybackOutcome::Stopped || stopping.load(Ordering::Acquire) {
+            return;
+        }
+        if should_retry_with_software(mode, lock(&shared.state).last_frame.is_some()) {
+            mode = DecoderMode::Software;
+            continue;
+        }
+        let PlaybackOutcome::Failed(message) = outcome else {
+            unreachable!("stopped playback returned above");
+        };
+        fail_once(shared, signal, message);
+        return;
+    }
+}
+
+fn should_retry_with_software(mode: DecoderMode, has_frame: bool) -> bool {
+    mode == DecoderMode::Automatic && !has_frame
+}
+
+fn run_attempt(
+    path: &Path,
+    duration: Duration,
+    crossfade: Duration,
+    mode: DecoderMode,
+    shared: &Arc<Shared>,
+    signal: &watch::Sender<u64>,
+    stopping: &AtomicBool,
+) -> PlaybackOutcome {
+    let playback = match build_pipeline(path, duration, mode, shared, signal) {
+        Ok(playback) => playback,
+        Err(_) => {
+            return PlaybackOutcome::Failed(
+                "wallpaper decode pipeline could not be built; using generated background",
+            );
+        }
+    };
+    if playback.pipeline.set_state(gst::State::Playing).is_err() {
+        let _ = playback.pipeline.set_state(gst::State::Null);
+        return PlaybackOutcome::Failed(
+            "wallpaper decode pipeline did not start; using generated background",
+        );
+    }
+    let started_at = Instant::now();
+    let outcome = monitor_pipeline(&playback, mode, started_at, crossfade, shared, stopping);
+    let _ = playback.pipeline.set_state(gst::State::Null);
+    outcome
+}
+
+fn monitor_pipeline(
+    playback: &PlaybackPipeline,
+    mode: DecoderMode,
+    started_at: Instant,
+    crossfade: Duration,
+    shared: &Shared,
+    stopping: &AtomicBool,
+) -> PlaybackOutcome {
+    while !stopping.load(Ordering::Acquire) {
+        if shared.failed.load(Ordering::Acquire) {
+            return PlaybackOutcome::Stopped;
+        }
+        if playback.faulted.load(Ordering::Acquire) {
+            return PlaybackOutcome::Failed(
+                "wallpaper frame decoding failed; using generated background",
+            );
+        }
+        if let Some(stall) = playback_stall(
+            &lock(&shared.state),
+            started_at,
+            mode.startup_timeout(),
+            Instant::now(),
+        ) {
+            return PlaybackOutcome::Failed(match stall {
+                Stall::Startup => {
+                    "wallpaper did not produce its first frame in time; using generated background"
+                }
+                Stall::Frame => {
+                    "wallpaper playback stopped producing frames; using generated background"
+                }
+                Stall::Seek => {
+                    "wallpaper loop did not resume after seeking; using generated background"
+                }
+            });
+        }
+        let Some(message) = playback.bus.timed_pop(gst::ClockTime::from_mseconds(100)) else {
             continue;
         };
         match message.view() {
@@ -558,47 +686,68 @@ fn run_bus(
             {
                 begin_loop(shared, crossfade);
                 let loop_result = (|| {
-                    pipeline.set_state(gst::State::Paused).map_err(|_| ())?;
-                    pipeline
+                    playback
+                        .pipeline
+                        .set_state(gst::State::Paused)
+                        .map_err(|_| ())?;
+                    playback
+                        .pipeline
                         .seek_simple(
                             gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
                             gst::ClockTime::ZERO,
                         )
                         .map_err(|_| ())?;
-                    pipeline.set_state(gst::State::Playing).map_err(|_| ())?;
+                    playback
+                        .pipeline
+                        .set_state(gst::State::Playing)
+                        .map_err(|_| ())?;
                     Ok::<(), ()>(())
                 })();
                 if loop_result.is_err() {
-                    fail_once(
-                        shared,
-                        signal,
+                    return PlaybackOutcome::Failed(
                         "wallpaper loop seek failed; using generated background",
                     );
-                    let _ = pipeline.set_state(gst::State::Null);
-                    return;
                 }
             }
             gst::MessageView::Eos(..) => {
-                fail_once(
-                    shared,
-                    signal,
+                return PlaybackOutcome::Failed(
                     "wallpaper reached its end before looping; using generated background",
                 );
-                let _ = pipeline.set_state(gst::State::Null);
-                return;
             }
             gst::MessageView::Error(_) => {
-                fail_once(
-                    shared,
-                    signal,
+                return PlaybackOutcome::Failed(
                     "wallpaper stream failed; using generated background",
                 );
-                let _ = pipeline.set_state(gst::State::Null);
-                return;
             }
             _ => {}
         }
     }
+    PlaybackOutcome::Stopped
+}
+
+fn playback_stall(
+    state: &SharedState,
+    started_at: Instant,
+    startup_timeout: Duration,
+    now: Instant,
+) -> Option<Stall> {
+    if state
+        .awaiting_opening_since
+        .is_some_and(|started| now.saturating_duration_since(started) >= SEEK_STALL_TIMEOUT)
+    {
+        return Some(Stall::Seek);
+    }
+    if state
+        .last_frame_at
+        .is_some_and(|frame| now.saturating_duration_since(frame) >= FRAME_STALL_TIMEOUT)
+    {
+        return Some(Stall::Frame);
+    }
+    if state.last_frame_at.is_none() && now.saturating_duration_since(started_at) >= startup_timeout
+    {
+        return Some(Stall::Startup);
+    }
+    None
 }
 
 fn fail_once(shared: &Shared, signal: &watch::Sender<u64>, message: &str) {
@@ -610,6 +759,8 @@ fn fail_once(shared: &Shared, signal: &watch::Sender<u64>, message: &str) {
     state.pending = Some(Update::Failed);
     state.last_frame = None;
     state.transition = None;
+    state.last_frame_at = None;
+    state.awaiting_opening_since = None;
     drop(state);
     notify(shared, signal);
 }
@@ -794,16 +945,11 @@ mod tests {
 
     #[test]
     fn receiving_failure_disposes_the_player() {
-        gst::init().unwrap();
-        let pipeline = gst::Pipeline::new();
-        let bus = pipeline.bus().unwrap();
         let shared = Arc::new(Shared::default());
         lock(&shared.state).pending = Some(Update::Failed);
         let (_, signal) = watch::channel(0);
         let mut state = State {
             player: Some(Player {
-                pipeline,
-                bus,
                 shared,
                 signal,
                 stopping: Arc::new(AtomicBool::new(false)),
@@ -815,6 +961,38 @@ mod tests {
         state.receive_latest();
 
         assert!(state.is_disabled());
+    }
+
+    #[test]
+    fn playback_deadlines_cover_startup_frames_and_loop_seek() {
+        let now = Instant::now();
+        let startup = now - AUTOMATIC_STARTUP_TIMEOUT;
+        let mut state = SharedState::default();
+
+        assert_eq!(
+            playback_stall(&state, startup, AUTOMATIC_STARTUP_TIMEOUT, now),
+            Some(Stall::Startup)
+        );
+
+        state.last_frame_at = Some(now - FRAME_STALL_TIMEOUT);
+        assert_eq!(
+            playback_stall(&state, startup, AUTOMATIC_STARTUP_TIMEOUT, now),
+            Some(Stall::Frame)
+        );
+
+        state.awaiting_opening_since = Some(now - SEEK_STALL_TIMEOUT);
+        assert_eq!(
+            playback_stall(&state, startup, AUTOMATIC_STARTUP_TIMEOUT, now),
+            Some(Stall::Seek)
+        );
+    }
+
+    #[test]
+    fn software_retry_only_precedes_the_first_frame() {
+        assert!(should_retry_with_software(DecoderMode::Automatic, false));
+        assert!(!should_retry_with_software(DecoderMode::Automatic, true));
+        assert!(!should_retry_with_software(DecoderMode::Software, false));
+        assert!(!should_retry_with_software(DecoderMode::Software, true));
     }
 
     #[test]
