@@ -88,8 +88,10 @@ inside the package output.
 
 - The application constructs ~filesrc~, ~qtdemux~, ~h265parse~, ~decodebin~,
   ~videorate~, ~videoconvert~, and ~appsink~ through the GStreamer Rust API.
-  ~decodebin~ prefers an available packaged hardware decoder and retains
-  ~avdec_h265~ as the software fallback. Audio pads are never linked.
+  ~decodebin~ prefers an available packaged hardware decoder. If that pipeline
+  fails or times out before its first frame, the worker rebuilds it exactly once
+  with explicit ~avdec_h265~ software decode; it does not retry after playback
+  begins. Audio pads are never linked.
 - ~appsink~ is synchronized to media time, limited to one dropping buffer, and
   outputs RGBA at 30 frames per second. Its callback replaces one shared latest
   frame; a Tokio watch signal carries only a sequence change to iced. The UI
@@ -101,14 +103,22 @@ inside the package output.
   decoders do not enter a terminal EOS state. A local accelerated smoke forced
   two complete seek-and-crossfade cycles for each of the four packaged videos;
   all eight cycles resumed opening frames without a stream or seek failure.
+- Once a loop is requested, subsequent terminal frames are discarded until an
+  opening timestamp arrives, so a late pre-seek frame cannot end the crossfade.
+  The held-frame blend runs outside the shared-state lock. First-frame decode is
+  bounded to 10 s for automatic decode and 60 s for the single software attempt;
+  playback and post-seek frame gaps are bounded to 10 s. Each timeout stops the
+  pipeline and restores the generated background.
 - iced renders each frame with centered ~ContentFit::Cover~. Geometry tests
   verify coverage and preserved 16:9 aspect ratio at 1366x768, 1920x1080,
   3840x2160, 3440x1440, and 800x1280.
 - Before the first frame and after any pipeline failure, the view selects the
   existing generated background. Diagnostics replace control characters, stop
-  at 240 characters, and are emitted once per failed player; automatic retry is
-  intentionally zero, so invalid media cannot create a busy loop.
-- On 2026-09-01, all 123 Rust tests and Clippy passed. The Nix package built,
+  at 240 characters, and are emitted once per failed player. The one permitted
+  software retry occurs only before the first frame, so invalid media cannot
+  create a busy loop. A terminal failure cannot be overwritten by an in-flight
+  frame, and the failed player is disposed after iced receives that update.
+- On 2026-09-02, all 128 Rust tests and Clippy passed. The Nix package built,
   deterministic preview evidence remained decoder-free, and the production
   graphics smoke launched the packaged MOV pipeline under nested Cage, headless
   Weston, and software Vulkan. That smoke also exposed and then verified the
