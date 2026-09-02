@@ -1,8 +1,12 @@
+use iced::mouse;
+use iced::widget::canvas::{self, Canvas, Frame, Geometry, LineCap, LineJoin, Path, Stroke};
 use iced::widget::text::Wrapping;
 use iced::widget::{
     button, column, container, responsive, row, scrollable, stack, text, text_input, Space,
 };
-use iced::{padding, Alignment, Element, Fill, Length, Size};
+use iced::{
+    padding, Alignment, Color, Element, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
+};
 
 use crate::accounts::Account;
 use crate::power::Action as PowerAction;
@@ -22,6 +26,41 @@ const AUTH_ACTION_SIZE: f32 = 34.0;
 const AUTH_ACTION_INSET: f32 = 7.0;
 const WIDE_MIN_WIDTH: f32 = 1280.0;
 const WIDE_MIN_HEIGHT: f32 = 700.0;
+
+#[derive(Debug, Clone, Copy)]
+struct SubmitArrow;
+
+impl<Message> canvas::Program<Message> for SubmitArrow {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+        let path = Path::new(|path| {
+            path.move_to(Point::new(center.x - 5.0, center.y));
+            path.line_to(Point::new(center.x + 6.0, center.y));
+            path.move_to(Point::new(center.x + 2.0, center.y - 4.0));
+            path.line_to(Point::new(center.x + 6.0, center.y));
+            path.line_to(Point::new(center.x + 2.0, center.y + 4.0));
+        });
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_color(Color::WHITE)
+                .with_width(2.25)
+                .with_line_cap(LineCap::Round)
+                .with_line_join(LineJoin::Round),
+        );
+        vec![frame.into_geometry()]
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AccountSelectorState {
@@ -348,19 +387,23 @@ impl App {
         let controls: Element<'_, Message> =
             match authentication_controls(self.phase, self.selected_session.is_some()) {
                 AuthenticationControls::Prompt => {
-                    let submit = button(text("→").size(20))
-                        .on_press_maybe(interactive.then_some(Message::Submit))
-                        .width(Length::Fixed(AUTH_ACTION_SIZE))
-                        .height(Length::Fixed(AUTH_ACTION_SIZE))
-                        .style(|theme, status| {
-                            let mut style = theme::secondary_button(
-                                theme,
-                                status,
-                                self.is_focused(FocusTarget::Submit),
-                            );
-                            style.border.radius = (AUTH_ACTION_SIZE / 2.0).into();
-                            style
-                        });
+                    let submit = button(
+                        Canvas::new(SubmitArrow)
+                            .width(Length::Fixed(18.0))
+                            .height(Length::Fixed(18.0)),
+                    )
+                    .on_press_maybe(interactive.then_some(Message::Submit))
+                    .width(Length::Fixed(AUTH_ACTION_SIZE))
+                    .height(Length::Fixed(AUTH_ACTION_SIZE))
+                    .style(|theme, status| {
+                        let mut style = theme::secondary_button(
+                            theme,
+                            status,
+                            self.is_focused(FocusTarget::Submit),
+                        );
+                        style.border.radius = (AUTH_ACTION_SIZE / 2.0).into();
+                        style
+                    });
                     let input = container(stack![
                         text_input("", &self.input)
                             .id(self.input_id.clone())
