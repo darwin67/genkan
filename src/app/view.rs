@@ -18,7 +18,7 @@ use super::{App, Message, PowerState};
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
 const ACCOUNT_GRID_GAP: f32 = 18.0;
 const MAX_ACCOUNT_COLUMNS: usize = 4;
-const AUTH_ACTION_WIDTH: f32 = 82.0;
+const AUTH_ACTION_SIZE: f32 = 48.0;
 const WIDE_MIN_WIDTH: f32 = 1280.0;
 const WIDE_MIN_HEIGHT: f32 = 700.0;
 
@@ -370,18 +370,20 @@ impl App {
                             .align_x(Alignment::Center)
                             .wrapping(Wrapping::WordOrGlyph),
                         row![
-                            Space::new(Length::Fixed(AUTH_ACTION_WIDTH), Length::Shrink),
+                            Space::new(Length::Fixed(AUTH_ACTION_SIZE), Length::Shrink),
                             input,
-                            button(text("Log In").size(16))
+                            button(text("→").size(22))
                                 .on_press_maybe(interactive.then_some(Message::Submit))
-                                .padding([12, 12])
-                                .width(Length::Fixed(AUTH_ACTION_WIDTH))
+                                .width(Length::Fixed(AUTH_ACTION_SIZE))
+                                .height(Length::Fixed(AUTH_ACTION_SIZE))
                                 .style(|theme, status| {
-                                    theme::primary_button(
+                                    let mut style = theme::primary_button(
                                         theme,
                                         status,
                                         self.is_focused(FocusTarget::Submit),
-                                    )
+                                    );
+                                    style.border.radius = (AUTH_ACTION_SIZE / 2.0).into();
+                                    style
                                 }),
                         ]
                         .spacing(8)
