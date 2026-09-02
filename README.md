@@ -16,8 +16,10 @@ The default preview uses a fixed synthetic account, time, animation frame, and
 Wayland session. It accepts password input without sending it anywhere.
 Authentication submission and all power actions are simulated, so testing the
 UI cannot suspend, restart, or shut down the development machine. Preview does
-not contact AccountsService, greetd, or logind. Pass an explicit `--username`
-to `cargo run` only when a particular preview identity is useful.
+not contact AccountsService, greetd, or logind. It renders the selected fixed
+wallpaper poster without starting GStreamer, so screenshots remain stable.
+Pass an explicit `--username` to `cargo run` only when a particular preview
+identity is useful.
 
 Select deterministic fixtures with `PREVIEW`, for example:
 
@@ -31,6 +33,30 @@ PREVIEW=power-confirmation make dev
 Run `cargo run --bin genkan -- --help` to list every fixture. To exercise real
 AccountsService, greetd, and logind behavior, run the binary directly without
 `--preview` in the intended greeter environment.
+
+The packaged greeter animates Tahoe Beach by default. Select another packaged
+asset with `--wallpaper sequoia-sunrise`, `sequoia-morning`, or
+`sequoia-night`. `--reduce-motion` (also available as `--static-wallpaper`)
+shows that entry's poster without initializing GStreamer. If video playback
+fails, Genkan reports the failure and returns to the poster; if the poster is
+also unavailable, it retains the generated background.
+
+Real animation can be enabled without making preview authentication or power
+actions real. A source-tree development run needs an absolute local copy of the
+matching catalog MOV because the packaged videos are not stored in Git:
+
+```sh
+cargo run --bin genkan -- \
+  --windowed --preview selected --animated-preview \
+  --wallpaper sequoia-night \
+  --wallpaper-file /absolute/path/to/sequoia-night.mov
+```
+
+`--wallpaper-file` accepts only an existing absolute `.mov` file. It replaces
+the selected catalog entry's video while retaining that entry's verified
+duration and crossfade metadata, so the file must be a local copy of the same
+catalog asset. URIs, playlists, and GStreamer pipeline descriptions are not
+accepted. Runtime playback never downloads media or invokes a shell.
 
 The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `smoke`,
 `e2e`, `build`, `package`, `verify`, `changelog`, `next-version`, and `clean`
