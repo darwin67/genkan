@@ -80,14 +80,18 @@ inside the package output.
 - [X] Loop with a bounded end-of-stream seek and verify repeated loops do not
   visibly jump, leak memory, grow queues, or stall interaction.
 - [X] Preserve the current generated background until the first frame and after
-  initialization, decode, stream, or seek failure.
+  initialization, decode, stream, or seek failure. This records the Phase 2
+  behavior; Phase 3 supersedes it with poster-first and poster-restoration
+  behavior when the selected poster is available.
 - [X] Bound diagnostics and retries for missing, corrupt, or unsupported media
   without exiting the greeter.
 
 ** Phase 2 verification record
 
-- The application constructs ~filesrc~, ~qtdemux~, ~h265parse~, ~decodebin~,
-  ~videorate~, ~videoconvert~, and ~appsink~ through the GStreamer Rust API.
+- At Phase 2 completion the application constructed ~filesrc~, ~qtdemux~,
+  ~h265parse~, ~decodebin~, ~videorate~, ~videoconvert~, and ~appsink~ through
+  the GStreamer Rust API. Phase 3 replaces ~filesrc~ with descriptor-backed
+  ~fdsrc~ for stable administrative overrides.
   ~decodebin~ prefers an available packaged hardware decoder. If that pipeline
   fails or times out before its first frame, the worker rebuilds it exactly once
   with explicit ~avdec_h265~ software decode; it does not retry after playback
@@ -107,17 +111,20 @@ inside the package output.
   opening timestamp arrives, so a late pre-seek frame cannot end the crossfade.
   The held-frame blend runs outside the shared-state lock. First-frame decode is
   bounded to 10 s for automatic decode and 60 s for the single software attempt;
-  playback and post-seek frame gaps are bounded to 10 s. Each timeout stops the
-  pipeline and restores the generated background.
+  playback and post-seek frame gaps are bounded to 10 s. In Phase 2 each timeout
+  stopped the pipeline and restored the generated background; Phase 3 restores
+  the selected poster first.
 - iced renders each frame with centered ~ContentFit::Cover~. Geometry tests
   verify coverage and preserved 16:9 aspect ratio at 1366x768, 1920x1080,
   3840x2160, 3440x1440, and 800x1280.
-- Before the first frame and after any pipeline failure, the view selects the
-  existing generated background. Diagnostics replace control characters, stop
-  at 240 characters, and are emitted once per failed player. The one permitted
-  software retry occurs only before the first frame, so invalid media cannot
-  create a busy loop. A terminal failure cannot be overwritten by an in-flight
-  frame, and the failed player is disposed after iced receives that update.
+- At Phase 2 completion, before the first frame and after any pipeline failure,
+  the view selected the existing generated background. Phase 3 supersedes that
+  presentation with the selected poster when available. Diagnostics replace
+  control characters, stop at 240 characters, and are emitted once per failed
+  player. The one permitted software retry occurs only before the first frame,
+  so invalid media cannot create a busy loop. A terminal failure cannot be
+  overwritten by an in-flight frame, and the failed player is disposed after
+  iced receives that update.
 - On 2026-09-02, all 128 Rust tests and Clippy passed. The Nix package built,
   deterministic preview evidence remained decoder-free, and the production
   graphics smoke launched the packaged MOV pipeline under nested Cage, headless
@@ -147,9 +154,11 @@ inside the package output.
   ~sequoia-morning~, and ~sequoia-night~ and defaults to Tahoe Beach. Each
   selector maps to its packaged MOV, verified poster, duration, and crossfade.
 - ~--wallpaper-file~ requires an existing absolute ~.mov~ path. The path is
-  passed only to ~filesrc~ and cannot select a URI, playlist, shell command, or
-  GStreamer pipeline. It replaces the selected catalog MOV while retaining
-  that catalog entry's verified loop metadata.
+  opened once and validated through the resulting descriptor as a regular file.
+  The same descriptor is passed only to ~fdsrc~, so pathname replacement cannot
+  substitute another file and the value cannot select a URI, playlist, shell
+  command, or GStreamer pipeline. It replaces the selected catalog MOV while
+  retaining that catalog entry's verified loop metadata.
 - Production animates by default. ~--reduce-motion~ and its
   ~--static-wallpaper~ alias synchronously decode only the selected JPEG poster
   and never initialize GStreamer. Ordinary preview uses the same static path;
@@ -162,10 +171,11 @@ inside the package output.
   now places one uniform 20% black layer above either poster/video or generated
   fallback and below all greeter content, preserving the previous generated
   appearance while applying the same treatment to photographic media.
-- On 2026-09-02, all 132 Rust tests and Clippy passed. The Nix package,
-  production graphics smoke, and 19 deterministic preview captures passed; six
-  durable RFD 1 reference images were regenerated with the Tahoe Beach poster
-  and inspected for correct layering and rendering.
+- On 2026-09-02, all 135 Rust tests and Clippy passed. A direct playback smoke
+  decoded and sought every MOV through ~fdsrc~. The Nix package, production
+  graphics smoke, and 19 deterministic preview captures passed; six durable
+  RFD 1 reference images were regenerated with the Tahoe Beach poster and
+  inspected for correct layering and rendering.
 
 * Phase 4: Accessibility and verification
 
