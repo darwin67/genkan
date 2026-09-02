@@ -877,14 +877,17 @@ mod tests {
 
     #[test]
     fn empty_response_uses_disabled_submit_appearance() {
-        assert_eq!(
-            submit_visual_status(button::Status::Hovered, false),
-            button::Status::Disabled
-        );
-        assert_eq!(
-            submit_visual_status(button::Status::Hovered, true),
-            button::Status::Hovered
-        );
+        for status in [
+            button::Status::Active,
+            button::Status::Hovered,
+            button::Status::Pressed,
+        ] {
+            assert_eq!(
+                submit_visual_status(status, false),
+                button::Status::Disabled
+            );
+            assert_eq!(submit_visual_status(status, true), status);
+        }
     }
 
     #[test]

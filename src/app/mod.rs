@@ -846,6 +846,39 @@ mod tests {
     }
 
     #[test]
+    fn preview_accepts_empty_response_without_sending_credentials() {
+        let mut app = app();
+        app.preview = true;
+        app.input.clear();
+
+        let _ = app.update(Message::Submit);
+
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert!(app.input.is_empty());
+        assert_eq!(
+            app.preview_message.as_deref(),
+            Some("Preview mode: credentials were not sent")
+        );
+    }
+
+    #[test]
+    fn keyboard_activation_accepts_empty_response() {
+        let mut app = app();
+        app.preview = true;
+        app.input.clear();
+        app.focus_target = Some(FocusTarget::Submit);
+
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert!(app.input.is_empty());
+        assert_eq!(
+            app.preview_message.as_deref(),
+            Some("Preview mode: credentials were not sent")
+        );
+    }
+
+    #[test]
     fn preview_never_dispatches_power_actions() {
         for action in [
             PowerAction::Suspend,
