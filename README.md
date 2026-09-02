@@ -42,14 +42,13 @@ fails, Genkan reports the failure and returns to the poster; if the poster is
 also unavailable, it retains the generated background.
 
 Real animation can be enabled without making preview authentication or power
-actions real. A source-tree development run needs an absolute local copy of the
-matching catalog MOV because the packaged videos are not stored in Git:
+actions real. The Nix development shell exposes the pinned videos through
+`GENKAN_WALLPAPER_DIR`, so the animated development target selects the matching
+catalog MOV without a machine-specific Nix store path:
 
 ```sh
-cargo run --bin genkan -- \
-  --windowed --preview selected --animated-preview \
-  --wallpaper sequoia-night \
-  --wallpaper-file /absolute/path/to/sequoia-night.mov
+make animated-dev
+WALLPAPER=sequoia-night make animated-dev
 ```
 
 `--wallpaper-file` accepts only an existing absolute `.mov` file. It replaces
