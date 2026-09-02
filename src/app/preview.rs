@@ -305,6 +305,33 @@ mod tests {
     }
 
     #[test]
+    fn animated_preview_starts_wallpaper_without_enabling_services() {
+        let path = std::env::temp_dir().join(format!(
+            "genkan-animated-preview-{}.mov",
+            std::process::id()
+        ));
+        std::fs::write(&path, []).unwrap();
+        let (app, _) = build(
+            Fixture::Selected,
+            None,
+            None,
+            wallpaper::Settings {
+                catalog: wallpaper::Catalog::TahoeBeach,
+                override_path: Some(path.clone()),
+                animate: true,
+            },
+        );
+
+        assert!(app.preview);
+        assert!(app.client.is_none());
+        assert!(!app.wallpaper.decoder_is_stopped());
+        assert_eq!(app.now, preview_now());
+
+        drop(app);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn preview_ticks_do_not_change_time_or_animation() {
         let (mut app, _) = build_fixture(Fixture::Selected);
         let now = app.now;

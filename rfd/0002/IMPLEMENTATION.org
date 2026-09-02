@@ -162,7 +162,7 @@ inside the package output.
   now places one uniform 20% black layer above either poster/video or generated
   fallback and below all greeter content, preserving the previous generated
   appearance while applying the same treatment to photographic media.
-- On 2026-09-02, all 131 Rust tests and Clippy passed. The Nix package,
+- On 2026-09-02, all 132 Rust tests and Clippy passed. The Nix package,
   production graphics smoke, and 19 deterministic preview captures passed; six
   durable RFD 1 reference images were regenerated with the Tahoe Beach poster
   and inspected for correct layering and rendering.
