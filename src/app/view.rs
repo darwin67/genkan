@@ -63,7 +63,7 @@ impl App {
             .view()
             .unwrap_or_else(|| background::Background::new(self.background_elapsed()).view());
         let content = responsive(move |size| self.content(size));
-        stack![background, content].into()
+        stack![background, background::dimming(), content].into()
     }
 
     fn content(&self, size: Size) -> Element<'_, Message> {
