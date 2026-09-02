@@ -385,7 +385,8 @@ impl App {
                                 }),
                         ]
                         .spacing(8)
-                        .width(Fill),
+                        .width(Fill)
+                        .align_y(Alignment::Center),
                     ]
                     .spacing(8)
                     .into()
