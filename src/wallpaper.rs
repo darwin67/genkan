@@ -1,3 +1,6 @@
+use std::fs::File;
+use std::io::{Seek, SeekFrom};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -204,18 +207,13 @@ impl std::fmt::Debug for Player {
 
 impl Player {
     fn start(path: &Path, duration: Duration, crossfade: Duration) -> Result<Self, String> {
-        if !path.is_file() {
-            return Err("packaged wallpaper is unavailable; using generated background".into());
-        }
+        let file = open_wallpaper(path)?;
 
-        gst::init().map_err(|_| {
-            "GStreamer initialization failed; using generated background".to_owned()
-        })?;
+        gst::init().map_err(|_| pipeline_error("GStreamer initialization failed"))?;
 
         let (signal_sender, signal) = watch::channel(0);
         let shared = Arc::new(Shared::default());
         let stopping = Arc::new(AtomicBool::new(false));
-        let worker_path = path.to_owned();
         let worker_shared = Arc::clone(&shared);
         let worker_signal = signal_sender;
         let worker_stopping = Arc::clone(&stopping);
@@ -223,7 +221,7 @@ impl Player {
             .name("wallpaper-events".into())
             .spawn(move || {
                 run_playback(
-                    &worker_path,
+                    file,
                     duration,
                     crossfade,
                     &worker_shared,
@@ -343,16 +341,28 @@ fn element(factory: &str) -> Result<gst::Element, String> {
     })
 }
 
+fn open_wallpaper(path: &Path) -> Result<File, String> {
+    let file = File::open(path).map_err(|_| pipeline_error("wallpaper file is unavailable"))?;
+    if !file
+        .metadata()
+        .map_err(|_| pipeline_error("wallpaper file metadata is unavailable"))?
+        .is_file()
+    {
+        return Err(pipeline_error("wallpaper path is not a regular file"));
+    }
+    Ok(file)
+}
+
 fn build_pipeline(
-    path: &Path,
+    file: &File,
     duration: Duration,
     mode: DecoderMode,
     shared: &Arc<Shared>,
     signal: &watch::Sender<u64>,
 ) -> Result<PlaybackPipeline, String> {
     let pipeline = gst::Pipeline::new();
-    let source = element("filesrc")?;
-    source.set_property("location", path.to_string_lossy().as_ref());
+    let source = element("fdsrc")?;
+    source.set_property("fd", file.as_raw_fd());
     let demux = element("qtdemux")?;
     let parser = element("h265parse")?;
     let decoder = element(match mode {
@@ -633,7 +643,7 @@ fn begin_loop_at(shared: &Shared, crossfade: Duration, now: Instant) {
 }
 
 fn run_playback(
-    path: &Path,
+    mut file: File,
     duration: Duration,
     crossfade: Duration,
     shared: &Arc<Shared>,
@@ -646,7 +656,9 @@ fn run_playback(
             return;
         }
         shared.loop_requested.store(false, Ordering::Release);
-        let outcome = run_attempt(path, duration, crossfade, mode, shared, signal, stopping);
+        let outcome = run_attempt(
+            &mut file, duration, crossfade, mode, shared, signal, stopping,
+        );
         if outcome == PlaybackOutcome::Stopped || stopping.load(Ordering::Acquire) {
             return;
         }
@@ -657,7 +669,7 @@ fn run_playback(
         let PlaybackOutcome::Failed(message) = outcome else {
             unreachable!("stopped playback returned above");
         };
-        fail_once(shared, signal, message);
+        fail_once(shared, signal, &pipeline_error(message));
         return;
     }
 }
@@ -667,7 +679,7 @@ fn should_retry_with_software(mode: DecoderMode, has_frame: bool) -> bool {
 }
 
 fn run_attempt(
-    path: &Path,
+    file: &mut File,
     duration: Duration,
     crossfade: Duration,
     mode: DecoderMode,
@@ -675,19 +687,18 @@ fn run_attempt(
     signal: &watch::Sender<u64>,
     stopping: &AtomicBool,
 ) -> PlaybackOutcome {
-    let playback = match build_pipeline(path, duration, mode, shared, signal) {
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return PlaybackOutcome::Failed("wallpaper file could not be rewound");
+    }
+    let playback = match build_pipeline(file, duration, mode, shared, signal) {
         Ok(playback) => playback,
         Err(_) => {
-            return PlaybackOutcome::Failed(
-                "wallpaper decode pipeline could not be built; using generated background",
-            );
+            return PlaybackOutcome::Failed("wallpaper decode pipeline could not be built");
         }
     };
     if playback.pipeline.set_state(gst::State::Playing).is_err() {
         let _ = playback.pipeline.set_state(gst::State::Null);
-        return PlaybackOutcome::Failed(
-            "wallpaper decode pipeline did not start; using generated background",
-        );
+        return PlaybackOutcome::Failed("wallpaper decode pipeline did not start");
     }
     let started_at = Instant::now();
     let outcome = monitor_pipeline(&playback, mode, started_at, crossfade, shared, stopping);
@@ -708,9 +719,7 @@ fn monitor_pipeline(
             return PlaybackOutcome::Stopped;
         }
         if playback.faulted.load(Ordering::Acquire) {
-            return PlaybackOutcome::Failed(
-                "wallpaper frame decoding failed; using generated background",
-            );
+            return PlaybackOutcome::Failed("wallpaper frame decoding failed");
         }
         if let Some(stall) = playback_stall(
             &lock(&shared.state),
@@ -719,15 +728,9 @@ fn monitor_pipeline(
             Instant::now(),
         ) {
             return PlaybackOutcome::Failed(match stall {
-                Stall::Startup => {
-                    "wallpaper did not produce its first frame in time; using generated background"
-                }
-                Stall::Frame => {
-                    "wallpaper playback stopped producing frames; using generated background"
-                }
-                Stall::Seek => {
-                    "wallpaper loop did not resume after seeking; using generated background"
-                }
+                Stall::Startup => "wallpaper did not produce its first frame in time",
+                Stall::Frame => "wallpaper playback stopped producing frames",
+                Stall::Seek => "wallpaper loop did not resume after seeking",
             });
         }
         let Some(message) = playback.bus.timed_pop(gst::ClockTime::from_mseconds(100)) else {
@@ -759,20 +762,14 @@ fn monitor_pipeline(
                     Ok::<(), ()>(())
                 })();
                 if loop_result.is_err() {
-                    return PlaybackOutcome::Failed(
-                        "wallpaper loop seek failed; using generated background",
-                    );
+                    return PlaybackOutcome::Failed("wallpaper loop seek failed");
                 }
             }
             gst::MessageView::Eos(..) => {
-                return PlaybackOutcome::Failed(
-                    "wallpaper reached its end before looping; using generated background",
-                );
+                return PlaybackOutcome::Failed("wallpaper reached its end before looping");
             }
             gst::MessageView::Error(_) => {
-                return PlaybackOutcome::Failed(
-                    "wallpaper stream failed; using generated background",
-                );
+                return PlaybackOutcome::Failed("wallpaper stream failed");
             }
             _ => {}
         }
@@ -832,12 +829,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn packaged_wallpaper_path(install_name: &str) -> Result<PathBuf, String> {
-    let executable = std::env::current_exe().map_err(|_| {
-        "could not locate the packaged wallpaper; using generated background".to_owned()
-    })?;
-    wallpaper_path_for_executable(&executable, install_name).ok_or_else(|| {
-        "could not locate the packaged wallpaper; using generated background".to_owned()
-    })
+    let executable = std::env::current_exe()
+        .map_err(|_| pipeline_error("could not locate the packaged wallpaper"))?;
+    wallpaper_path_for_executable(&executable, install_name)
+        .ok_or_else(|| pipeline_error("could not locate the packaged wallpaper"))
 }
 
 fn load_poster(catalog: Catalog) -> Result<image::Handle, String> {
@@ -872,7 +867,7 @@ fn wallpaper_path_for_executable(executable: &Path, install_name: &str) -> Optio
 }
 
 fn pipeline_error(reason: &str) -> String {
-    format!("{reason}; using generated background")
+    format!("{reason}; using static wallpaper fallback")
 }
 
 fn diagnostic(message: &str) {
@@ -900,6 +895,8 @@ fn bounded_text(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
     use super::*;
     use iced::Size;
 
@@ -923,6 +920,28 @@ mod tests {
                 "/nix/store/genkan/share/genkan/wallpapers/tahoe-beach.mov"
             ))
         );
+    }
+
+    #[test]
+    fn opened_wallpaper_is_stable_after_path_replacement() {
+        let directory =
+            std::env::temp_dir().join(format!("genkan-wallpaper-source-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("wallpaper.mov");
+        let replacement = directory.join("replacement.mov");
+        std::fs::write(&path, b"original").unwrap();
+        let mut file = open_wallpaper(&path).unwrap();
+        std::fs::write(&replacement, b"replacement").unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "original");
+        assert!(open_wallpaper(&directory).is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1137,6 +1156,14 @@ mod tests {
         assert!(!output.contains('\n'));
         assert_eq!(output.chars().count(), MAX_DIAGNOSTIC_CHARS);
         assert!(output.ends_with('…'));
+    }
+
+    #[test]
+    fn playback_diagnostics_name_the_static_fallback() {
+        assert_eq!(
+            pipeline_error("wallpaper stream failed"),
+            "wallpaper stream failed; using static wallpaper fallback"
+        );
     }
 
     #[test]

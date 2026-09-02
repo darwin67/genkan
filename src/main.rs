@@ -13,7 +13,11 @@ use clap::{Parser, ValueEnum};
 use iced::{window, Theme};
 
 #[derive(Debug, Parser)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    after_help = "Wallpaper playback failures restore the selected static poster. If the poster is unavailable, Genkan uses its generated background."
+)]
 struct Arguments {
     #[arg(long, exclusive = true)]
     list_preview_fixtures: bool,
@@ -153,6 +157,7 @@ pub fn main() -> iced::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn identity_overrides_are_optional() {
@@ -301,6 +306,14 @@ mod tests {
         assert!(!animate_wallpaper(true, false, false));
         assert!(animate_wallpaper(true, false, true));
         assert!(!animate_wallpaper(false, true, false));
+    }
+
+    #[test]
+    fn command_help_describes_wallpaper_fallbacks() {
+        let help = Arguments::command().render_long_help().to_string();
+        assert!(help.contains("playback failures restore the selected static poster"));
+        assert!(help.contains("poster is unavailable"));
+        assert!(help.contains("generated background"));
     }
 
     #[test]
