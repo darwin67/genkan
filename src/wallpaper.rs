@@ -17,6 +17,7 @@ use gstreamer_video as gst_video;
 use iced::futures::stream;
 use iced::widget::{image, Image};
 use iced::{ContentFit, Element, Fill, Subscription};
+use rustix::fs::{open, Mode, OFlags};
 use tokio::sync::watch;
 
 const OUTPUT_FRAMES_PER_SECOND: i32 = 30;
@@ -342,7 +343,13 @@ fn element(factory: &str) -> Result<gst::Element, String> {
 }
 
 fn open_wallpaper(path: &Path) -> Result<File, String> {
-    let file = File::open(path).map_err(|_| pipeline_error("wallpaper file is unavailable"))?;
+    let file = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|_| pipeline_error("wallpaper file is unavailable"))?;
     if !file
         .metadata()
         .map_err(|_| pipeline_error("wallpaper file metadata is unavailable"))?
@@ -924,8 +931,10 @@ mod tests {
 
     #[test]
     fn opened_wallpaper_is_stable_after_path_replacement() {
-        let directory =
-            std::env::temp_dir().join(format!("genkan-wallpaper-source-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!(
+            "genkan-wallpaper-source-replacement-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("wallpaper.mov");
@@ -940,6 +949,22 @@ mod tests {
         file.read_to_string(&mut contents).unwrap();
         assert_eq!(contents, "original");
         assert!(open_wallpaper(&directory).is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn wallpaper_fifo_is_rejected_without_waiting_for_a_writer() {
+        let directory = std::env::temp_dir().join(format!(
+            "genkan-wallpaper-source-fifo-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("wallpaper.mov");
+        rustix::fs::mkfifoat(rustix::fs::CWD, &path, Mode::RUSR | Mode::WUSR).unwrap();
+
+        assert!(open_wallpaper(&path).is_err());
 
         std::fs::remove_dir_all(directory).unwrap();
     }
