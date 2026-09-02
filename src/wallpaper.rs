@@ -517,7 +517,11 @@ enum LoopFrameAction {
 
 fn loop_frame_action(shared: &Shared, frame: &Frame, duration: Duration) -> LoopFrameAction {
     let Some(pts) = frame.pts else {
-        return LoopFrameAction::Publish;
+        return if shared.loop_requested.load(Ordering::Acquire) {
+            LoopFrameAction::Drop
+        } else {
+            LoopFrameAction::Publish
+        };
     };
     let loop_at = duration.saturating_sub(LOOP_LEAD);
     if pts < loop_at {
@@ -920,6 +924,15 @@ mod tests {
             LoopFrameAction::Drop
         );
         assert!(lock(&shared.state).transition.is_some());
+        let without_pts = Frame {
+            pts: None,
+            ..frame(60, Duration::ZERO)
+        };
+        assert_eq!(
+            loop_frame_action(&shared, &without_pts, duration),
+            LoopFrameAction::Drop
+        );
+        assert!(lock(&shared.state).awaiting_opening_since.is_some());
 
         assert_eq!(
             loop_frame_action(&shared, &opening, duration),
