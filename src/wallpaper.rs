@@ -1,10 +1,15 @@
+use std::fs::File;
+use std::io::{Seek, SeekFrom};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ::image as image_rs;
 use bytes::Bytes;
+use clap::ValueEnum;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -12,9 +17,9 @@ use gstreamer_video as gst_video;
 use iced::futures::stream;
 use iced::widget::{image, Image};
 use iced::{ContentFit, Element, Fill, Subscription};
+use rustix::fs::{open, Mode, OFlags};
 use tokio::sync::watch;
 
-const DEFAULT_WALLPAPER_ID: &str = "tahoe-beach";
 const OUTPUT_FRAMES_PER_SECOND: i32 = 30;
 const MAX_DIAGNOSTIC_CHARS: usize = 240;
 const LOOP_LEAD: Duration = Duration::from_millis(50);
@@ -23,71 +28,121 @@ const AUTOMATIC_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SOFTWARE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const SEEK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+static POSTERS: [OnceLock<Result<image::Handle, String>>; 4] = [const { OnceLock::new() }; 4];
 
 #[derive(Debug, Clone, Copy)]
 struct PlaybackSpec {
-    id: &'static str,
     install_name: &'static str,
+    poster_name: &'static str,
     duration: Duration,
     crossfade: Duration,
 }
 
 const WALLPAPERS: [PlaybackSpec; 4] = [
     PlaybackSpec {
-        id: "tahoe-beach",
         install_name: "tahoe-beach.mov",
+        poster_name: "tahoe-beach-poster.jpg",
         duration: Duration::from_micros(120_004_167),
         crossfade: Duration::from_millis(2_000),
     },
     PlaybackSpec {
-        id: "sequoia-sunrise",
         install_name: "sequoia-sunrise.mov",
+        poster_name: "sequoia-sunrise-poster.jpg",
         duration: Duration::from_micros(120_008_333),
         crossfade: Duration::from_millis(1_000),
     },
     PlaybackSpec {
-        id: "sequoia-morning",
         install_name: "sequoia-morning.mov",
+        poster_name: "sequoia-morning-poster.jpg",
         duration: Duration::from_micros(243_336_667),
         crossfade: Duration::from_millis(1_000),
     },
     PlaybackSpec {
-        id: "sequoia-night",
         install_name: "sequoia-night.mov",
+        poster_name: "sequoia-night-poster.jpg",
         duration: Duration::from_micros(291_603_333),
         crossfade: Duration::from_millis(2_000),
     },
 ];
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Catalog {
+    #[default]
+    TahoeBeach,
+    SequoiaSunrise,
+    SequoiaMorning,
+    SequoiaNight,
+}
+
+impl Catalog {
+    fn index(self) -> usize {
+        match self {
+            Self::TahoeBeach => 0,
+            Self::SequoiaSunrise => 1,
+            Self::SequoiaMorning => 2,
+            Self::SequoiaNight => 3,
+        }
+    }
+
+    fn spec(self) -> &'static PlaybackSpec {
+        &WALLPAPERS[self.index()]
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Settings {
+    pub(crate) catalog: Catalog,
+    pub(crate) override_path: Option<PathBuf>,
+    pub(crate) animate: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct State {
     player: Option<Player>,
+    poster: Option<image::Handle>,
     frame: Option<image::Handle>,
 }
 
 impl State {
-    pub(crate) fn start_default() -> Self {
-        let spec = WALLPAPERS
-            .iter()
-            .find(|wallpaper| wallpaper.id == DEFAULT_WALLPAPER_ID)
-            .expect("the default wallpaper must be in the catalog");
-        let result = packaged_wallpaper_path(spec.install_name)
+    pub(crate) fn start(settings: Settings) -> Self {
+        let spec = settings.catalog.spec();
+        let poster = load_poster(settings.catalog)
+            .map_err(|error| diagnostic(&error))
+            .ok();
+        if !settings.animate {
+            return Self {
+                player: None,
+                frame: poster.clone(),
+                poster,
+            };
+        }
+
+        let result = settings
+            .override_path
+            .map_or_else(|| packaged_wallpaper_path(spec.install_name), Ok)
             .and_then(|path| Player::start(&path, spec.duration, spec.crossfade));
         match result {
             Ok(player) => Self {
                 player: Some(player),
-                frame: None,
+                frame: poster.clone(),
+                poster,
             },
             Err(error) => {
                 diagnostic(&error);
-                Self::disabled()
+                Self {
+                    player: None,
+                    frame: poster.clone(),
+                    poster,
+                }
             }
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn disabled() -> Self {
         Self {
             player: None,
+            poster: None,
             frame: None,
         }
     }
@@ -112,7 +167,7 @@ impl State {
                 ));
             }
             Update::Failed => {
-                self.frame = None;
+                self.frame.clone_from(&self.poster);
                 self.player.take();
             }
         }
@@ -133,7 +188,7 @@ impl State {
     }
 
     #[cfg(test)]
-    pub(crate) fn is_disabled(&self) -> bool {
+    pub(crate) fn decoder_is_stopped(&self) -> bool {
         self.player.is_none()
     }
 }
@@ -153,18 +208,13 @@ impl std::fmt::Debug for Player {
 
 impl Player {
     fn start(path: &Path, duration: Duration, crossfade: Duration) -> Result<Self, String> {
-        if !path.is_file() {
-            return Err("packaged wallpaper is unavailable; using generated background".into());
-        }
+        let file = open_wallpaper(path)?;
 
-        gst::init().map_err(|_| {
-            "GStreamer initialization failed; using generated background".to_owned()
-        })?;
+        gst::init().map_err(|_| pipeline_error("GStreamer initialization failed"))?;
 
         let (signal_sender, signal) = watch::channel(0);
         let shared = Arc::new(Shared::default());
         let stopping = Arc::new(AtomicBool::new(false));
-        let worker_path = path.to_owned();
         let worker_shared = Arc::clone(&shared);
         let worker_signal = signal_sender;
         let worker_stopping = Arc::clone(&stopping);
@@ -172,7 +222,7 @@ impl Player {
             .name("wallpaper-events".into())
             .spawn(move || {
                 run_playback(
-                    &worker_path,
+                    file,
                     duration,
                     crossfade,
                     &worker_shared,
@@ -292,16 +342,36 @@ fn element(factory: &str) -> Result<gst::Element, String> {
     })
 }
 
+fn open_wallpaper(path: &Path) -> Result<File, String> {
+    let bound = open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
+        .map(File::from)
+        .map_err(|_| pipeline_error("wallpaper file is unavailable"))?;
+    if !bound
+        .metadata()
+        .map_err(|_| pipeline_error("wallpaper file metadata is unavailable"))?
+        .is_file()
+    {
+        return Err(pipeline_error("wallpaper path is not a regular file"));
+    }
+    open(
+        format!("/proc/self/fd/{}", bound.as_raw_fd()),
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|_| pipeline_error("wallpaper file could not be opened for playback"))
+}
+
 fn build_pipeline(
-    path: &Path,
+    file: &File,
     duration: Duration,
     mode: DecoderMode,
     shared: &Arc<Shared>,
     signal: &watch::Sender<u64>,
 ) -> Result<PlaybackPipeline, String> {
     let pipeline = gst::Pipeline::new();
-    let source = element("filesrc")?;
-    source.set_property("location", path.to_string_lossy().as_ref());
+    let source = element("fdsrc")?;
+    source.set_property("fd", file.as_raw_fd());
     let demux = element("qtdemux")?;
     let parser = element("h265parse")?;
     let decoder = element(match mode {
@@ -582,7 +652,7 @@ fn begin_loop_at(shared: &Shared, crossfade: Duration, now: Instant) {
 }
 
 fn run_playback(
-    path: &Path,
+    mut file: File,
     duration: Duration,
     crossfade: Duration,
     shared: &Arc<Shared>,
@@ -595,7 +665,9 @@ fn run_playback(
             return;
         }
         shared.loop_requested.store(false, Ordering::Release);
-        let outcome = run_attempt(path, duration, crossfade, mode, shared, signal, stopping);
+        let outcome = run_attempt(
+            &mut file, duration, crossfade, mode, shared, signal, stopping,
+        );
         if outcome == PlaybackOutcome::Stopped || stopping.load(Ordering::Acquire) {
             return;
         }
@@ -606,7 +678,7 @@ fn run_playback(
         let PlaybackOutcome::Failed(message) = outcome else {
             unreachable!("stopped playback returned above");
         };
-        fail_once(shared, signal, message);
+        fail_once(shared, signal, &pipeline_error(message));
         return;
     }
 }
@@ -616,7 +688,7 @@ fn should_retry_with_software(mode: DecoderMode, has_frame: bool) -> bool {
 }
 
 fn run_attempt(
-    path: &Path,
+    file: &mut File,
     duration: Duration,
     crossfade: Duration,
     mode: DecoderMode,
@@ -624,19 +696,18 @@ fn run_attempt(
     signal: &watch::Sender<u64>,
     stopping: &AtomicBool,
 ) -> PlaybackOutcome {
-    let playback = match build_pipeline(path, duration, mode, shared, signal) {
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return PlaybackOutcome::Failed("wallpaper file could not be rewound");
+    }
+    let playback = match build_pipeline(file, duration, mode, shared, signal) {
         Ok(playback) => playback,
         Err(_) => {
-            return PlaybackOutcome::Failed(
-                "wallpaper decode pipeline could not be built; using generated background",
-            );
+            return PlaybackOutcome::Failed("wallpaper decode pipeline could not be built");
         }
     };
     if playback.pipeline.set_state(gst::State::Playing).is_err() {
         let _ = playback.pipeline.set_state(gst::State::Null);
-        return PlaybackOutcome::Failed(
-            "wallpaper decode pipeline did not start; using generated background",
-        );
+        return PlaybackOutcome::Failed("wallpaper decode pipeline did not start");
     }
     let started_at = Instant::now();
     let outcome = monitor_pipeline(&playback, mode, started_at, crossfade, shared, stopping);
@@ -657,9 +728,7 @@ fn monitor_pipeline(
             return PlaybackOutcome::Stopped;
         }
         if playback.faulted.load(Ordering::Acquire) {
-            return PlaybackOutcome::Failed(
-                "wallpaper frame decoding failed; using generated background",
-            );
+            return PlaybackOutcome::Failed("wallpaper frame decoding failed");
         }
         if let Some(stall) = playback_stall(
             &lock(&shared.state),
@@ -668,15 +737,9 @@ fn monitor_pipeline(
             Instant::now(),
         ) {
             return PlaybackOutcome::Failed(match stall {
-                Stall::Startup => {
-                    "wallpaper did not produce its first frame in time; using generated background"
-                }
-                Stall::Frame => {
-                    "wallpaper playback stopped producing frames; using generated background"
-                }
-                Stall::Seek => {
-                    "wallpaper loop did not resume after seeking; using generated background"
-                }
+                Stall::Startup => "wallpaper did not produce its first frame in time",
+                Stall::Frame => "wallpaper playback stopped producing frames",
+                Stall::Seek => "wallpaper loop did not resume after seeking",
             });
         }
         let Some(message) = playback.bus.timed_pop(gst::ClockTime::from_mseconds(100)) else {
@@ -708,20 +771,14 @@ fn monitor_pipeline(
                     Ok::<(), ()>(())
                 })();
                 if loop_result.is_err() {
-                    return PlaybackOutcome::Failed(
-                        "wallpaper loop seek failed; using generated background",
-                    );
+                    return PlaybackOutcome::Failed("wallpaper loop seek failed");
                 }
             }
             gst::MessageView::Eos(..) => {
-                return PlaybackOutcome::Failed(
-                    "wallpaper reached its end before looping; using generated background",
-                );
+                return PlaybackOutcome::Failed("wallpaper reached its end before looping");
             }
             gst::MessageView::Error(_) => {
-                return PlaybackOutcome::Failed(
-                    "wallpaper stream failed; using generated background",
-                );
+                return PlaybackOutcome::Failed("wallpaper stream failed");
             }
             _ => {}
         }
@@ -781,12 +838,36 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn packaged_wallpaper_path(install_name: &str) -> Result<PathBuf, String> {
-    let executable = std::env::current_exe().map_err(|_| {
-        "could not locate the packaged wallpaper; using generated background".to_owned()
-    })?;
-    wallpaper_path_for_executable(&executable, install_name).ok_or_else(|| {
-        "could not locate the packaged wallpaper; using generated background".to_owned()
-    })
+    let executable = std::env::current_exe()
+        .map_err(|_| pipeline_error("could not locate the packaged wallpaper"))?;
+    wallpaper_path_for_executable(&executable, install_name)
+        .ok_or_else(|| pipeline_error("could not locate the packaged wallpaper"))
+}
+
+fn load_poster(catalog: Catalog) -> Result<image::Handle, String> {
+    POSTERS[catalog.index()]
+        .get_or_init(|| decode_poster(catalog.spec()))
+        .clone()
+}
+
+fn decode_poster(spec: &PlaybackSpec) -> Result<image::Handle, String> {
+    let path = packaged_wallpaper_path(spec.poster_name)
+        .ok()
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/wallpapers")
+                .join(spec.poster_name);
+            path.is_file().then_some(path)
+        })
+        .ok_or_else(|| "wallpaper poster is unavailable; using generated background".to_owned())?;
+    let rgba = image_rs::open(path)
+        .map_err(|_| {
+            "wallpaper poster could not be decoded; using generated background".to_owned()
+        })?
+        .into_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(image::Handle::from_rgba(width, height, rgba.into_raw()))
 }
 
 fn wallpaper_path_for_executable(executable: &Path, install_name: &str) -> Option<PathBuf> {
@@ -795,7 +876,7 @@ fn wallpaper_path_for_executable(executable: &Path, install_name: &str) -> Optio
 }
 
 fn pipeline_error(reason: &str) -> String {
-    format!("{reason}; using generated background")
+    format!("{reason}; using static wallpaper fallback")
 }
 
 fn diagnostic(message: &str) {
@@ -823,6 +904,8 @@ fn bounded_text(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
     use super::*;
     use iced::Size;
 
@@ -849,24 +932,122 @@ mod tests {
     }
 
     #[test]
+    fn opened_wallpaper_is_stable_after_path_replacement() {
+        let directory = std::env::temp_dir().join(format!(
+            "genkan-wallpaper-source-replacement-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("wallpaper.mov");
+        let replacement = directory.join("replacement.mov");
+        std::fs::write(&path, b"original").unwrap();
+        let mut file = open_wallpaper(&path).unwrap();
+        std::fs::write(&replacement, b"replacement").unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "original");
+        assert!(open_wallpaper(&directory).is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn wallpaper_fifo_is_rejected_without_waiting_for_a_writer() {
+        let directory = std::env::temp_dir().join(format!(
+            "genkan-wallpaper-source-fifo-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("wallpaper.mov");
+        rustix::fs::mkfifoat(rustix::fs::CWD, &path, Mode::RUSR | Mode::WUSR).unwrap();
+
+        assert!(open_wallpaper(&path).is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn wallpaper_device_is_rejected_without_opening_the_device() {
+        let directory = std::env::temp_dir().join(format!(
+            "genkan-wallpaper-source-device-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("wallpaper.mov");
+        std::os::unix::fs::symlink("/dev/null", &path).unwrap();
+
+        assert!(open_wallpaper(&path).is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn catalog_retains_each_verified_loop_transition() {
-        let transitions = WALLPAPERS.map(|wallpaper| {
-            (
-                wallpaper.id,
-                wallpaper.install_name,
-                wallpaper.duration.as_micros(),
-                wallpaper.crossfade.as_millis(),
-            )
-        });
+        let transitions = Catalog::value_variants()
+            .iter()
+            .map(|catalog| {
+                let wallpaper = catalog.spec();
+                (
+                    catalog.to_possible_value().unwrap().get_name().to_owned(),
+                    wallpaper.install_name,
+                    wallpaper.poster_name,
+                    wallpaper.duration.as_micros(),
+                    wallpaper.crossfade.as_millis(),
+                )
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
             transitions,
-            [
-                ("tahoe-beach", "tahoe-beach.mov", 120_004_167, 2_000),
-                ("sequoia-sunrise", "sequoia-sunrise.mov", 120_008_333, 1_000),
-                ("sequoia-morning", "sequoia-morning.mov", 243_336_667, 1_000),
-                ("sequoia-night", "sequoia-night.mov", 291_603_333, 2_000),
+            vec![
+                (
+                    "tahoe-beach".into(),
+                    "tahoe-beach.mov",
+                    "tahoe-beach-poster.jpg",
+                    120_004_167,
+                    2_000
+                ),
+                (
+                    "sequoia-sunrise".into(),
+                    "sequoia-sunrise.mov",
+                    "sequoia-sunrise-poster.jpg",
+                    120_008_333,
+                    1_000
+                ),
+                (
+                    "sequoia-morning".into(),
+                    "sequoia-morning.mov",
+                    "sequoia-morning-poster.jpg",
+                    243_336_667,
+                    1_000
+                ),
+                (
+                    "sequoia-night".into(),
+                    "sequoia-night.mov",
+                    "sequoia-night-poster.jpg",
+                    291_603_333,
+                    2_000
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn static_catalog_entries_load_posters_without_players() {
+        for catalog in Catalog::value_variants() {
+            let state = State::start(Settings {
+                catalog: *catalog,
+                override_path: None,
+                animate: false,
+            });
+            assert!(state.decoder_is_stopped(), "{catalog:?}");
+            assert!(state.has_frame(), "{catalog:?}");
+        }
     }
 
     #[test]
@@ -961,6 +1142,7 @@ mod tests {
         let shared = Arc::new(Shared::default());
         lock(&shared.state).pending = Some(Update::Failed);
         let (_, signal) = watch::channel(0);
+        let poster = image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]);
         let mut state = State {
             player: Some(Player {
                 shared,
@@ -968,12 +1150,14 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            poster: Some(poster),
             frame: None,
         };
 
         state.receive_latest();
 
-        assert!(state.is_disabled());
+        assert!(state.decoder_is_stopped());
+        assert!(state.has_frame());
     }
 
     #[test]
@@ -1015,6 +1199,14 @@ mod tests {
         assert!(!output.contains('\n'));
         assert_eq!(output.chars().count(), MAX_DIAGNOSTIC_CHARS);
         assert!(output.ends_with('…'));
+    }
+
+    #[test]
+    fn playback_diagnostics_name_the_static_fallback() {
+        assert_eq!(
+            pipeline_error("wallpaper stream failed"),
+            "wallpaper stream failed; using static wallpaper fallback"
+        );
     }
 
     #[test]

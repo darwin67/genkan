@@ -1,8 +1,12 @@
+use iced::mouse;
+use iced::widget::canvas::{self, Canvas, Frame, Geometry, LineCap, LineJoin, Path, Stroke};
 use iced::widget::text::Wrapping;
 use iced::widget::{
     button, column, container, responsive, row, scrollable, stack, text, text_input, Space,
 };
-use iced::{padding, Alignment, Element, Fill, Length, Size};
+use iced::{
+    padding, Alignment, Color, Element, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
+};
 
 use crate::accounts::Account;
 use crate::power::Action as PowerAction;
@@ -18,9 +22,55 @@ use super::{App, Message, PowerState};
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
 const ACCOUNT_GRID_GAP: f32 = 18.0;
 const MAX_ACCOUNT_COLUMNS: usize = 4;
-const AUTH_ACTION_WIDTH: f32 = 82.0;
+const AUTH_ACTION_SIZE: f32 = 34.0;
+const AUTH_ACTION_INSET: f32 = 7.0;
 const WIDE_MIN_WIDTH: f32 = 1280.0;
 const WIDE_MIN_HEIGHT: f32 = 700.0;
+
+#[derive(Debug, Clone, Copy)]
+struct SubmitArrow {
+    color: Color,
+}
+
+fn submit_visual_status(status: button::Status, has_input: bool) -> button::Status {
+    if has_input {
+        status
+    } else {
+        button::Status::Disabled
+    }
+}
+
+impl<Message> canvas::Program<Message> for SubmitArrow {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+        let path = Path::new(|path| {
+            path.move_to(Point::new(center.x - 5.0, center.y));
+            path.line_to(Point::new(center.x + 6.0, center.y));
+            path.move_to(Point::new(center.x + 2.0, center.y - 4.0));
+            path.line_to(Point::new(center.x + 6.0, center.y));
+            path.line_to(Point::new(center.x + 2.0, center.y + 4.0));
+        });
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_color(self.color)
+                .with_width(2.25)
+                .with_line_cap(LineCap::Round)
+                .with_line_join(LineJoin::Round),
+        );
+        vec![frame.into_geometry()]
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AccountSelectorState {
@@ -63,7 +113,7 @@ impl App {
             .view()
             .unwrap_or_else(|| background::Background::new(self.background_elapsed()).view());
         let content = responsive(move |size| self.content(size));
-        stack![background, content].into()
+        stack![background, background::dimming(), content].into()
     }
 
     fn content(&self, size: Size) -> Element<'_, Message> {
@@ -347,17 +397,51 @@ impl App {
         let controls: Element<'_, Message> =
             match authentication_controls(self.phase, self.selected_session.is_some()) {
                 AuthenticationControls::Prompt => {
-                    let input = container(
+                    let has_input = !self.input.is_empty();
+                    let submit = button(
+                        Canvas::new(SubmitArrow {
+                            color: if has_input {
+                                theme::primary_text()
+                            } else {
+                                theme::muted_text()
+                            },
+                        })
+                        .width(Length::Fixed(18.0))
+                        .height(Length::Fixed(18.0)),
+                    )
+                    .on_press_maybe(interactive.then_some(Message::Submit))
+                    .width(Length::Fixed(AUTH_ACTION_SIZE))
+                    .height(Length::Fixed(AUTH_ACTION_SIZE))
+                    .style(move |theme, status| {
+                        let mut style = theme::secondary_button(
+                            theme,
+                            submit_visual_status(status, has_input),
+                            self.is_focused(FocusTarget::Submit),
+                        );
+                        style.border.radius = (AUTH_ACTION_SIZE / 2.0).into();
+                        style
+                    });
+                    let input = container(stack![
                         text_input("", &self.input)
                             .id(self.input_id.clone())
                             .on_input_maybe(interactive.then_some(Message::InputChanged))
                             .on_submit_maybe(interactive.then_some(Message::Submit))
                             .secure(self.secret)
-                            .padding([12, 18])
+                            .padding(
+                                padding::all(12)
+                                    .left(18)
+                                    .right(AUTH_ACTION_SIZE + AUTH_ACTION_INSET * 2.0)
+                            )
                             .size(18)
                             .width(Fill)
                             .style(theme::input),
-                    )
+                        container(submit)
+                            .width(Fill)
+                            .height(Fill)
+                            .padding(padding::right(AUTH_ACTION_INSET))
+                            .align_x(Alignment::End)
+                            .align_y(Alignment::Center),
+                    ])
                     .id(iced::widget::container::Id::new(
                         "authentication-input-anchor",
                     ))
@@ -369,23 +453,7 @@ impl App {
                             .width(Fill)
                             .align_x(Alignment::Center)
                             .wrapping(Wrapping::WordOrGlyph),
-                        row![
-                            Space::new(Length::Fixed(AUTH_ACTION_WIDTH), Length::Shrink),
-                            input,
-                            button(text("Log In").size(16))
-                                .on_press_maybe(interactive.then_some(Message::Submit))
-                                .padding([12, 12])
-                                .width(Length::Fixed(AUTH_ACTION_WIDTH))
-                                .style(|theme, status| {
-                                    theme::primary_button(
-                                        theme,
-                                        status,
-                                        self.is_focused(FocusTarget::Submit),
-                                    )
-                                }),
-                        ]
-                        .spacing(8)
-                        .width(Fill),
+                        input,
                     ]
                     .spacing(8)
                     .into()
@@ -805,6 +873,21 @@ mod tests {
             authentication_controls(Phase::Failed, true),
             AuthenticationControls::Retry
         );
+    }
+
+    #[test]
+    fn empty_response_uses_disabled_submit_appearance() {
+        for status in [
+            button::Status::Active,
+            button::Status::Hovered,
+            button::Status::Pressed,
+        ] {
+            assert_eq!(
+                submit_visual_status(status, false),
+                button::Status::Disabled
+            );
+            assert_eq!(submit_visual_status(status, true), status);
+        }
     }
 
     #[test]

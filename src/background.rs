@@ -1,5 +1,6 @@
 use iced::mouse;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path};
+use iced::widget::{container, Space};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Theme};
 
 const BASE_COLOR: Color = Color::from_rgb(5.0 / 255.0, 9.0 / 255.0, 24.0 / 255.0);
@@ -26,6 +27,15 @@ impl Background {
             .height(Length::Fill)
             .into()
     }
+}
+
+pub fn dimming<Message: 'static>() -> Element<'static, Message> {
+    container(Space::new(Length::Fill, Length::Fill))
+        .style(|_| container::Style {
+            background: Some(iced::Background::Color(DIM_COLOR)),
+            ..Default::default()
+        })
+        .into()
 }
 
 impl<Message> canvas::Program<Message> for Background {
@@ -75,7 +85,6 @@ impl<Message> canvas::Program<Message> for Background {
             );
         }
 
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), DIM_COLOR);
         vec![frame.into_geometry()]
     }
 }

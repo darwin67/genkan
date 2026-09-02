@@ -79,6 +79,12 @@
             ln -s ${wallpaper.videoSource} "$wallpaperDirectory/${wallpaper.install_name}"
             ln -s ${wallpaper.posterSource} "$wallpaperDirectory/${wallpaper.poster.file}"
           '';
+          devWallpaperDirectory = pkgs.linkFarm "genkan-wallpapers" (
+            map (wallpaper: {
+              name = wallpaper.install_name;
+              path = wallpaper.videoSource;
+            }) wallpapers
+          );
         in
         {
           inherit pkgs;
@@ -135,6 +141,7 @@
             ++ gstreamerPackages;
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;
             GST_PLUGIN_SYSTEM_PATH_1_0 = gstreamerPluginPath;
+            GENKAN_WALLPAPER_DIR = devWallpaperDirectory;
           };
         };
     in

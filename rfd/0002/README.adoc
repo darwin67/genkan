@@ -110,6 +110,8 @@ playback.
 ----
 packaged MOV -> GStreamer decode -> latest-frame slot -> iced texture
                                                         |
+selected poster ----------------------------------------+
+                                                        |
 generated fallback -------------------------------------+
                                                         |
                                                         v
@@ -123,10 +125,11 @@ but not required for correctness; the same package must retain a software
 decode path for supported systems and CI.
 
 The first-frame deadline is bounded. Until a decoded frame arrives, Genkan
-renders the existing generated background. Decode initialization, stream,
-seek, or device errors leave that fallback visible and produce a diagnostic
-that contains no credentials or user-controlled media metadata. They do not
-close the greeter or disable any interaction.
+renders the selected static poster. Decode initialization, stream, seek, or
+device errors restore that poster and produce a diagnostic that contains no
+credentials or user-controlled media metadata. If the poster is missing or
+cannot be decoded, the existing generated background remains the fallback.
+Presentation failures do not close the greeter or disable any interaction.
 
 == Asset and packaging model
 
@@ -167,8 +170,10 @@ transport, DNS, or account trust.
 Development builds accept an administrative wallpaper path so exact media can
 be tested without copying it into the repository. The packaged service selects
 one of the installed catalog identifiers and defaults to Tahoe Beach. The path
-override is a file path only, not a URI: network schemes, playlists, and
-GStreamer pipeline descriptions are not accepted.
+override is opened and validated once, then passed to GStreamer by descriptor
+so a later pathname replacement cannot change the media being decoded. It is a
+file path only, not a URI: network schemes, playlists, and GStreamer pipeline
+descriptions are not accepted.
 
 == Preview and configuration behavior
 
@@ -226,8 +231,14 @@ icons, or transfer authentication ownership away from greetd.
 An invalid administrative path, unsupported codec, missing plugin, corrupt
 stream, unavailable hardware decoder, or failed loop seek is a presentation
 failure. Genkan records a bounded diagnostic, releases failed playback
-resources, and continues with the generated fallback. Decoder retries are
-bounded so a permanently invalid asset cannot create a busy loop.
+resources, and continues with the selected static poster, or with the generated
+background when that poster is unavailable. Decoder retries are bounded so a
+permanently invalid asset cannot create a busy loop. Administrative overrides
+are first bound with Linux `O_PATH` and validated as regular files without
+opening the target for I/O, so a pathname changed to a FIFO, device, or another
+special file cannot stall startup. The bound inode is then reopened through
+`/proc/self/fd` and passed to GStreamer, so later pathname replacement cannot
+substitute another file.
 
 == Verification
 

@@ -45,20 +45,6 @@ as implemented merely because an experimental dependency branch exists.
   result as evidence.
 - **Source:** [graphics runtime review finding](review-findings.md#12-validate-graphics-runtime-packaging).
 
-## Packaged wallpaper artwork
-
-- **Scope:** Select or create final wallpaper artwork and package any generated
-  variants.
-- **Context:** RFD 0001 deliberately accepts Genkan's generated background and
-  treats final wallpaper artwork as a separate decision. Apple assets are not
-  eligible for reuse.
-- **Why deferred:** Artwork is not required for the implemented interaction
-  hierarchy. Shipping it requires source provenance, redistribution rights,
-  variant-generation rules, and packaging behavior to be reviewed together.
-- **Resume when:** The project chooses to replace or supplement the generated
-  background and has reviewable artwork plus licensing and packaging details.
-- **Source:** [RFD 0001 visual rules and non-goals](../rfd/0001/README.adoc#visual-and-material-rules).
-
 ## Stronger continuous contrast proof
 
 - **Scope:** Strengthen numeric contrast verification from representative field

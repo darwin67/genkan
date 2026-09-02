@@ -6,12 +6,18 @@ mod sessions;
 mod theme;
 mod wallpaper;
 
+use std::path::PathBuf;
+
 use app::{App, Config, PreviewFixture};
 use clap::{Parser, ValueEnum};
 use iced::{window, Theme};
 
 #[derive(Debug, Parser)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    after_help = "Wallpaper playback failures restore the selected static poster. If the poster is unavailable, Genkan uses its generated background."
+)]
 struct Arguments {
     #[arg(long, exclusive = true)]
     list_preview_fixtures: bool,
@@ -33,6 +39,22 @@ struct Arguments {
     width: Option<u32>,
     #[arg(long, requires_all = ["windowed", "width"], value_parser = parse_dimension)]
     height: Option<u32>,
+    /// Select one of the packaged animated wallpapers.
+    #[arg(long, value_enum, default_value = "tahoe-beach")]
+    wallpaper: wallpaper::Catalog,
+    /// Replace the selected catalog entry's video with an absolute local MOV file.
+    #[arg(long, value_parser = parse_wallpaper_file)]
+    wallpaper_file: Option<PathBuf>,
+    /// Show the selected poster without starting the video decoder.
+    #[arg(
+        long,
+        visible_alias = "static-wallpaper",
+        conflicts_with = "animated_preview"
+    )]
+    reduce_motion: bool,
+    /// Enable real wallpaper playback while keeping preview services simulated.
+    #[arg(long, requires = "preview", conflicts_with = "reduce_motion")]
+    animated_preview: bool,
 }
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
@@ -62,6 +84,28 @@ fn parse_dimension(value: &str) -> Result<u32, String> {
     }
 }
 
+fn parse_wallpaper_file(value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err("wallpaper file must be an absolute local path, not a URI or pipeline".into());
+    }
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mov"))
+    {
+        return Err("wallpaper file must be a MOV file, not a playlist or pipeline".into());
+    }
+    if !path.is_file() {
+        return Err("wallpaper file must name an existing regular file".into());
+    }
+    Ok(path)
+}
+
+fn animate_wallpaper(preview: bool, reduce_motion: bool, animated_preview: bool) -> bool {
+    !reduce_motion && (!preview || animated_preview)
+}
+
 pub fn main() -> iced::Result {
     let arguments = Arguments::parse();
     if arguments.list_preview_fixtures {
@@ -77,6 +121,11 @@ pub fn main() -> iced::Result {
         return Ok(());
     }
     let windowed = arguments.windowed;
+    let animate_wallpaper = animate_wallpaper(
+        arguments.preview.is_some(),
+        arguments.reduce_motion,
+        arguments.animated_preview,
+    );
     let window_size = iced::Size::new(
         arguments.width.unwrap_or(DEFAULT_WINDOW_WIDTH) as f32,
         arguments.height.unwrap_or(DEFAULT_WINDOW_HEIGHT) as f32,
@@ -85,6 +134,11 @@ pub fn main() -> iced::Result {
         username: arguments.username,
         display_name: arguments.display_name,
         preview: arguments.preview,
+        wallpaper: wallpaper::Settings {
+            catalog: arguments.wallpaper,
+            override_path: arguments.wallpaper_file,
+            animate: animate_wallpaper,
+        },
     };
 
     iced::application("Genkan", App::update, App::view)
@@ -103,6 +157,7 @@ pub fn main() -> iced::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn identity_overrides_are_optional() {
@@ -113,6 +168,10 @@ mod tests {
         assert_eq!(arguments.preview, None);
         assert_eq!(arguments.width, None);
         assert_eq!(arguments.height, None);
+        assert_eq!(arguments.wallpaper, wallpaper::Catalog::TahoeBeach);
+        assert_eq!(arguments.wallpaper_file, None);
+        assert!(!arguments.reduce_motion);
+        assert!(!arguments.animated_preview);
     }
 
     #[test]
@@ -221,5 +280,63 @@ mod tests {
         ])
         .is_err());
         assert!(Arguments::try_parse_from(["genkan", "--username", "user\u{0600}"]).is_err());
+    }
+
+    #[test]
+    fn wallpaper_catalog_and_motion_flags_are_bounded() {
+        for name in [
+            "tahoe-beach",
+            "sequoia-sunrise",
+            "sequoia-morning",
+            "sequoia-night",
+        ] {
+            assert!(Arguments::try_parse_from(["genkan", "--wallpaper", name]).is_ok());
+        }
+        assert!(Arguments::try_parse_from(["genkan", "--wallpaper", "unknown"]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "--animated-preview"]).is_err());
+        assert!(Arguments::try_parse_from([
+            "genkan",
+            "--windowed",
+            "--preview",
+            "--animated-preview",
+            "--reduce-motion",
+        ])
+        .is_err());
+        assert!(animate_wallpaper(false, false, false));
+        assert!(!animate_wallpaper(true, false, false));
+        assert!(animate_wallpaper(true, false, true));
+        assert!(!animate_wallpaper(false, true, false));
+    }
+
+    #[test]
+    fn command_help_describes_wallpaper_fallbacks() {
+        let help = Arguments::command().render_long_help().to_string();
+        assert!(help.contains("playback failures restore the selected static poster"));
+        assert!(help.contains("poster is unavailable"));
+        assert!(help.contains("generated background"));
+    }
+
+    #[test]
+    fn wallpaper_override_accepts_only_an_existing_absolute_mov() {
+        let path =
+            std::env::temp_dir().join(format!("genkan-wallpaper-{}.mov", std::process::id()));
+        std::fs::write(&path, []).unwrap();
+        let parsed =
+            Arguments::try_parse_from(["genkan", "--wallpaper-file", path.to_str().unwrap()]);
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(parsed.unwrap().wallpaper_file, Some(path));
+        for invalid in [
+            "wallpaper.mov",
+            "https://example.test/wallpaper.mov",
+            "/tmp/wallpaper.m3u8",
+            "videotestsrc ! appsink",
+            "/does/not/exist.mov",
+        ] {
+            assert!(
+                Arguments::try_parse_from(["genkan", "--wallpaper-file", invalid]).is_err(),
+                "accepted {invalid}"
+            );
+        }
     }
 }
