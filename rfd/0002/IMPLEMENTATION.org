@@ -126,20 +126,46 @@ inside the package output.
 
 * Phase 3: Presentation and configuration
 
-- [ ] Place video beneath a uniform contrast-preserving darkening layer and all
+- [X] Place video beneath a uniform contrast-preserving darkening layer and all
   existing greeter content.
-- [ ] Add a local-file administrative wallpaper override that rejects URIs,
+- [X] Add a local-file administrative wallpaper override that rejects URIs,
   playlists, and pipeline descriptions; use the packaged path by default.
-- [ ] Add an administrative catalog selector for Tahoe Beach and all three
+- [X] Add an administrative catalog selector for Tahoe Beach and all three
   Sequoia variants, defaulting to Tahoe Beach.
-- [ ] Add a static or reduced-motion setting that renders the poster without
+- [X] Add a static or reduced-motion setting that renders the poster without
   initializing GStreamer.
-- [ ] Keep ordinary preview deterministic and decoder-free with a fixed poster
+- [X] Keep ordinary preview deterministic and decoder-free with a fixed poster
   frame and generated fallback.
-- [ ] Add an explicitly animated preview mode while keeping fixture time,
+- [X] Add an explicitly animated preview mode while keeping fixture time,
   authentication, account discovery, and power behavior simulated.
-- [ ] Document packaged, animated-preview, static, override, and fallback
+- [X] Document packaged, animated-preview, static, override, and fallback
   behavior in the README and command help.
+
+** Phase 3 verification record
+
+- ~--wallpaper~ accepts exactly ~tahoe-beach~, ~sequoia-sunrise~,
+  ~sequoia-morning~, and ~sequoia-night~ and defaults to Tahoe Beach. Each
+  selector maps to its packaged MOV, verified poster, duration, and crossfade.
+- ~--wallpaper-file~ requires an existing absolute ~.mov~ path. The path is
+  passed only to ~filesrc~ and cannot select a URI, playlist, shell command, or
+  GStreamer pipeline. It replaces the selected catalog MOV while retaining
+  that catalog entry's verified loop metadata.
+- Production animates by default. ~--reduce-motion~ and its
+  ~--static-wallpaper~ alias synchronously decode only the selected JPEG poster
+  and never initialize GStreamer. Ordinary preview uses the same static path;
+  ~--animated-preview~ explicitly opts into playback and still takes the
+  service-free preview branch with fixed fixture time and simulated actions.
+- The poster remains visible before the first video frame and is restored after
+  playback failure. A missing or invalid poster leaves the generated background
+  visible. Poster decoding is bounded to JPEG and cached once per catalog entry.
+- The generated canvas no longer applies its own dimming. The application stack
+  now places one uniform 20% black layer above either poster/video or generated
+  fallback and below all greeter content, preserving the previous generated
+  appearance while applying the same treatment to photographic media.
+- On 2026-09-02, all 131 Rust tests and Clippy passed. The Nix package,
+  production graphics smoke, and 19 deterministic preview captures passed; six
+  durable RFD 1 reference images were regenerated with the Tahoe Beach poster
+  and inspected for correct layering and rendering.
 
 * Phase 4: Accessibility and verification
 
