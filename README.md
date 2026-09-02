@@ -1,101 +1,68 @@
 # Genkan
 
-Genkan is a small graphical [greetd](https://sr.ht/~kennylevinsen/greetd/)
-frontend built with Rust and iced. It is intended to run fullscreen under Cage
-on a Wayland login VT. greetd remains responsible for PAM authentication and
-starting the selected desktop session; Genkan never validates credentials or
-runs the user session itself.
+Genkan is a graphical [greetd](https://sr.ht/~kennylevinsen/greetd/)
+frontend for Linux, built with Rust and iced. It runs fullscreen under Cage on
+a Wayland login VT while greetd remains responsible for PAM authentication and
+starting the selected desktop session.
 
-## Development preview
+## Screenshots
+
+| Account selection | Authentication |
+|:--:|:--:|
+| [![Account selection](rfd/0001/reference-images/account-selection.png)](rfd/0001/reference-images/account-selection.png) | [![Password prompt](rfd/0001/reference-images/secret-prompt.png)](rfd/0001/reference-images/secret-prompt.png) |
+
+[![Power confirmation](rfd/0001/reference-images/power-confirmation.png)](rfd/0001/reference-images/power-confirmation.png)
+
+These are deterministic development-preview captures. The preview uses
+synthetic accounts and sessions and never sends credentials or power requests.
+
+## Features
+
+- PAM conversation handling through greetd, including multi-prompt flows.
+- AccountsService user discovery with keyboard and pointer navigation.
+- Validated Wayland desktop-session discovery without invoking a shell.
+- Confirmed sleep, restart, and shutdown actions through logind.
+- Original-resolution Tahoe Beach and Sequoia animated wallpapers with static
+  posters, reduced-motion support, smooth loop transitions, and safe fallback.
+- Reproducible Nix packaging for x86_64-linux and aarch64-linux.
+- Service-free deterministic previews for UI development and review.
+
+## Try the UI
+
+Enter the Nix development shell, then launch the safe preview:
 
 ```sh
+nix develop
 make dev
 ```
 
-The default preview uses a fixed synthetic account, time, animation frame, and
-Wayland session. It accepts password input without sending it anywhere.
-Authentication submission and all power actions are simulated, so testing the
-UI cannot suspend, restart, or shut down the development machine. Preview does
-not contact AccountsService, greetd, or logind. It renders the selected fixed
-wallpaper poster without starting GStreamer, so screenshots remain stable.
-Pass an explicit `--username` to `cargo run` only when a particular preview
-identity is useful.
-
-Select deterministic fixtures with `PREVIEW`, for example:
+Select another UI state with `PREVIEW`:
 
 ```sh
 PREVIEW=users make dev
 PREVIEW=visible-prompt make dev
-PREVIEW=authentication-failure make dev
 PREVIEW=power-confirmation make dev
 ```
 
-Run `cargo run --bin genkan -- --help` to list every fixture. To exercise real
-AccountsService, greetd, and logind behavior, run the binary directly without
-`--preview` in the intended greeter environment.
-
-The packaged greeter animates Tahoe Beach by default. Select another packaged
-asset with `--wallpaper sequoia-sunrise`, `sequoia-morning`, or
-`sequoia-night`. `--reduce-motion` (also available as `--static-wallpaper`)
-shows that entry's poster without initializing GStreamer. If video playback
-fails, Genkan reports the failure and returns to the poster; if the poster is
-also unavailable, it retains the generated background.
-
-Real animation can be enabled without making preview authentication or power
-actions real. The Nix development shell exposes the pinned videos through
-`GENKAN_WALLPAPER_DIR`, so the animated development target selects the matching
-catalog MOV without a machine-specific Nix store path:
+To preview the real wallpaper animation while keeping authentication and power
+actions simulated:
 
 ```sh
 make animated-dev
 WALLPAPER=sequoia-night make animated-dev
 ```
 
-`--wallpaper-file` accepts only an existing absolute `.mov` file. It replaces
-the selected catalog entry's video while retaining that entry's verified
-duration and crossfade metadata, so the file must be a local copy of the same
-catalog asset. URIs, playlists, and GStreamer pipeline descriptions are not
-accepted. Runtime playback never downloads media or invokes a shell.
+See the [development guide](docs/development.md) for all preview, wallpaper,
+test, VM, and hardware-smoke workflows.
 
-The Makefile also provides `check`, `fmt`, `fmt-fix`, `lint`, `test`, `smoke`,
-`e2e`, `build`, `package`, `verify`, `changelog`, `next-version`, and `clean`
-targets. Enter `nix develop` manually if direnv has not already loaded the
-flake environment.
+## Install with NixOS
 
-## greetd configuration
-
-A minimal flake binds Genkan as an input and passes it to the host module:
+Add Genkan as a flake input and configure greetd to launch the package under
+Cage. A minimal host configuration and the required AccountsService, session,
+graphics, PAM, and power-policy details are in the
+[deployment guide](docs/deployment.md).
 
 ```nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    genkan = {
-      url = "github:darwin67/genkan";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-  };
-
-  outputs = { nixpkgs, genkan, ... }: {
-    nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux"; # or aarch64-linux
-      specialArgs = { inherit genkan; };
-      modules = [ ./configuration.nix ];
-    };
-  };
-}
-```
-
-The corresponding `configuration.nix` can run the package fullscreen under
-Cage:
-
-```nix
-{ config, genkan, pkgs, ... }:
-
-let
-  genkanPackage = genkan.packages.${pkgs.stdenv.hostPlatform.system}.default;
-in
-
 services.greetd = {
   enable = true;
   settings.default_session = {
@@ -103,105 +70,34 @@ services.greetd = {
     command = "${pkgs.cage}/bin/cage -- ${genkanPackage}/bin/genkan";
   };
 };
-
-services.accounts-daemon.enable = true;
-hardware.graphics.enable = true;
-
-# Install at least one Wayland session and expose its generated desktop entry
-# to the pre-authentication greetd service.
-services.displayManager.sessionPackages = [ pkgs.niri ];
-systemd.services.greetd.environment.XDG_DATA_DIRS =
-  "${config.services.displayManager.sessionData.desktops}/share";
-
-# Do not replace the active greeter during nixos-rebuild switch.
-systemd.services.greetd.restartIfChanged = false;
 ```
 
-greetd supplies `GREETD_SOCK`. Genkan handles every PAM prompt in sequence,
-then requests the selected session with the Wayland XDG environment. Power
-buttons call logind over the system D-Bus; sleep, restart, and shutdown all
-require confirmation. The calls do not request interactive polkit
-authentication, so the greeter user must already be authorized by system
-policy. A denial or unavailable system bus leaves the active authentication
-attempt intact and displays the logind error.
+The packaged greeter animates Tahoe Beach by default. Operators can select
+`sequoia-sunrise`, `sequoia-morning`, or `sequoia-night`, or use
+`--reduce-motion` to retain the corresponding static poster.
 
-Genkan discovers cached, unlocked, non-system login users through
-AccountsService. Selection precedence is an administrative `--username`
-override, the uniquely most recent eligible account when every eligible
-account has usable login recency, and then a sole eligible account. Genkan
-presents account selection when multiple eligible accounts have missing or
-zero recency, or when the greatest recency is tied.
-`--display-name` remains an optional companion to `--username`. The greeter
-renders initials from bounded account labels rather than decoding
-user-controlled icon files in the credential-handling process.
+## Documentation
 
-Wayland sessions come exclusively from validated `wayland-sessions/*.desktop`
-entries in `XDG_DATA_DIRS`. Genkan honors directory precedence and hidden-entry
-masking, validates `Type`, visibility, `TryExec`, and executable availability,
-requires slash-containing executable paths to be absolute, and applies Desktop
-Entry quoting and field-code rules without invoking a shell. The greetd unit
-must expose the desktop-entry directory through `XDG_DATA_DIRS`, as in the
-example. If AccountsService is unavailable, no eligible cached account exists,
-no valid session is installed, or `GREETD_SOCK` is absent, the greeter reports
-the specific configuration or transport error instead of supplying a
-host-specific fallback.
-
-The Nix package adds `/run/opengl-driver/lib` to the executable's driver
-runpath and advertises the matching Vulkan ICD directory. It therefore uses
-the Mesa or NVIDIA driver selected by the NixOS `hardware.graphics`
-configuration; it does not bundle or activate a vendor driver. Cage and the
-host graphics stack must also support the selected hardware. CI launches the
-packaged x86_64 and aarch64 binaries under nested Cage and headless Weston with
-Mesa software Vulkan. Physical hardware is intentionally opt-in because hosted
-CI has no DRM devices:
-
-```sh
-make hardware-smoke
-```
-
-Run it from a Wayland session. It tests the system AMD and NVIDIA Vulkan ICD
-once per detected vendor, launches the packaged Genkan under Vulkan-rendered
-nested Cage when that vendor has a display-connected adapter, and checks that
-an AMD-only run does not load or open the NVIDIA driver. On Sway, this stricter
-invocation also moves Cage to every active output, verifies its resulting tree
-location, and requires both GPU vendors and an active external display:
-
-```sh
-GENKAN_REQUIRE_GPU_VENDORS='1002 10de' \
-GENKAN_REQUIRE_EXTERNAL_DISPLAY=1 \
-GENKAN_EXERCISE_SWAY_OUTPUTS=1 \
-make hardware-smoke
-```
-
-A disconnected hybrid GPU can validate its physical Vulkan driver but cannot
-exercise presentation. Physical ARM hardware remains a manual coverage gap;
-aarch64 CI uses software rendering.
+- [Deployment and greetd configuration](docs/deployment.md)
+- [Development and verification](docs/development.md)
+- [Requests for Discussion](rfd/README.adoc)
+- [Deferred work](docs/deferred.md)
 
 ## Validation
 
-```sh
-make verify
-```
-
-Authentication changes should also run the x86_64 NixOS VM test:
+Run the complete local verification suite with:
 
 ```sh
-make e2e
+nix develop --command make verify
 ```
 
-The VM boots real greetd 0.10.3 with its NixOS PAM configuration. A
-feature-gated driver using Genkan's authentication client submits an incorrect
-password, cancels and recreates the greetd session, authenticates successfully,
-and starts a marker session. The test verifies the launched user and serialized
-session environment. It does not exercise iced rendering or input automation.
+This checks formatting, Clippy, Rust and shell regressions, RFD metadata,
+reference images, the Nix package, and packaged graphics startup under nested
+Cage and headless Weston.
 
-`make smoke` runs the packaged-binary graphics check used by both architecture
-jobs in CI. It starts headless Weston, nests Cage with its pixman renderer, and
-launches Genkan using Mesa's software Vulkan driver. Genkan must remain alive
-until the check's controlled timeout; `ICED_BACKEND=wgpu` prevents a successful
-tiny-skia fallback from masking Vulkan failure. A child PID marker and mapped
-Lavapipe library prove Cage started Genkan and iced initialized the intended
-driver. Early compositor, loader, or application failure fails the derivation.
+## License
 
-Valid work that is waiting on an upstream capability, physical hardware, or a
-separate product decision is recorded in [Deferred Work](docs/deferred.md).
+Genkan source code is licensed under the [MIT License](LICENSE). Packaged
+wallpaper provenance and integrity metadata are recorded separately in
+[RFD 2](rfd/0002/README.adoc) and the
+[wallpaper manifest](assets/wallpapers/manifest.toml).
