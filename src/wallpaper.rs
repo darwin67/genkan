@@ -107,7 +107,10 @@ impl State {
                     frame.pixels,
                 ));
             }
-            Update::Failed => self.frame = None,
+            Update::Failed => {
+                self.frame = None;
+                self.player.take();
+            }
         }
     }
 
@@ -264,16 +267,19 @@ impl Player {
                         .pull_sample()
                         .map_err(|_| gst::FlowError::Eos)
                         .and_then(|sample| decoded_frame(&sample))
-                        .map(|frame| {
-                            let loop_frame = frame.clone();
-                            publish_frame(&sample_shared, &sample_signal, frame);
-                            request_loop_before_eos(
-                                &sample_shared,
-                                &sample_bus,
-                                &loop_frame,
-                                duration,
-                            );
-                        });
+                        .map(
+                            |frame| match loop_frame_action(&sample_shared, &frame, duration) {
+                                LoopFrameAction::Publish => {
+                                    publish_frame(&sample_shared, &sample_signal, frame);
+                                }
+                                LoopFrameAction::Request => {
+                                    if publish_frame(&sample_shared, &sample_signal, frame) {
+                                        request_loop_before_eos(&sample_bus);
+                                    }
+                                }
+                                LoopFrameAction::Drop => {}
+                            },
+                        );
                     if result.is_err() {
                         fail_once(
                             &sample_shared,
@@ -433,43 +439,63 @@ fn pack_rgba(source: &[u8], width: u32, height: u32, stride: i32) -> Option<Byte
     Some(packed.into())
 }
 
-fn publish_frame(shared: &Shared, signal: &watch::Sender<u64>, frame: Frame) {
-    let mut state = lock(&shared.state);
-    let frame = state.transition.take().map_or(frame.clone(), |transition| {
+fn publish_frame(shared: &Shared, signal: &watch::Sender<u64>, frame: Frame) -> bool {
+    let transition = {
+        let mut state = lock(&shared.state);
+        if shared.failed.load(Ordering::Acquire) {
+            return false;
+        }
+        state.transition.take()
+    };
+    let (frame, transition) = transition.map_or((frame.clone(), None), |transition| {
         let progress = transition_progress(&transition, frame.pts);
         if progress < 256 && same_dimensions(&transition.held, &frame) {
-            state.transition = Some(transition);
-            blend(
-                &state.transition.as_ref().expect("transition retained").held,
-                frame,
-                progress,
-            )
+            let frame = blend(&transition.held, frame, progress);
+            (frame, Some(transition))
         } else {
-            frame
+            (frame, None)
         }
     });
+    let mut state = lock(&shared.state);
+    if shared.failed.load(Ordering::Acquire) {
+        return false;
+    }
+    if state.transition.is_none() {
+        state.transition = transition;
+    }
     state.last_frame = Some(frame.clone());
     state.pending = Some(Update::Frame(frame));
     drop(state);
     notify(shared, signal);
+    true
 }
 
-fn request_loop_before_eos(shared: &Shared, bus: &gst::Bus, frame: &Frame, duration: Duration) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopFrameAction {
+    Publish,
+    Request,
+    Drop,
+}
+
+fn loop_frame_action(shared: &Shared, frame: &Frame, duration: Duration) -> LoopFrameAction {
     let Some(pts) = frame.pts else {
-        return;
+        return LoopFrameAction::Publish;
     };
     let loop_at = duration.saturating_sub(LOOP_LEAD);
     if pts < loop_at {
         shared.loop_requested.store(false, Ordering::Release);
-        return;
+        return LoopFrameAction::Publish;
     }
     if shared.loop_requested.swap(true, Ordering::AcqRel) {
-        return;
+        LoopFrameAction::Drop
+    } else {
+        LoopFrameAction::Request
     }
+}
+
+fn request_loop_before_eos(bus: &gst::Bus) {
     let message = gst::message::Application::new(gst::Structure::new_empty(LOOP_MESSAGE));
-    if bus.post(message).is_err() {
-        shared.loop_requested.store(false, Ordering::Release);
-    }
+    let _ = bus.post(message);
 }
 
 fn transition_progress(transition: &LoopTransition, pts: Option<Duration>) -> u16 {
@@ -517,6 +543,10 @@ fn run_bus(
     crossfade: Duration,
 ) {
     while !stopping.load(Ordering::Acquire) {
+        if shared.failed.load(Ordering::Acquire) {
+            let _ = pipeline.set_state(gst::State::Null);
+            return;
+        }
         let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) else {
             continue;
         };
@@ -717,6 +747,74 @@ mod tests {
         };
         assert_eq!(latest.pixels[0], 2);
         assert_eq!(shared.sequence.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn late_terminal_frames_do_not_cancel_loop_transition() {
+        let shared = Shared::default();
+        let duration = Duration::from_secs(10);
+        let terminal = frame(20, duration - LOOP_LEAD);
+        let late_terminal = frame(40, duration);
+        let opening = frame(100, Duration::ZERO);
+        let (signal, _) = watch::channel(0);
+
+        assert_eq!(
+            loop_frame_action(&shared, &terminal, duration),
+            LoopFrameAction::Request
+        );
+        assert!(publish_frame(&shared, &signal, terminal));
+        begin_loop(&shared, Duration::from_secs(1));
+        assert_eq!(
+            loop_frame_action(&shared, &late_terminal, duration),
+            LoopFrameAction::Drop
+        );
+        assert!(lock(&shared.state).transition.is_some());
+
+        assert_eq!(
+            loop_frame_action(&shared, &opening, duration),
+            LoopFrameAction::Publish
+        );
+        assert!(publish_frame(&shared, &signal, opening));
+        let state = lock(&shared.state);
+        assert!(state.transition.is_some());
+        assert_eq!(state.last_frame.as_ref().unwrap().pixels[0], 20);
+    }
+
+    #[test]
+    fn terminal_failure_cannot_be_overwritten_by_a_frame() {
+        let shared = Shared::default();
+        let (signal, _) = watch::channel(0);
+
+        fail_once(&shared, &signal, "expected test failure");
+        assert!(!publish_frame(&shared, &signal, frame(1, Duration::ZERO)));
+
+        assert!(matches!(lock(&shared.state).pending, Some(Update::Failed)));
+        assert_eq!(shared.sequence.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn receiving_failure_disposes_the_player() {
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::new();
+        let bus = pipeline.bus().unwrap();
+        let shared = Arc::new(Shared::default());
+        lock(&shared.state).pending = Some(Update::Failed);
+        let (_, signal) = watch::channel(0);
+        let mut state = State {
+            player: Some(Player {
+                pipeline,
+                bus,
+                shared,
+                signal,
+                stopping: Arc::new(AtomicBool::new(false)),
+                worker: None,
+            }),
+            frame: None,
+        };
+
+        state.receive_latest();
+
+        assert!(state.is_disabled());
     }
 
     #[test]
