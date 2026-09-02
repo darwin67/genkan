@@ -234,9 +234,10 @@ failure. Genkan records a bounded diagnostic, releases failed playback
 resources, and continues with the selected static poster, or with the generated
 background when that poster is unavailable. Decoder retries are bounded so a
 permanently invalid asset cannot create a busy loop. Administrative overrides
-are opened without blocking and validated once as regular files, so a pathname
-changed to a FIFO or another special file cannot stall startup. GStreamer
-receives the same open descriptor, so later pathname replacement cannot
+are first bound with Linux `O_PATH` and validated as regular files without
+opening the target for I/O, so a pathname changed to a FIFO, device, or another
+special file cannot stall startup. The bound inode is then reopened through
+`/proc/self/fd` and passed to GStreamer, so later pathname replacement cannot
 substitute another file.
 
 == Verification

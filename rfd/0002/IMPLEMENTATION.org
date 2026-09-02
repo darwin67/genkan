@@ -154,12 +154,14 @@ inside the package output.
   ~sequoia-morning~, and ~sequoia-night~ and defaults to Tahoe Beach. Each
   selector maps to its packaged MOV, verified poster, duration, and crossfade.
 - ~--wallpaper-file~ requires an existing absolute ~.mov~ path. The path is
-  opened without blocking and validated through the resulting descriptor as a
-  regular file, so replacement with a FIFO or another special file cannot stall
-  startup. The same descriptor is passed only to ~fdsrc~, so later pathname
-  replacement cannot substitute another file and the value cannot select a URI,
-  playlist, shell command, or GStreamer pipeline. It replaces the selected
-  catalog MOV while retaining that catalog entry's verified loop metadata.
+  bound with ~O_PATH~ and validated through the resulting descriptor as a
+  regular file without opening the target for I/O, so replacement with a FIFO,
+  device, or another special file cannot stall startup. The bound inode is
+  reopened through ~/proc/self/fd~ and that descriptor is passed only to
+  ~fdsrc~, so later pathname replacement cannot substitute another file and the
+  value cannot select a URI, playlist, shell command, or GStreamer pipeline. It
+  replaces the selected catalog MOV while retaining that catalog entry's
+  verified loop metadata.
 - Production animates by default. ~--reduce-motion~ and its
   ~--static-wallpaper~ alias synchronously decode only the selected JPEG poster
   and never initialize GStreamer. Ordinary preview uses the same static path;
@@ -172,7 +174,7 @@ inside the package output.
   now places one uniform 20% black layer above either poster/video or generated
   fallback and below all greeter content, preserving the previous generated
   appearance while applying the same treatment to photographic media.
-- On 2026-09-02, all 136 Rust tests and Clippy passed. A direct playback smoke
+- On 2026-09-02, all 137 Rust tests and Clippy passed. A direct playback smoke
   decoded and sought every MOV through ~fdsrc~. The Nix package, production
   graphics smoke, and 19 deterministic preview captures passed; six durable
   RFD 1 reference images were regenerated with the Tahoe Beach poster and
