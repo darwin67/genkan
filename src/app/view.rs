@@ -18,7 +18,8 @@ use super::{App, Message, PowerState};
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
 const ACCOUNT_GRID_GAP: f32 = 18.0;
 const MAX_ACCOUNT_COLUMNS: usize = 4;
-const AUTH_ACTION_SIZE: f32 = 48.0;
+const AUTH_ACTION_SIZE: f32 = 34.0;
+const AUTH_ACTION_INSET: f32 = 7.0;
 const WIDE_MIN_WIDTH: f32 = 1280.0;
 const WIDE_MIN_HEIGHT: f32 = 700.0;
 
@@ -347,17 +348,40 @@ impl App {
         let controls: Element<'_, Message> =
             match authentication_controls(self.phase, self.selected_session.is_some()) {
                 AuthenticationControls::Prompt => {
-                    let input = container(
+                    let submit = button(text("→").size(20))
+                        .on_press_maybe(interactive.then_some(Message::Submit))
+                        .width(Length::Fixed(AUTH_ACTION_SIZE))
+                        .height(Length::Fixed(AUTH_ACTION_SIZE))
+                        .style(|theme, status| {
+                            let mut style = theme::secondary_button(
+                                theme,
+                                status,
+                                self.is_focused(FocusTarget::Submit),
+                            );
+                            style.border.radius = (AUTH_ACTION_SIZE / 2.0).into();
+                            style
+                        });
+                    let input = container(stack![
                         text_input("", &self.input)
                             .id(self.input_id.clone())
                             .on_input_maybe(interactive.then_some(Message::InputChanged))
                             .on_submit_maybe(interactive.then_some(Message::Submit))
                             .secure(self.secret)
-                            .padding([12, 18])
+                            .padding(
+                                padding::all(12)
+                                    .left(18)
+                                    .right(AUTH_ACTION_SIZE + AUTH_ACTION_INSET * 2.0)
+                            )
                             .size(18)
                             .width(Fill)
                             .style(theme::input),
-                    )
+                        container(submit)
+                            .width(Fill)
+                            .height(Fill)
+                            .padding(padding::right(AUTH_ACTION_INSET))
+                            .align_x(Alignment::End)
+                            .align_y(Alignment::Center),
+                    ])
                     .id(iced::widget::container::Id::new(
                         "authentication-input-anchor",
                     ))
@@ -369,26 +393,7 @@ impl App {
                             .width(Fill)
                             .align_x(Alignment::Center)
                             .wrapping(Wrapping::WordOrGlyph),
-                        row![
-                            Space::new(Length::Fixed(AUTH_ACTION_SIZE), Length::Shrink),
-                            input,
-                            button(text("→").size(22))
-                                .on_press_maybe(interactive.then_some(Message::Submit))
-                                .width(Length::Fixed(AUTH_ACTION_SIZE))
-                                .height(Length::Fixed(AUTH_ACTION_SIZE))
-                                .style(|theme, status| {
-                                    let mut style = theme::primary_button(
-                                        theme,
-                                        status,
-                                        self.is_focused(FocusTarget::Submit),
-                                    );
-                                    style.border.radius = (AUTH_ACTION_SIZE / 2.0).into();
-                                    style
-                                }),
-                        ]
-                        .spacing(8)
-                        .width(Fill)
-                        .align_y(Alignment::Center),
+                        input,
                     ]
                     .spacing(8)
                     .into()
