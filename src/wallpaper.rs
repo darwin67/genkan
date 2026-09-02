@@ -343,21 +343,23 @@ fn element(factory: &str) -> Result<gst::Element, String> {
 }
 
 fn open_wallpaper(path: &Path) -> Result<File, String> {
-    let file = open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|_| pipeline_error("wallpaper file is unavailable"))?;
-    if !file
+    let bound = open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
+        .map(File::from)
+        .map_err(|_| pipeline_error("wallpaper file is unavailable"))?;
+    if !bound
         .metadata()
         .map_err(|_| pipeline_error("wallpaper file metadata is unavailable"))?
         .is_file()
     {
         return Err(pipeline_error("wallpaper path is not a regular file"));
     }
-    Ok(file)
+    open(
+        format!("/proc/self/fd/{}", bound.as_raw_fd()),
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|_| pipeline_error("wallpaper file could not be opened for playback"))
 }
 
 fn build_pipeline(
@@ -963,6 +965,22 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("wallpaper.mov");
         rustix::fs::mkfifoat(rustix::fs::CWD, &path, Mode::RUSR | Mode::WUSR).unwrap();
+
+        assert!(open_wallpaper(&path).is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn wallpaper_device_is_rejected_without_opening_the_device() {
+        let directory = std::env::temp_dir().join(format!(
+            "genkan-wallpaper-source-device-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("wallpaper.mov");
+        std::os::unix::fs::symlink("/dev/null", &path).unwrap();
 
         assert!(open_wallpaper(&path).is_err());
 
