@@ -4,6 +4,7 @@ mod background;
 mod power;
 mod sessions;
 mod theme;
+mod wallpaper;
 
 use app::{App, Config, PreviewFixture};
 use clap::{Parser, ValueEnum};

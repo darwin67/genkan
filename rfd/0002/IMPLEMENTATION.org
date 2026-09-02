@@ -66,23 +66,63 @@ inside the package output.
 
 * Phase 2: Playback
 
-- [ ] Add a GStreamer library pipeline for silent asynchronous decode through
+- [X] Add a GStreamer library pipeline for silent asynchronous decode through
   ~appsink~ without invoking a shell, external player, or pipeline string from
   configuration.
-- [ ] Hand off only the latest decoded frame through a bounded channel or slot;
+- [X] Hand off only the latest decoded frame through a bounded channel or slot;
   never queue video frames behind authentication work.
-- [ ] Upload new frames to iced, request redraw only when required, and retain
+- [X] Upload new frames to iced, request redraw only when required, and retain
   no application-owned frame history.
-- [ ] Scale with aspect-preserving cover semantics and center-crop at laptop,
+- [X] Scale with aspect-preserving cover semantics and center-crop at laptop,
   1080p, 4K, ultrawide, and narrow output sizes.
-- [ ] Inspect every video's end-to-start transition; use direct seeking for a
+- [X] Inspect every video's end-to-start transition; use direct seeking for a
   seamless source and a held-final-frame crossfade for a non-seamless source.
-- [ ] Loop with a bounded end-of-stream seek and verify repeated loops do not
+- [X] Loop with a bounded end-of-stream seek and verify repeated loops do not
   visibly jump, leak memory, grow queues, or stall interaction.
-- [ ] Preserve the current generated background until the first frame and after
+- [X] Preserve the current generated background until the first frame and after
   initialization, decode, stream, or seek failure.
-- [ ] Bound diagnostics and retries for missing, corrupt, or unsupported media
+- [X] Bound diagnostics and retries for missing, corrupt, or unsupported media
   without exiting the greeter.
+
+** Phase 2 verification record
+
+- The application constructs ~filesrc~, ~qtdemux~, ~h265parse~, ~decodebin~,
+  ~videorate~, ~videoconvert~, and ~appsink~ through the GStreamer Rust API.
+  ~decodebin~ prefers an available packaged hardware decoder. If that pipeline
+  fails or times out before its first frame, the worker rebuilds it exactly once
+  with explicit ~avdec_h265~ software decode; it does not retry after playback
+  begins. Audio pads are never linked.
+- ~appsink~ is synchronized to media time, limited to one dropping buffer, and
+  outputs RGBA at 30 frames per second. Its callback replaces one shared latest
+  frame; a Tokio watch signal carries only a sequence change to iced. The UI
+  then takes the newest frame and creates one raw-RGBA image handle. Preview
+  fixtures do not construct a player.
+- The code catalog retains the manifest durations and verified 2 s Tahoe Beach
+  and Sequoia Night and 1 s Sequoia Sunrise and Morning held-frame crossfades.
+  Playback requests an accurate flush seek immediately before EOS so hardware
+  decoders do not enter a terminal EOS state. A local accelerated smoke forced
+  two complete seek-and-crossfade cycles for each of the four packaged videos;
+  all eight cycles resumed opening frames without a stream or seek failure.
+- Once a loop is requested, subsequent terminal frames are discarded until an
+  opening timestamp arrives, so a late pre-seek frame cannot end the crossfade.
+  The held-frame blend runs outside the shared-state lock. First-frame decode is
+  bounded to 10 s for automatic decode and 60 s for the single software attempt;
+  playback and post-seek frame gaps are bounded to 10 s. Each timeout stops the
+  pipeline and restores the generated background.
+- iced renders each frame with centered ~ContentFit::Cover~. Geometry tests
+  verify coverage and preserved 16:9 aspect ratio at 1366x768, 1920x1080,
+  3840x2160, 3440x1440, and 800x1280.
+- Before the first frame and after any pipeline failure, the view selects the
+  existing generated background. Diagnostics replace control characters, stop
+  at 240 characters, and are emitted once per failed player. The one permitted
+  software retry occurs only before the first frame, so invalid media cannot
+  create a busy loop. A terminal failure cannot be overwritten by an in-flight
+  frame, and the failed player is disposed after iced receives that update.
+- On 2026-09-02, all 128 Rust tests and Clippy passed. The Nix package built,
+  deterministic preview evidence remained decoder-free, and the production
+  graphics smoke launched the packaged MOV pipeline under nested Cage, headless
+  Weston, and software Vulkan. That smoke also exposed and then verified the
+  fix for the wrapped package's core GStreamer plugin search path.
 
 * Phase 3: Presentation and configuration
 
