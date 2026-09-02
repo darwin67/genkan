@@ -28,7 +28,17 @@ const WIDE_MIN_WIDTH: f32 = 1280.0;
 const WIDE_MIN_HEIGHT: f32 = 700.0;
 
 #[derive(Debug, Clone, Copy)]
-struct SubmitArrow;
+struct SubmitArrow {
+    color: Color,
+}
+
+fn submit_visual_status(status: button::Status, has_input: bool) -> button::Status {
+    if has_input {
+        status
+    } else {
+        button::Status::Disabled
+    }
+}
 
 impl<Message> canvas::Program<Message> for SubmitArrow {
     type State = ();
@@ -53,7 +63,7 @@ impl<Message> canvas::Program<Message> for SubmitArrow {
         frame.stroke(
             &path,
             Stroke::default()
-                .with_color(Color::WHITE)
+                .with_color(self.color)
                 .with_width(2.25)
                 .with_line_cap(LineCap::Round)
                 .with_line_join(LineJoin::Round),
@@ -387,18 +397,25 @@ impl App {
         let controls: Element<'_, Message> =
             match authentication_controls(self.phase, self.selected_session.is_some()) {
                 AuthenticationControls::Prompt => {
+                    let has_input = !self.input.is_empty();
                     let submit = button(
-                        Canvas::new(SubmitArrow)
-                            .width(Length::Fixed(18.0))
-                            .height(Length::Fixed(18.0)),
+                        Canvas::new(SubmitArrow {
+                            color: if has_input {
+                                theme::primary_text()
+                            } else {
+                                theme::muted_text()
+                            },
+                        })
+                        .width(Length::Fixed(18.0))
+                        .height(Length::Fixed(18.0)),
                     )
                     .on_press_maybe(interactive.then_some(Message::Submit))
                     .width(Length::Fixed(AUTH_ACTION_SIZE))
                     .height(Length::Fixed(AUTH_ACTION_SIZE))
-                    .style(|theme, status| {
+                    .style(move |theme, status| {
                         let mut style = theme::secondary_button(
                             theme,
-                            status,
+                            submit_visual_status(status, has_input),
                             self.is_focused(FocusTarget::Submit),
                         );
                         style.border.radius = (AUTH_ACTION_SIZE / 2.0).into();
@@ -855,6 +872,18 @@ mod tests {
         assert_eq!(
             authentication_controls(Phase::Failed, true),
             AuthenticationControls::Retry
+        );
+    }
+
+    #[test]
+    fn empty_response_uses_disabled_submit_appearance() {
+        assert_eq!(
+            submit_visual_status(button::Status::Hovered, false),
+            button::Status::Disabled
+        );
+        assert_eq!(
+            submit_visual_status(button::Status::Hovered, true),
+            button::Status::Hovered
         );
     }
 
