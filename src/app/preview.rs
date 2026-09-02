@@ -55,6 +55,7 @@ pub(super) fn build(
     fixture: Fixture,
     username: Option<String>,
     display_name: Option<String>,
+    wallpaper_settings: wallpaper::Settings,
 ) -> (App, Task<Message>) {
     let input_id = text_input::Id::new("authentication-input");
     let state = State::new(fixture, username, display_name);
@@ -91,7 +92,7 @@ pub(super) fn build(
         selected_session,
         session_menu_open: false,
         session_selector_key: 0,
-        wallpaper: wallpaper::State::disabled(),
+        wallpaper: wallpaper::State::start(wallpaper_settings),
         started_at: Instant::now(),
         now: preview_now(),
         power_state: PowerState::Idle,
@@ -264,13 +265,27 @@ fn preview_now() -> chrono::DateTime<Local> {
 mod tests {
     use super::*;
 
+    fn build_fixture(fixture: Fixture) -> (App, Task<Message>) {
+        build(
+            fixture,
+            None,
+            None,
+            wallpaper::Settings {
+                catalog: wallpaper::Catalog::TahoeBeach,
+                override_path: None,
+                animate: false,
+            },
+        )
+    }
+
     #[test]
     fn fixtures_are_deterministic_and_service_free() {
         for fixture in Fixture::value_variants() {
-            let (app, _) = build(*fixture, None, None);
+            let (app, _) = build_fixture(*fixture);
             assert!(app.preview, "fixture {fixture:?}");
             assert!(app.client.is_none(), "fixture {fixture:?}");
-            assert!(app.wallpaper.is_disabled(), "fixture {fixture:?}");
+            assert!(app.wallpaper.decoder_is_stopped(), "fixture {fixture:?}");
+            assert!(app.wallpaper.has_frame(), "fixture {fixture:?}");
             assert_eq!(app.now.format("%-I:%M").to_string(), "9:41");
             assert_eq!(
                 app.now.format("%A, %B %-d").to_string(),
@@ -279,7 +294,7 @@ mod tests {
             assert_eq!(app.background_elapsed(), 0.0);
         }
 
-        let (selected, _) = build(Fixture::Selected, None, None);
+        let (selected, _) = build_fixture(Fixture::Selected);
         assert_eq!(selected.username, "preview");
         assert_eq!(selected.display_name, "Preview User");
         assert_eq!(selected.accounts, vec![selected.accounts[0].clone()]);
@@ -291,7 +306,7 @@ mod tests {
 
     #[test]
     fn preview_ticks_do_not_change_time_or_animation() {
-        let (mut app, _) = build(Fixture::Selected, None, None);
+        let (mut app, _) = build_fixture(Fixture::Selected);
         let now = app.now;
 
         let _ = app.update(Message::Tick);
@@ -302,7 +317,7 @@ mod tests {
 
     #[test]
     fn preview_account_changes_clear_simulated_responses_without_a_client() {
-        let (mut app, _) = build(Fixture::Users, None, None);
+        let (mut app, _) = build_fixture(Fixture::Users);
         app.input = "simulated response".into();
         let account = app.accounts[0].clone();
 
@@ -316,11 +331,11 @@ mod tests {
 
     #[test]
     fn account_fixtures_cover_cardinality_and_collisions() {
-        let (users, _) = build(Fixture::Users, None, None);
+        let (users, _) = build_fixture(Fixture::Users);
         assert_eq!(users.accounts.len(), 2);
         assert_eq!(users.phase, Phase::SelectingUser);
 
-        let (duplicates, _) = build(Fixture::DuplicateNames, None, None);
+        let (duplicates, _) = build_fixture(Fixture::DuplicateNames);
         assert_eq!(
             duplicates.accounts[0].display_name,
             duplicates.accounts[1].display_name
@@ -330,10 +345,10 @@ mod tests {
             duplicates.accounts[1].username
         );
 
-        let (large, _) = build(Fixture::LargeAccountSet, None, None);
+        let (large, _) = build_fixture(Fixture::LargeAccountSet);
         assert_eq!(large.accounts.len(), 24);
 
-        let (long, _) = build(Fixture::LongAccounts, None, None);
+        let (long, _) = build_fixture(Fixture::LongAccounts);
         assert_eq!(long.accounts.len(), 2);
         assert_eq!(long.accounts[0].display_name, long.accounts[1].display_name);
         assert_ne!(long.accounts[0].username, long.accounts[1].username);
@@ -341,32 +356,32 @@ mod tests {
         assert!(long.accounts[0].username.chars().count() >= 240);
         assert!(long.requires_flow_layout());
 
-        let (empty, _) = build(Fixture::DiscoveryFailure, None, None);
+        let (empty, _) = build_fixture(Fixture::DiscoveryFailure);
         assert!(empty.accounts.is_empty());
     }
 
     #[test]
     fn prompt_and_failure_fixtures_expose_expected_states() {
-        let (visible, _) = build(Fixture::VisiblePrompt, None, None);
+        let (visible, _) = build_fixture(Fixture::VisiblePrompt);
         assert_eq!(visible.phase, Phase::WaitingForInput);
         assert!(!visible.secret);
 
-        let (long, _) = build(Fixture::LongAuthentication, None, None);
+        let (long, _) = build_fixture(Fixture::LongAuthentication);
         assert!(long.prompt.chars().count() >= 500);
         assert!(long.message.as_deref().unwrap().chars().count() >= 500);
         assert!(long.username.chars().count() >= 240);
         assert!(long.requires_flow_layout());
 
-        let (secret, _) = build(Fixture::SecretPrompt, None, None);
+        let (secret, _) = build_fixture(Fixture::SecretPrompt);
         assert!(secret.secret);
 
-        let (consecutive, _) = build(Fixture::ConsecutiveMessages, None, None);
+        let (consecutive, _) = build_fixture(Fixture::ConsecutiveMessages);
         assert_eq!(
             consecutive.message.as_deref(),
             Some("Security key accepted; enter your password")
         );
 
-        let (authentication, _) = build(Fixture::AuthenticationFailure, None, None);
+        let (authentication, _) = build_fixture(Fixture::AuthenticationFailure);
         assert_eq!(authentication.phase, Phase::Failed);
         assert!(authentication.message_is_error);
         assert_eq!(
@@ -374,21 +389,21 @@ mod tests {
             Some(FocusTarget::RetryAuthentication)
         );
 
-        let (discovery, _) = build(Fixture::DiscoveryFailure, None, None);
+        let (discovery, _) = build_fixture(Fixture::DiscoveryFailure);
         assert_eq!(
             discovery.focus_target,
             Some(FocusTarget::RetryAccountSelection)
         );
 
-        let (session, _) = build(Fixture::SessionFailure, None, None);
+        let (session, _) = build_fixture(Fixture::SessionFailure);
         assert_eq!(session.focus_target, Some(FocusTarget::RetrySession));
 
-        let (cancellation, _) = build(Fixture::CancellationProgress, None, None);
+        let (cancellation, _) = build_fixture(Fixture::CancellationProgress);
         assert_eq!(cancellation.phase, Phase::CancellingForUserSelection);
         assert!(!cancellation.can_select_account());
         assert_eq!(cancellation.focus_target, Some(FocusTarget::Session));
 
-        let (cancellation_failure, _) = build(Fixture::CancellationFailure, None, None);
+        let (cancellation_failure, _) = build_fixture(Fixture::CancellationFailure);
         assert_eq!(
             cancellation_failure.phase,
             Phase::UserSelectionCancellationFailed
@@ -399,7 +414,7 @@ mod tests {
             Some(FocusTarget::RetryAccountSelection)
         );
 
-        let (power, _) = build(Fixture::PowerConfirmation, None, None);
+        let (power, _) = build_fixture(Fixture::PowerConfirmation);
         assert_eq!(
             power.power_state,
             PowerState::Confirming(PowerAction::PowerOff)

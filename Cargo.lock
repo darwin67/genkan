@@ -1309,6 +1309,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-video",
  "iced",
+ "image",
  "rclip-desktop-entry",
  "rustix 1.1.4",
  "thiserror 2.0.20",
@@ -1964,6 +1965,7 @@ dependencies = [
  "bytemuck",
  "byteorder",
  "color_quant",
+ "jpeg-decoder",
  "num-traits",
 ]
 
@@ -2074,6 +2076,12 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
 ]
+
+[[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
 
 [[package]]
 name = "js-sys"

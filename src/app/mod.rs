@@ -62,6 +62,7 @@ pub(crate) struct Config {
     pub(crate) username: Option<String>,
     pub(crate) display_name: Option<String>,
     pub(crate) preview: Option<PreviewFixture>,
+    pub(crate) wallpaper: wallpaper::Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +151,12 @@ pub(crate) enum Message {
 impl App {
     pub(crate) fn new(config: Config) -> (Self, Task<Message>) {
         if let Some(fixture) = config.preview {
-            return preview::build(fixture, config.username, config.display_name);
+            return preview::build(
+                fixture,
+                config.username,
+                config.display_name,
+                config.wallpaper,
+            );
         }
         let sessions = sessions::discover();
         let selected_session = sessions.first().cloned();
@@ -197,7 +203,7 @@ impl App {
             selected_session,
             session_menu_open: false,
             session_selector_key: 0,
-            wallpaper: wallpaper::State::start_default(),
+            wallpaper: wallpaper::State::start(config.wallpaper),
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,

@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ::image as image_rs;
 use bytes::Bytes;
+use clap::ValueEnum;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -14,7 +16,6 @@ use iced::widget::{image, Image};
 use iced::{ContentFit, Element, Fill, Subscription};
 use tokio::sync::watch;
 
-const DEFAULT_WALLPAPER_ID: &str = "tahoe-beach";
 const OUTPUT_FRAMES_PER_SECOND: i32 = 30;
 const MAX_DIAGNOSTIC_CHARS: usize = 240;
 const LOOP_LEAD: Duration = Duration::from_millis(50);
@@ -23,71 +24,121 @@ const AUTOMATIC_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SOFTWARE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const SEEK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+static POSTERS: [OnceLock<Result<image::Handle, String>>; 4] = [const { OnceLock::new() }; 4];
 
 #[derive(Debug, Clone, Copy)]
 struct PlaybackSpec {
-    id: &'static str,
     install_name: &'static str,
+    poster_name: &'static str,
     duration: Duration,
     crossfade: Duration,
 }
 
 const WALLPAPERS: [PlaybackSpec; 4] = [
     PlaybackSpec {
-        id: "tahoe-beach",
         install_name: "tahoe-beach.mov",
+        poster_name: "tahoe-beach-poster.jpg",
         duration: Duration::from_micros(120_004_167),
         crossfade: Duration::from_millis(2_000),
     },
     PlaybackSpec {
-        id: "sequoia-sunrise",
         install_name: "sequoia-sunrise.mov",
+        poster_name: "sequoia-sunrise-poster.jpg",
         duration: Duration::from_micros(120_008_333),
         crossfade: Duration::from_millis(1_000),
     },
     PlaybackSpec {
-        id: "sequoia-morning",
         install_name: "sequoia-morning.mov",
+        poster_name: "sequoia-morning-poster.jpg",
         duration: Duration::from_micros(243_336_667),
         crossfade: Duration::from_millis(1_000),
     },
     PlaybackSpec {
-        id: "sequoia-night",
         install_name: "sequoia-night.mov",
+        poster_name: "sequoia-night-poster.jpg",
         duration: Duration::from_micros(291_603_333),
         crossfade: Duration::from_millis(2_000),
     },
 ];
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Catalog {
+    #[default]
+    TahoeBeach,
+    SequoiaSunrise,
+    SequoiaMorning,
+    SequoiaNight,
+}
+
+impl Catalog {
+    fn index(self) -> usize {
+        match self {
+            Self::TahoeBeach => 0,
+            Self::SequoiaSunrise => 1,
+            Self::SequoiaMorning => 2,
+            Self::SequoiaNight => 3,
+        }
+    }
+
+    fn spec(self) -> &'static PlaybackSpec {
+        &WALLPAPERS[self.index()]
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Settings {
+    pub(crate) catalog: Catalog,
+    pub(crate) override_path: Option<PathBuf>,
+    pub(crate) animate: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct State {
     player: Option<Player>,
+    poster: Option<image::Handle>,
     frame: Option<image::Handle>,
 }
 
 impl State {
-    pub(crate) fn start_default() -> Self {
-        let spec = WALLPAPERS
-            .iter()
-            .find(|wallpaper| wallpaper.id == DEFAULT_WALLPAPER_ID)
-            .expect("the default wallpaper must be in the catalog");
-        let result = packaged_wallpaper_path(spec.install_name)
+    pub(crate) fn start(settings: Settings) -> Self {
+        let spec = settings.catalog.spec();
+        let poster = load_poster(settings.catalog)
+            .map_err(|error| diagnostic(&error))
+            .ok();
+        if !settings.animate {
+            return Self {
+                player: None,
+                frame: poster.clone(),
+                poster,
+            };
+        }
+
+        let result = settings
+            .override_path
+            .map_or_else(|| packaged_wallpaper_path(spec.install_name), Ok)
             .and_then(|path| Player::start(&path, spec.duration, spec.crossfade));
         match result {
             Ok(player) => Self {
                 player: Some(player),
-                frame: None,
+                frame: poster.clone(),
+                poster,
             },
             Err(error) => {
                 diagnostic(&error);
-                Self::disabled()
+                Self {
+                    player: None,
+                    frame: poster.clone(),
+                    poster,
+                }
             }
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn disabled() -> Self {
         Self {
             player: None,
+            poster: None,
             frame: None,
         }
     }
@@ -112,7 +163,7 @@ impl State {
                 ));
             }
             Update::Failed => {
-                self.frame = None;
+                self.frame.clone_from(&self.poster);
                 self.player.take();
             }
         }
@@ -133,7 +184,7 @@ impl State {
     }
 
     #[cfg(test)]
-    pub(crate) fn is_disabled(&self) -> bool {
+    pub(crate) fn decoder_is_stopped(&self) -> bool {
         self.player.is_none()
     }
 }
@@ -789,6 +840,32 @@ fn packaged_wallpaper_path(install_name: &str) -> Result<PathBuf, String> {
     })
 }
 
+fn load_poster(catalog: Catalog) -> Result<image::Handle, String> {
+    POSTERS[catalog.index()]
+        .get_or_init(|| decode_poster(catalog.spec()))
+        .clone()
+}
+
+fn decode_poster(spec: &PlaybackSpec) -> Result<image::Handle, String> {
+    let path = packaged_wallpaper_path(spec.poster_name)
+        .ok()
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/wallpapers")
+                .join(spec.poster_name);
+            path.is_file().then_some(path)
+        })
+        .ok_or_else(|| "wallpaper poster is unavailable; using generated background".to_owned())?;
+    let rgba = image_rs::open(path)
+        .map_err(|_| {
+            "wallpaper poster could not be decoded; using generated background".to_owned()
+        })?
+        .into_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(image::Handle::from_rgba(width, height, rgba.into_raw()))
+}
+
 fn wallpaper_path_for_executable(executable: &Path, install_name: &str) -> Option<PathBuf> {
     let prefix = executable.parent()?.parent()?;
     Some(prefix.join("share/genkan/wallpapers").join(install_name))
@@ -850,23 +927,65 @@ mod tests {
 
     #[test]
     fn catalog_retains_each_verified_loop_transition() {
-        let transitions = WALLPAPERS.map(|wallpaper| {
-            (
-                wallpaper.id,
-                wallpaper.install_name,
-                wallpaper.duration.as_micros(),
-                wallpaper.crossfade.as_millis(),
-            )
-        });
+        let transitions = Catalog::value_variants()
+            .iter()
+            .map(|catalog| {
+                let wallpaper = catalog.spec();
+                (
+                    catalog.to_possible_value().unwrap().get_name().to_owned(),
+                    wallpaper.install_name,
+                    wallpaper.poster_name,
+                    wallpaper.duration.as_micros(),
+                    wallpaper.crossfade.as_millis(),
+                )
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
             transitions,
-            [
-                ("tahoe-beach", "tahoe-beach.mov", 120_004_167, 2_000),
-                ("sequoia-sunrise", "sequoia-sunrise.mov", 120_008_333, 1_000),
-                ("sequoia-morning", "sequoia-morning.mov", 243_336_667, 1_000),
-                ("sequoia-night", "sequoia-night.mov", 291_603_333, 2_000),
+            vec![
+                (
+                    "tahoe-beach".into(),
+                    "tahoe-beach.mov",
+                    "tahoe-beach-poster.jpg",
+                    120_004_167,
+                    2_000
+                ),
+                (
+                    "sequoia-sunrise".into(),
+                    "sequoia-sunrise.mov",
+                    "sequoia-sunrise-poster.jpg",
+                    120_008_333,
+                    1_000
+                ),
+                (
+                    "sequoia-morning".into(),
+                    "sequoia-morning.mov",
+                    "sequoia-morning-poster.jpg",
+                    243_336_667,
+                    1_000
+                ),
+                (
+                    "sequoia-night".into(),
+                    "sequoia-night.mov",
+                    "sequoia-night-poster.jpg",
+                    291_603_333,
+                    2_000
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn static_catalog_entries_load_posters_without_players() {
+        for catalog in Catalog::value_variants() {
+            let state = State::start(Settings {
+                catalog: *catalog,
+                override_path: None,
+                animate: false,
+            });
+            assert!(state.decoder_is_stopped(), "{catalog:?}");
+            assert!(state.has_frame(), "{catalog:?}");
+        }
     }
 
     #[test]
@@ -961,6 +1080,7 @@ mod tests {
         let shared = Arc::new(Shared::default());
         lock(&shared.state).pending = Some(Update::Failed);
         let (_, signal) = watch::channel(0);
+        let poster = image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]);
         let mut state = State {
             player: Some(Player {
                 shared,
@@ -968,12 +1088,14 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            poster: Some(poster),
             frame: None,
         };
 
         state.receive_latest();
 
-        assert!(state.is_disabled());
+        assert!(state.decoder_is_stopped());
+        assert!(state.has_frame());
     }
 
     #[test]
