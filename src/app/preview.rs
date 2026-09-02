@@ -38,6 +38,7 @@ pub(crate) enum Fixture {
 struct State {
     accounts: Vec<Account>,
     selected: Option<Account>,
+    input: String,
     prompt: String,
     message: Option<String>,
     message_is_error: bool,
@@ -76,7 +77,7 @@ pub(super) fn build(
         focus_before_modal: None,
         account_scroll_id: scrollable::Id::unique(),
         page_scroll_id: scrollable::Id::unique(),
-        input: String::new(),
+        input: state.input,
         input_id,
         prompt: state.prompt,
         message: state.message,
@@ -106,6 +107,8 @@ pub(super) fn build(
     let task = if confirming_power {
         app.focus_before_modal = base_focus;
         app.set_focus(FocusTarget::DialogCancel)
+    } else if app.phase == Phase::WaitingForInput {
+        app.blur_input()
     } else {
         app.focus_first()
     };
@@ -124,6 +127,7 @@ impl State {
         let mut state = Self {
             accounts: vec![selected.clone()],
             selected: Some(selected),
+            input: String::new(),
             prompt: "Password".into(),
             message: None,
             message_is_error: false,
@@ -181,6 +185,7 @@ impl State {
                 state.message = Some("Authentication details: ".to_owned() + &"detail ".repeat(70));
             }
             Fixture::VisiblePrompt => {
+                state.input = "123456".into();
                 state.prompt = "Verification code".into();
                 state.secret = false;
             }
@@ -284,6 +289,11 @@ mod tests {
             let (app, _) = build_fixture(*fixture);
             assert!(app.preview, "fixture {fixture:?}");
             assert!(app.client.is_none(), "fixture {fixture:?}");
+            assert_ne!(
+                app.focus_target,
+                Some(FocusTarget::AuthenticationInput),
+                "fixture {fixture:?} must not expose a blinking caret"
+            );
             assert!(app.wallpaper.decoder_is_stopped(), "fixture {fixture:?}");
             assert!(app.wallpaper.has_frame(), "fixture {fixture:?}");
             assert_eq!(app.now.format("%-I:%M").to_string(), "9:41");
@@ -297,11 +307,15 @@ mod tests {
         let (selected, _) = build_fixture(Fixture::Selected);
         assert_eq!(selected.username, "preview");
         assert_eq!(selected.display_name, "Preview User");
+        assert!(selected.input.is_empty());
         assert_eq!(selected.accounts, vec![selected.accounts[0].clone()]);
         assert_eq!(
             selected.selected_session.as_ref().unwrap(),
             &preview_session()
         );
+
+        let (visible_prompt, _) = build_fixture(Fixture::VisiblePrompt);
+        assert_eq!(visible_prompt.input, "123456");
     }
 
     #[test]
