@@ -1,6 +1,6 @@
 mod runtime;
 
-use std::os::fd::RawFd;
+use std::os::fd::OwnedFd;
 
 use bytes::Bytes;
 
@@ -56,7 +56,7 @@ pub trait Presentation {
 pub struct Config {
     identity: Identity,
     presentation: Box<dyn Presentation>,
-    ready_fd: Option<RawFd>,
+    ready_fd: Option<OwnedFd>,
     #[cfg(feature = "lock-test")]
     test_unlock_after_ready: bool,
 }
@@ -65,7 +65,7 @@ impl Config {
     pub fn new(
         identity: Identity,
         presentation: impl Presentation + 'static,
-        ready_fd: Option<RawFd>,
+        ready_fd: Option<OwnedFd>,
     ) -> Self {
         Self {
             identity,

@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use calloop::EventLoop;
@@ -29,10 +29,6 @@ const MAX_SURFACE_PIXELS: usize = 16_384 * 16_384;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("invalid readiness descriptor {0}; descriptors 0, 1, and 2 are reserved")]
-    InvalidReadyFd(RawFd),
-    #[error("could not duplicate readiness descriptor: {0}")]
-    ReadyFd(#[source] std::io::Error),
     #[error("could not connect to the Wayland compositor: {0}")]
     Connect(String),
     #[error("required Wayland protocol is unavailable: {0}")]
@@ -63,7 +59,7 @@ struct Runtime {
     surfaces: Vec<Surface>,
     state: State,
     presentation: Box<dyn Presentation>,
-    ready: Option<File>,
+    ready: ReadySignal,
     failure: Option<Error>,
     terminate: bool,
     #[cfg(feature = "lock-test")]
@@ -71,7 +67,7 @@ struct Runtime {
 }
 
 pub(super) fn run(config: Config) -> Result<(), Error> {
-    let ready = config.ready_fd.map(ready_file).transpose()?;
+    let ready = ReadySignal::new(config.ready_fd);
     let conn = Connection::connect_to_env().map_err(|error| Error::Connect(error.to_string()))?;
     let (globals, mut event_queue) =
         registry_queue_init(&conn).map_err(|error| Error::Runtime(error.to_string()))?;
@@ -135,11 +131,10 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
             runtime.fail(Error::Runtime(error.to_string()));
             break;
         }
-        match runtime.presentation.receive_latest() {
+        match refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state) {
             Refresh::Unchanged => {}
             Refresh::Frame => runtime.redraw_all(&qh),
             Refresh::Failed => {
-                let _ = runtime.state.update(Event::PresentationFailed);
                 eprintln!("genkan lock: presentation failed; retaining opaque fallback");
                 runtime.redraw_all(&qh);
             }
@@ -147,31 +142,6 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
     }
 
     runtime.failure.map_or(Ok(()), Err)
-}
-
-fn ready_file(fd: RawFd) -> Result<File, Error> {
-    if fd <= 2 {
-        return Err(Error::InvalidReadyFd(fd));
-    }
-    // SAFETY: `fcntl` accepts a raw integer and reports EBADF for an invalid
-    // descriptor. A non-negative result is a newly owned descriptor.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-    if duplicate < 0 {
-        return Err(Error::ReadyFd(std::io::Error::last_os_error()));
-    }
-    // The caller transfers the inherited descriptor to Genkan. Close it only
-    // after duplication has proved it valid; the duplicate remains owned.
-    // SAFETY: `fd` was successfully duplicated and is therefore open here.
-    let close_result = unsafe { libc::close(fd) };
-    if close_result != 0 {
-        // SAFETY: `duplicate` was returned by successful `fcntl` and has not
-        // been consumed yet.
-        drop(unsafe { File::from_raw_fd(duplicate) });
-        return Err(Error::ReadyFd(std::io::Error::last_os_error()));
-    }
-    // SAFETY: `duplicate` was returned by successful `fcntl`, is uniquely
-    // owned here, and is converted exactly once.
-    Ok(unsafe { File::from_raw_fd(duplicate) })
 }
 
 impl Runtime {
@@ -269,7 +239,7 @@ impl Runtime {
             Action::None => {}
             Action::ReportReady => {
                 eprintln!("genkan lock: compositor confirmed lock");
-                if let Err(error) = report_ready(&mut self.ready) {
+                if let Err(error) = self.ready.apply(action) {
                     self.fail(Error::Runtime(format!(
                         "could not report lock readiness: {error}"
                     )));
@@ -313,10 +283,8 @@ impl Runtime {
 
 impl SessionLockHandler for Runtime {
     fn locked(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _lock: SessionLock) {
-        if self.failure.is_some() || self.terminate {
-            return;
-        }
-        let action = self.state.update(Event::LockConfirmed);
+        let action =
+            lock_confirmation_action(&mut self.state, self.failure.is_some() || self.terminate);
         self.apply(action);
     }
 
@@ -553,12 +521,38 @@ fn dim(value: u8) -> u8 {
     ((u16::from(value) * DIM_NUMERATOR) / DIM_DENOMINATOR) as u8
 }
 
-fn report_ready(ready: &mut Option<File>) -> std::io::Result<()> {
-    if let Some(mut ready) = ready.take() {
-        ready.write_all(b"READY\n")?;
-        ready.flush()?;
+fn refresh_presentation(presentation: &mut dyn Presentation, state: &mut State) -> Refresh {
+    let refresh = presentation.receive_latest();
+    if refresh == Refresh::Failed {
+        let _ = state.update(Event::PresentationFailed);
     }
-    Ok(())
+    refresh
+}
+
+fn lock_confirmation_action(state: &mut State, blocked: bool) -> Action {
+    if blocked {
+        Action::None
+    } else {
+        state.update(Event::LockConfirmed)
+    }
+}
+
+struct ReadySignal(Option<File>);
+
+impl ReadySignal {
+    fn new(fd: Option<OwnedFd>) -> Self {
+        Self(fd.map(File::from))
+    }
+
+    fn apply(&mut self, action: Action) -> std::io::Result<()> {
+        if action == Action::ReportReady {
+            if let Some(mut ready) = self.0.take() {
+                ready.write_all(b"READY\n")?;
+                ready.flush()?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -566,8 +560,30 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use std::io::Read;
-    use std::os::fd::IntoRawFd;
     use std::os::unix::net::UnixStream;
+
+    struct FakePresentation {
+        refresh: Refresh,
+        frame: Option<RgbaFrame>,
+    }
+
+    impl Presentation for FakePresentation {
+        fn receive_latest(&mut self) -> Refresh {
+            self.refresh
+        }
+
+        fn frame(&self) -> Option<RgbaFrame> {
+            self.frame.clone()
+        }
+    }
+
+    fn state() -> State {
+        State::new(super::super::Identity::new(
+            1000,
+            "alice".into(),
+            "Alice".into(),
+        ))
+    }
 
     #[test]
     fn transformed_scaled_buffers_cover_the_configured_surface() {
@@ -602,29 +618,61 @@ mod tests {
     }
 
     #[test]
-    fn invalid_readiness_descriptor_is_rejected_before_ownership() {
-        assert!(matches!(ready_file(1_000_000), Err(Error::ReadyFd(_))));
-    }
-
-    #[test]
     fn valid_readiness_descriptor_reports_exact_protocol_message() {
         let (mut reader, writer) = UnixStream::pair().unwrap();
-        let mut ready = Some(ready_file(writer.into_raw_fd()).unwrap());
+        let mut ready = ReadySignal::new(Some(writer.into()));
 
-        report_ready(&mut ready).unwrap();
+        ready.apply(Action::ReportReady).unwrap();
 
         let mut message = String::new();
         reader.read_to_string(&mut message).unwrap();
         assert_eq!(message, "READY\n");
-        assert!(ready.is_none());
+        assert!(ready.0.is_none());
     }
 
     #[test]
     fn readiness_write_failures_are_reported() {
         let read_only = File::open("/dev/null").unwrap();
-        let mut ready = Some(ready_file(read_only.into_raw_fd()).unwrap());
+        let mut ready = ReadySignal::new(Some(read_only.into()));
 
-        assert!(report_ready(&mut ready).is_err());
-        assert!(ready.is_none());
+        assert!(ready.apply(Action::ReportReady).is_err());
+        assert!(ready.0.is_none());
+    }
+
+    #[test]
+    fn fatal_error_before_confirmation_cannot_report_readiness() {
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        let mut ready = ReadySignal::new(Some(writer.into()));
+        let mut state = state();
+
+        assert_eq!(state.update(Event::RuntimeFailed), Action::Abort);
+        let action = lock_confirmation_action(&mut state, true);
+        assert_eq!(action, Action::None);
+        ready.apply(action).unwrap();
+        drop(ready);
+
+        let mut message = String::new();
+        reader.read_to_string(&mut message).unwrap();
+        assert!(message.is_empty());
+    }
+
+    #[test]
+    fn absent_and_failed_presentation_frames_keep_opaque_locked_fallback() {
+        for refresh in [Refresh::Frame, Refresh::Failed] {
+            let mut presentation = FakePresentation {
+                refresh,
+                frame: None,
+            };
+            let mut state = state();
+            assert_eq!(state.update(Event::LockConfirmed), Action::ReportReady);
+
+            assert_eq!(refresh_presentation(&mut presentation, &mut state), refresh);
+            let mut target = [0; 4];
+            draw_opaque(&mut target, 1, 1, presentation.frame().as_ref());
+
+            assert_eq!(target, [19, 7, 4, 255]);
+            assert_eq!(state.lifecycle, super::super::Lifecycle::Locked);
+            assert_eq!(state.presentation_failed, refresh == Refresh::Failed);
+        }
     }
 }

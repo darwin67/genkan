@@ -190,6 +190,7 @@ in
     session-lock-smoke = import ./tests/session-lock-smoke.nix {
       inherit pkgs;
       genkan = sessionLockTestPackage;
+      productionGenkan = package;
     };
   }
   // pkgs.lib.optionalAttrs (system == "x86_64-linux") {

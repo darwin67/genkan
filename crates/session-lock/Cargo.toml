@@ -14,7 +14,6 @@ lock-test = []
 bytes = "1.10.1"
 calloop = "=0.14.4"
 calloop-wayland-source = "=0.4.1"
-libc = "=0.2.189"
 smithay-client-toolkit = { version = "=0.20.0", default-features = false, features = ["calloop"] }
 thiserror = "2.0.9"
 wayland-client = "=0.31.15"
