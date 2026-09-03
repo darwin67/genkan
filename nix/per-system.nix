@@ -109,6 +109,28 @@ let
     doCheck = false;
   };
 
+  sessionLockTestPackage = rustPlatform.buildRustPackage {
+    pname = "genkan-session-lock-test";
+    version = packageVersion;
+    src = self;
+    cargoLock.lockFile = ../Cargo.lock;
+    cargoBuildFlags = [
+      "--features=lock-test"
+      "--bin=genkan"
+    ];
+    doCheck = false;
+    nativeBuildInputs = [
+      pkgs.makeWrapper
+      pkgs.pkg-config
+    ];
+    buildInputs = gstreamerPackages;
+    postInstall = ''
+      wrapProgram $out/bin/genkan \
+        --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries} \
+        --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${gstreamerPluginPath}
+    '';
+  };
+
   devShell = pkgs.mkShell {
     packages = [
       pkgs.awscli2
@@ -164,6 +186,10 @@ in
     preview-evidence = import ./tests/preview-evidence.nix {
       inherit pkgs;
       genkan = package;
+    };
+    session-lock-smoke = import ./tests/session-lock-smoke.nix {
+      inherit pkgs;
+      genkan = sessionLockTestPackage;
     };
   }
   // pkgs.lib.optionalAttrs (system == "x86_64-linux") {

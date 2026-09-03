@@ -2,6 +2,7 @@ mod accounts;
 mod app;
 mod background;
 mod conversation;
+mod locker;
 mod power;
 mod sessions;
 mod theme;
@@ -24,6 +25,8 @@ struct Arguments {
 enum Command {
     /// Run the greetd login frontend.
     Login(LoginArguments),
+    /// Securely cover and lock the current Wayland session.
+    Lock(LockArguments),
 }
 
 #[derive(Debug, Args)]
@@ -69,6 +72,28 @@ struct LoginArguments {
     animated_preview: bool,
 }
 
+#[derive(Debug, Args)]
+#[command(
+    after_help = "The lock is ready only after the compositor confirms ext-session-lock-v1 ownership. This phase does not yet include production authentication; terminate it from another VT if necessary."
+)]
+struct LockArguments {
+    /// Descriptor that receives `READY` after compositor lock confirmation.
+    #[arg(long, value_parser = parse_ready_fd)]
+    ready_fd: Option<std::os::fd::RawFd>,
+    /// Select one of the packaged animated wallpapers.
+    #[arg(long, value_enum, default_value = "tahoe-beach")]
+    wallpaper: wallpaper::Catalog,
+    /// Replace the selected catalog entry's video with an absolute local MOV file.
+    #[arg(long, value_parser = parse_wallpaper_file)]
+    wallpaper_file: Option<PathBuf>,
+    /// Show the selected poster without starting the video decoder.
+    #[arg(long, visible_alias = "static-wallpaper")]
+    reduce_motion: bool,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true)]
+    test_unlock_after_ready: bool,
+}
+
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 800;
 
@@ -96,6 +121,17 @@ fn parse_dimension(value: &str) -> Result<u32, String> {
     }
 }
 
+fn parse_ready_fd(value: &str) -> Result<std::os::fd::RawFd, String> {
+    let fd = value
+        .parse::<std::os::fd::RawFd>()
+        .map_err(|_| "ready descriptor must be a non-negative integer".to_owned())?;
+    if fd <= 2 {
+        Err("ready descriptor must not replace stdin, stdout, or stderr".into())
+    } else {
+        Ok(fd)
+    }
+}
+
 fn parse_wallpaper_file(value: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
     if !path.is_absolute() {
@@ -118,9 +154,12 @@ fn animate_wallpaper(preview: bool, reduce_motion: bool, animated_preview: bool)
     !reduce_motion && (!preview || animated_preview)
 }
 
-pub fn main() -> iced::Result {
-    let Command::Login(arguments) = Arguments::parse().command;
-    run_login(arguments)
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match Arguments::parse().command {
+        Command::Login(arguments) => run_login(arguments)?,
+        Command::Lock(arguments) => run_lock(arguments)?,
+    }
+    Ok(())
 }
 
 fn run_login(arguments: LoginArguments) -> iced::Result {
@@ -171,6 +210,24 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         .run()
 }
 
+fn lock_config(arguments: LockArguments) -> locker::Config {
+    locker::Config {
+        wallpaper: wallpaper::Settings {
+            catalog: arguments.wallpaper,
+            override_path: arguments.wallpaper_file,
+            animate: !arguments.reduce_motion,
+        },
+        ready_fd: arguments.ready_fd,
+        #[cfg(feature = "lock-test")]
+        test_unlock_after_ready: arguments.test_unlock_after_ready,
+    }
+}
+
+fn run_lock(arguments: LockArguments) -> Result<(), Box<dyn std::error::Error>> {
+    locker::run(lock_config(arguments))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,8 +240,21 @@ mod tests {
             .into_iter()
             .chain(arguments.into_iter().skip(1));
         let parsed = Arguments::try_parse_from(arguments)?;
-        let Command::Login(arguments) = parsed.command;
-        Ok(arguments)
+        match parsed.command {
+            Command::Login(arguments) => Ok(arguments),
+            Command::Lock(_) => unreachable!("the helper always selects login"),
+        }
+    }
+
+    fn try_parse_lock<const N: usize>(arguments: [&str; N]) -> Result<LockArguments, clap::Error> {
+        let arguments = ["genkan", "lock"]
+            .into_iter()
+            .chain(arguments.into_iter().skip(1));
+        let parsed = Arguments::try_parse_from(arguments)?;
+        match parsed.command {
+            Command::Lock(arguments) => Ok(arguments),
+            Command::Login(_) => unreachable!("the helper always selects lock"),
+        }
     }
 
     #[test]
@@ -195,6 +265,23 @@ mod tests {
         );
         assert!(Arguments::try_parse_from(["genkan", "--windowed"]).is_err());
         assert!(Arguments::try_parse_from(["genkan", "login", "--windowed"]).is_ok());
+        assert!(Arguments::try_parse_from(["genkan", "lock"]).is_ok());
+        assert!(Arguments::try_parse_from(["genkan", "lock", "--username", "alice"]).is_err());
+    }
+
+    #[test]
+    fn lock_options_are_typed_and_scoped_to_the_lock_command() {
+        let arguments = try_parse_lock(["genkan", "--ready-fd", "7", "--reduce-motion"])
+            .expect("valid lock configuration");
+        assert_eq!(arguments.ready_fd, Some(7));
+        assert!(arguments.reduce_motion);
+        assert!(try_parse_lock(["genkan", "--ready-fd", "1"]).is_err());
+        assert!(try_parse_lock(["genkan", "--ready-fd", "not-an-fd"]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "login", "--ready-fd", "7"]).is_err());
+        #[cfg(not(feature = "lock-test"))]
+        assert!(
+            Arguments::try_parse_from(["genkan", "lock", "--test-unlock-after-ready"]).is_err()
+        );
     }
 
     #[test]

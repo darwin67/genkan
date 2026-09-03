@@ -104,6 +104,20 @@ pub(crate) struct State {
     frame: Option<image::Handle>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refresh {
+    Unchanged,
+    Frame,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RgbaFrame {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels: Bytes,
+}
+
 impl State {
     pub(crate) fn start(settings: Settings) -> Self {
         let spec = settings.catalog.spec();
@@ -154,9 +168,9 @@ impl State {
             .map_or_else(Subscription::none, Player::subscription)
     }
 
-    pub(crate) fn receive_latest(&mut self) {
+    pub(crate) fn receive_latest(&mut self) -> Refresh {
         let Some(update) = self.player.as_ref().and_then(Player::take_latest) else {
-            return;
+            return Refresh::Unchanged;
         };
 
         match update {
@@ -166,12 +180,31 @@ impl State {
                     frame.height,
                     frame.pixels,
                 ));
+                Refresh::Frame
             }
             Update::Failed => {
                 self.frame.clone_from(&self.poster);
                 self.player.take();
+                Refresh::Failed
             }
         }
+    }
+
+    pub(crate) fn rgba_frame(&self) -> Option<RgbaFrame> {
+        let image::Handle::Rgba {
+            width,
+            height,
+            pixels,
+            ..
+        } = self.frame.as_ref()?
+        else {
+            return None;
+        };
+        Some(RgbaFrame {
+            width: *width,
+            height: *height,
+            pixels: pixels.clone(),
+        })
     }
 
     pub(crate) fn view<Message: 'static>(&self) -> Option<Element<'static, Message>> {
