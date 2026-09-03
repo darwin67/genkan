@@ -26,6 +26,9 @@ synthetic accounts and sessions and never sends credentials or power requests.
   posters, reduced-motion support, smooth loop transitions, and safe fallback.
 - Reproducible Nix packaging for x86_64-linux and aarch64-linux.
 - Service-free deterministic previews for UI development and review.
+- An experimental `ext-session-lock-v1` compositor boundary with fail-closed
+  multi-output coverage and lock-confirmation readiness reporting, isolated in
+  the independently tested `genkan-session-lock` workspace crate.
 
 ## Try the UI
 
@@ -76,6 +79,16 @@ The packaged greeter animates Tahoe Beach by default. Operators can select
 `sequoia-sunrise`, `sequoia-morning`, or `sequoia-night`, or use
 `--reduce-motion` to retain the corresponding static poster.
 
+## Session-lock development status
+
+`genkan lock` now establishes and maintains an opaque compositor-owned lock on
+every output. Production unlock authentication is Phase 5 of
+[RFD 3](rfd/0003/README.adoc) and is not implemented yet. Until then, do not use
+the lock command as a daily locker: it intentionally has no production unlock
+path and may require recovery from another VT. The packaged test suite uses a
+separately compiled test-only authorization source against nested headless
+Sway; that source is absent from the production package.
+
 ## Documentation
 
 - [Deployment and greetd configuration](docs/deployment.md)
@@ -93,7 +106,8 @@ nix develop --command make verify
 
 This checks formatting, Clippy, Rust and shell regressions, RFD metadata,
 reference images, the Nix package, and packaged graphics startup under nested
-Cage and headless Weston.
+Cage and headless Weston, plus compositor lock confirmation and explicit test
+unlock under nested headless Sway.
 
 ## License
 

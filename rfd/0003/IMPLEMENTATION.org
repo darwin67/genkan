@@ -43,26 +43,26 @@ each new boundary, and do not ship a production path that unlocks without PAM.
 
 * Phase 4: Establish the compositor lock boundary
 
-- [ ] Add and implement `genkan lock` with a dedicated top-level state machine
+- [X] Add and implement `genkan lock` with a dedicated top-level state machine
   and typed lock configuration for the fixed real-UID identity; do not route it
   through the login application state.
-- [ ] Audit and exactly pin the iced session-lock shell and every directly
+- [X] Audit and exactly pin the iced session-lock shell and every directly
   security-relevant protocol dependency used by the lock binary.
-- [ ] Require `ext_session_lock_manager_v1` and all rendering protocols before
+- [X] Require `ext_session_lock_manager_v1` and all rendering protocols before
   lock readiness; provide no fullscreen or layer-shell fallback.
-- [ ] Create and maintain one configured opaque lock surface for every output,
+- [X] Create and maintain one configured opaque lock surface for every output,
   including output addition, removal, transform, size, and scale changes.
-- [ ] Expose lock-confirmed, denied, and finished events to application state and
+- [X] Expose lock-confirmed, denied, and finished events to application state and
   treat the compositor's `locked` event as the sole readiness boundary.
-- [ ] Abort the Wayland runtime on post-confirmation `finished` without generic
+- [X] Abort the Wayland runtime on post-confirmation `finished` without generic
   iced exit or `unlock_and_destroy`; do not treat compositor termination as
   authentication success.
-- [ ] Ensure generic close, escape, error, and exit paths cannot construct the
+- [X] Ensure generic close, escape, error, and exit paths cannot construct the
   session-lock runtime's unlock action.
-- [ ] Keep wallpaper decoding and presentation failures visually recoverable
+- [X] Keep wallpaper decoding and presentation failures visually recoverable
   without releasing lock ownership.
-- [ ] Add non-secret `--ready-fd` and lifecycle diagnostics for automated tests.
-- [ ] Add a test-only unlock authorization source that cannot be compiled into
+- [X] Add non-secret `--ready-fd` and lifecycle diagnostics for automated tests.
+- [X] Add a test-only unlock authorization source that cannot be compiled into
   or selected by the production package.
 
 * Phase 5: Add unlock authentication
