@@ -57,7 +57,7 @@ impl App {
         attempt: Attempt,
         result: Result<(Option<Client>, auth::Response), String>,
     ) -> Task<Message> {
-        if attempt != self.attempt {
+        if !self.conversation.accepts(attempt) {
             return Task::none();
         }
         if let Some(Closing::WaitingForClient(window)) = self.closing {
@@ -65,7 +65,7 @@ impl App {
                 Ok((client, _)) => client,
                 Err(_) => None,
             };
-            self.attempt.advance();
+            self.conversation.invalidate_attempt();
             self.closing = Some(Closing::Cancelling(window));
             return cancel_for_close(client, window);
         }
@@ -81,27 +81,32 @@ impl App {
     }
 
     pub(super) fn handle_auth_response(&mut self, response: auth::Response) -> Task<Message> {
-        let transition = transition(self.phase, response, self.selected_session.as_ref());
+        let session = self.selected_session.clone();
+        let attempt = self.conversation.attempt();
+        let Some(transition) = transition(
+            &mut self.conversation,
+            self.phase,
+            attempt,
+            response,
+            session.as_ref(),
+        ) else {
+            return Task::none();
+        };
         match self.apply_auth_transition(transition) {
-            AuthEffect::Prompt { secret, message } => {
-                self.prompt = message;
-                self.secret = secret;
-                self.input.clear();
-                self.focus_input()
-            }
+            AuthEffect::Prompt { .. } => self.focus_input(),
             AuthEffect::Acknowledge { error, message } => {
                 self.set_auth_notice(message, error);
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                exchange(client, acknowledge_request(), self.attempt)
+                exchange(client, acknowledge_request(), self.conversation.attempt())
             }
             AuthEffect::Exit => iced::exit(),
             AuthEffect::StartSession(request) => {
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                exchange(client, request.into_greetd(), self.attempt)
+                exchange(client, request.into_greetd(), self.conversation.attempt())
             }
             AuthEffect::Fail(message) => self.fail(message),
         }
@@ -109,43 +114,35 @@ impl App {
 
     pub(super) fn apply_auth_transition(&mut self, transition: AuthTransition) -> AuthEffect {
         self.phase = transition.phase;
-        if matches!(transition.effect, AuthEffect::StartSession(_)) {
-            self.clear_auth_notice();
-        }
         transition.effect
     }
 
     pub(super) fn fail(&mut self, message: String) -> Task<Message> {
         self.phase = Phase::Failed;
-        self.input.clear();
-        self.prompt = "Password".into();
-        self.secret = true;
-        self.message = Some(conversation::bounded_text(&message));
-        self.message_is_error = true;
+        self.conversation.fail(message);
         self.focus_first()
     }
 
     pub(super) fn set_auth_notice(&mut self, message: String, error: bool) {
-        self.message = Some(conversation::bounded_text(&message));
-        self.message_is_error = error;
-    }
-
-    pub(super) fn clear_auth_notice(&mut self) {
-        self.message = None;
-        self.message_is_error = false;
+        self.conversation.set_notice(message, error);
     }
 }
 
 pub(super) fn transition(
+    conversation: &mut conversation::Conversation,
     phase: Phase,
+    attempt: Attempt,
     response: auth::Response,
     session: Option<&crate::sessions::Session>,
-) -> AuthTransition {
+) -> Option<AuthTransition> {
+    if !conversation.accepts(attempt) {
+        return None;
+    }
     if phase == Phase::StartingSession && response == auth::Response::Success {
-        return AuthTransition {
+        return Some(AuthTransition {
             phase,
             effect: AuthEffect::Exit,
-        };
+        });
     }
 
     let response = match response {
@@ -163,14 +160,22 @@ pub(super) fn transition(
         auth::Response::Error { description, .. } => conversation::Response::Failure(description),
     };
 
-    let (phase, effect) = match conversation::transition(response) {
-        conversation::Effect::Prompt { secret, message } => (
+    let effect = conversation.receive(attempt, response)?;
+    let (phase, effect) = match effect {
+        conversation::Effect::Prompt => (
             Phase::WaitingForInput,
-            AuthEffect::Prompt { secret, message },
+            AuthEffect::Prompt {
+                secret: conversation.is_secret(),
+                message: conversation.prompt().into(),
+            },
         ),
-        conversation::Effect::Acknowledge { error, message } => {
-            (phase, AuthEffect::Acknowledge { error, message })
-        }
+        conversation::Effect::Notice => (
+            phase,
+            AuthEffect::Acknowledge {
+                error: conversation.notice_is_error(),
+                message: conversation.notice().unwrap_or_default().into(),
+            },
+        ),
         conversation::Effect::Authenticated => match session {
             Some(session) => (
                 Phase::StartingSession,
@@ -184,9 +189,12 @@ pub(super) fn transition(
                 AuthEffect::Fail("No valid Wayland session is selected".into()),
             ),
         },
-        conversation::Effect::Failed(message) => (Phase::Failed, AuthEffect::Fail(message)),
+        conversation::Effect::Failed => (
+            Phase::Failed,
+            AuthEffect::Fail(conversation.notice().unwrap_or_default().into()),
+        ),
     };
-    AuthTransition { phase, effect }
+    Some(AuthTransition { phase, effect })
 }
 
 fn acknowledge_request() -> Request {
@@ -273,6 +281,34 @@ pub(super) fn close_timeout(window: window::Id) -> Task<Message> {
 mod tests {
     use super::*;
 
+    fn test_transition(
+        phase: Phase,
+        response: auth::Response,
+        session: Option<&crate::sessions::Session>,
+    ) -> AuthTransition {
+        let mut conversation = conversation::Conversation::new();
+        let attempt = conversation.attempt();
+        transition(&mut conversation, phase, attempt, response, session).unwrap()
+    }
+
+    #[test]
+    fn stale_session_start_success_cannot_exit() {
+        let mut conversation = conversation::Conversation::new();
+        let stale = conversation.attempt();
+        conversation.begin_attempt();
+
+        assert_eq!(
+            transition(
+                &mut conversation,
+                Phase::StartingSession,
+                stale,
+                auth::Response::Success,
+                None,
+            ),
+            None
+        );
+    }
+
     #[test]
     fn maps_every_authentication_response_transition() {
         let session = crate::sessions::Session {
@@ -358,13 +394,13 @@ mod tests {
         ];
 
         for (phase, response, expected) in cases {
-            assert_eq!(transition(phase, response, Some(&session)), expected);
+            assert_eq!(test_transition(phase, response, Some(&session)), expected);
         }
     }
 
     #[test]
     fn acknowledges_informational_messages_without_a_response() {
-        let transition = transition(
+        let transition = test_transition(
             Phase::Authenticating,
             auth::Response::Message {
                 error: false,
@@ -395,7 +431,7 @@ mod tests {
             session_id: "river-session".into(),
             desktop_names: vec!["River".into(), "wlroots".into()],
         };
-        let transition = transition(
+        let transition = test_transition(
             Phase::Authenticating,
             auth::Response::Success,
             Some(&session),
@@ -421,7 +457,7 @@ mod tests {
     #[test]
     fn successful_authentication_requires_a_selected_session() {
         assert_eq!(
-            transition(Phase::Authenticating, auth::Response::Success, None),
+            test_transition(Phase::Authenticating, auth::Response::Success, None),
             AuthTransition {
                 phase: Phase::Failed,
                 effect: AuthEffect::Fail("No valid Wayland session is selected".into()),

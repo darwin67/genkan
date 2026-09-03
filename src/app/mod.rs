@@ -16,7 +16,7 @@ use iced::widget::{operation, scrollable, Id};
 use iced::{event, keyboard, time, window, Subscription, Task};
 
 use crate::accounts::{self, Account};
-use crate::conversation::{self, Attempt};
+use crate::conversation::{self, Attempt, Conversation, Status as ConversationStatus};
 use crate::power::{self, Action as PowerAction};
 use crate::sessions::{self, Session};
 use crate::wallpaper;
@@ -83,16 +83,12 @@ pub(crate) struct App {
     focus_before_modal: Option<FocusTarget>,
     account_scroll_id: Id,
     page_scroll_id: Id,
-    input: String,
     input_id: Id,
-    prompt: String,
-    message: Option<String>,
-    message_is_error: bool,
+    conversation: Conversation,
     session_message: Option<String>,
     power_message: Option<String>,
     power_message_is_error: bool,
     preview_message: Option<String>,
-    secret: bool,
     phase: Phase,
     client: Option<Client>,
     sessions: Vec<Session>,
@@ -103,7 +99,6 @@ pub(crate) struct App {
     started_at: Instant,
     now: chrono::DateTime<Local>,
     power_state: PowerState,
-    attempt: Attempt,
     selection_session_cancelled: bool,
     closing: Option<Closing>,
     preview: bool,
@@ -167,7 +162,8 @@ impl App {
             .map(|username| Account::override_account(username, config.display_name));
         let accounts = account.iter().cloned().collect();
         let startup = startup_mode(selected_session.is_some(), account.is_some());
-        let attempt = Attempt::initial();
+        let conversation = Conversation::new();
+        let attempt = conversation.attempt();
 
         let mut app = Self {
             username: account
@@ -183,18 +179,14 @@ impl App {
             focus_before_modal: None,
             account_scroll_id: Id::unique(),
             page_scroll_id: Id::unique(),
-            input: String::new(),
             input_id: Id::new("authentication-input"),
-            prompt: "Password".into(),
-            message: None,
-            message_is_error: false,
+            conversation,
             session_message: selected_session
                 .is_none()
                 .then(|| "No valid Wayland sessions are installed".into()),
             power_message: None,
             power_message_is_error: false,
             preview_message: None,
-            secret: true,
             phase: match startup {
                 StartupMode::ConfiguredIdentity => Phase::CreatingSession,
                 StartupMode::DiscoverAccounts => Phase::DiscoveringUsers,
@@ -209,7 +201,6 @@ impl App {
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
-            attempt,
             selection_session_cancelled: false,
             closing: None,
             preview: false,
@@ -299,8 +290,7 @@ impl App {
                 self.now = Local::now();
                 Task::none()
             }
-            Message::InputChanged(value) if self.phase == Phase::WaitingForInput => {
-                self.input = value;
+            Message::InputChanged(value) if self.conversation.update_input(&value) => {
                 self.focus_target = Some(FocusTarget::AuthenticationInput);
                 Task::none()
             }
@@ -314,8 +304,7 @@ impl App {
                     self.select_account(account)
                 } else {
                     self.phase = Phase::SelectingUser;
-                    self.message = Some("Select a user".into());
-                    self.message_is_error = false;
+                    self.conversation.set_notice("Select a user".into(), false);
                     self.set_focus(FocusTarget::Account(0))
                 }
             }
@@ -323,7 +312,7 @@ impl App {
             Message::ChangeUser if self.can_change_user() => self.change_user(),
             Message::ChangeUser => Task::none(),
             Message::UserSelectionCancelled { attempt, .. }
-                if attempt == self.attempt
+                if self.conversation.accepts(attempt)
                     && matches!(
                         self.closing,
                         Some(Closing::WaitingForUserSelectionCancellation(_))
@@ -339,40 +328,42 @@ impl App {
             Message::UserSelectionCancelled {
                 attempt,
                 result: Ok(()),
-            } if attempt == self.attempt && self.phase == Phase::CancellingForUserSelection => {
+            } if self.conversation.accepts(attempt)
+                && self.phase == Phase::CancellingForUserSelection =>
+            {
                 self.phase = Phase::SelectingUser;
                 self.selection_session_cancelled = true;
-                self.message = Some("Select a user".into());
-                self.message_is_error = false;
+                self.conversation.set_notice("Select a user".into(), false);
                 self.set_focus(FocusTarget::Account(0))
             }
             Message::UserSelectionCancelled {
                 attempt,
                 result: Err(error),
-            } if attempt == self.attempt && self.phase == Phase::CancellingForUserSelection => {
+            } if self.conversation.accepts(attempt)
+                && self.phase == Phase::CancellingForUserSelection =>
+            {
                 self.phase = Phase::UserSelectionCancellationFailed;
-                self.message = Some(conversation::bounded_text(&error));
-                self.message_is_error = true;
+                self.conversation.set_notice(error, true);
                 self.set_focus(FocusTarget::RetryAccountSelection)
             }
             Message::UserSelectionCancellationSlow { attempt }
-                if attempt == self.attempt && self.phase == Phase::CancellingForUserSelection =>
+                if self.conversation.accepts(attempt)
+                    && self.phase == Phase::CancellingForUserSelection =>
             {
-                self.message = Some("Still changing user…".into());
-                self.message_is_error = false;
+                self.conversation
+                    .set_notice("Still changing user…".into(), false);
                 Task::none()
             }
             Message::RetryUserSelectionCancellation
                 if self.phase == Phase::UserSelectionCancellationFailed =>
             {
+                let attempt = self.conversation.begin_attempt();
                 self.phase = Phase::CancellingForUserSelection;
-                self.message = Some("Changing user…".into());
-                self.message_is_error = false;
+                self.conversation.set_notice("Changing user…".into(), false);
                 let focus = self.focus_first();
                 if self.preview {
                     return self.finish_preview_user_selection();
                 }
-                let attempt = self.attempt.advance();
                 Task::batch([auth_flow::cancel_for_user_selection(None, attempt), focus])
             }
             Message::UserSelectionCancelled { .. }
@@ -429,7 +420,7 @@ impl App {
                 self.session_message = None;
                 if self.username.is_empty() {
                     self.phase = Phase::DiscoveringUsers;
-                    self.message = None;
+                    self.conversation.clear_notice();
                     discover_accounts()
                 } else {
                     self.retry_authentication()
@@ -438,38 +429,40 @@ impl App {
             Message::RetrySession => Task::none(),
             Message::Retry if self.phase == Phase::Failed && self.username.is_empty() => {
                 if self.preview {
-                    self.message = Some("Preview: retry was not sent".into());
-                    self.message_is_error = false;
+                    self.conversation
+                        .set_notice("Preview: retry was not sent".into(), false);
                     return Task::none();
                 }
                 self.phase = Phase::DiscoveringUsers;
-                self.message = None;
+                self.conversation.clear_notice();
                 discover_accounts()
             }
             Message::Retry if self.phase == Phase::Failed && self.preview => {
-                self.message = Some("Preview: retry was not sent".into());
-                self.message_is_error = false;
+                self.conversation
+                    .set_notice("Preview: retry was not sent".into(), false);
                 Task::none()
             }
             Message::Retry if self.phase == Phase::Failed => self.retry_authentication(),
             Message::Retry => Task::none(),
-            Message::Submit if self.phase == Phase::WaitingForInput => {
+            Message::Submit if self.conversation.status() == ConversationStatus::Waiting => {
                 if self.preview {
-                    self.input.clear();
+                    self.conversation.clear_response();
                     self.preview_message = Some("Preview mode: credentials were not sent".into());
                     return self.focus_input();
                 }
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                let response = std::mem::take(&mut self.input);
+                let Some((attempt, response)) = self.conversation.submit() else {
+                    return Task::none();
+                };
                 self.phase = Phase::Authenticating;
                 auth_flow::exchange(
                     client,
                     Request::PostAuthMessageResponse {
                         response: Some(response),
                     },
-                    self.attempt,
+                    attempt,
                 )
             }
             Message::Submit => Task::none(),
@@ -526,7 +519,10 @@ impl App {
             }
             Message::Escape if self.phase == Phase::WaitingForInput => self.blur_input(),
             Message::Escape => Task::none(),
-            Message::CloseRequested(window) if self.preview => window::close(window),
+            Message::CloseRequested(window) if self.preview => {
+                self.conversation.invalidate_attempt();
+                window::close(window)
+            }
             Message::CloseRequested(window) if self.selection_session_cancelled => {
                 self.closing = Some(Closing::Dispatching(window));
                 window::close(window)
@@ -536,7 +532,7 @@ impl App {
                 auth_flow::close_timeout(window)
             }
             Message::CloseRequested(window) if self.client.is_some() => {
-                self.attempt.advance();
+                self.conversation.invalidate_attempt();
                 self.closing = Some(Closing::Cancelling(window));
                 Task::batch([
                     auth_flow::cancel_for_close(self.client.take(), window),
@@ -548,7 +544,7 @@ impl App {
                 auth_flow::close_timeout(window)
             }
             Message::CloseRequested(window) => {
-                self.attempt.advance();
+                self.conversation.invalidate_attempt();
                 self.closing = Some(Closing::Cancelling(window));
                 Task::batch([
                     auth_flow::cancel_for_close(None, window),
@@ -568,7 +564,7 @@ impl App {
                     .closing
                     .is_some_and(|closing| closing.is_cleaning(window)) =>
             {
-                self.attempt.advance();
+                self.conversation.invalidate_attempt();
                 self.closing = Some(Closing::Dispatching(window));
                 window::close(window)
             }
@@ -590,14 +586,18 @@ impl App {
         self.display_name = account.display_name;
         self.close_session_menu();
         self.focus_target = None;
-        self.input.clear();
-        self.message = None;
-        self.message_is_error = false;
         self.phase = Phase::CreatingSession;
-        let attempt = self.attempt.advance();
+        let attempt = self.conversation.begin_attempt();
         let recover = !self.selection_session_cancelled;
         self.selection_session_cancelled = false;
         if self.preview {
+            let _ = self.conversation.receive(
+                attempt,
+                conversation::Response::Prompt {
+                    secret: true,
+                    message: "Password".into(),
+                },
+            );
             self.phase = Phase::WaitingForInput;
             self.preview_message =
                 Some("Preview mode: credentials and power actions are simulated".into());
@@ -610,24 +610,20 @@ impl App {
     }
 
     fn retry_authentication(&mut self) -> Task<Message> {
-        self.message = None;
-        self.message_is_error = false;
         self.phase = Phase::CreatingSession;
         let client = self.client.take();
-        let attempt = self.attempt.advance();
+        let attempt = self.conversation.begin_attempt();
         auth_flow::restart(client, self.username.clone(), attempt)
     }
 
     fn change_user(&mut self) -> Task<Message> {
         let client = self.client.take();
-        let attempt = self.attempt.advance();
+        let attempt = self.conversation.begin_attempt();
         self.username.clear();
         self.display_name = "Select a user".into();
-        self.input.clear();
         self.selection_session_cancelled = false;
         self.phase = Phase::CancellingForUserSelection;
-        self.message = Some("Changing user…".into());
-        self.message_is_error = false;
+        self.conversation.set_notice("Changing user…".into(), false);
         let focus = self.focus_first();
         if self.preview {
             self.finish_preview_user_selection()
@@ -638,7 +634,7 @@ impl App {
 
     fn finish_preview_user_selection(&mut self) -> Task<Message> {
         self.phase = Phase::SelectingUser;
-        self.message = Some("Select a user".into());
+        self.conversation.set_notice("Select a user".into(), false);
         self.set_focus(FocusTarget::Account(0))
     }
 
@@ -788,8 +784,17 @@ mod tests {
     }
 
     fn app() -> App {
-        let mut attempt = Attempt::initial();
-        attempt.advance();
+        let mut conversation = Conversation::new();
+        let attempt = conversation.begin_attempt();
+        let _ = conversation.receive(
+            attempt,
+            conversation::Response::Prompt {
+                secret: true,
+                message: "Password".into(),
+            },
+        );
+        conversation.update_input("secret");
+        conversation.set_notice("Keep this message".into(), false);
         App {
             username: "darwin".into(),
             display_name: "Darwin".into(),
@@ -798,16 +803,12 @@ mod tests {
             focus_before_modal: None,
             account_scroll_id: Id::unique(),
             page_scroll_id: Id::unique(),
-            input: "secret".into(),
             input_id: Id::new("test-authentication-input"),
-            prompt: "Password".into(),
-            message: Some("Keep this message".into()),
-            message_is_error: false,
+            conversation,
             session_message: None,
             power_message: None,
             power_message_is_error: false,
             preview_message: None,
-            secret: true,
             phase: Phase::WaitingForInput,
             client: None,
             sessions: vec![session()],
@@ -818,7 +819,6 @@ mod tests {
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
-            attempt,
             selection_session_cancelled: false,
             closing: None,
             preview: false,
@@ -835,28 +835,28 @@ mod tests {
         app.preview = true;
 
         let _ = app.update(Message::InputChanged("not-a-real-password".into()));
-        assert_eq!(app.input, "not-a-real-password");
+        assert_eq!(app.conversation.input(), "not-a-real-password");
 
         let _ = app.update(Message::Submit);
         assert_eq!(app.phase, Phase::WaitingForInput);
-        assert!(app.input.is_empty());
+        assert!(app.conversation.input().is_empty());
         assert_eq!(
             app.preview_message.as_deref(),
             Some("Preview mode: credentials were not sent")
         );
-        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+        assert_eq!(app.conversation.notice(), Some("Keep this message"));
     }
 
     #[test]
     fn preview_accepts_empty_response_without_sending_credentials() {
         let mut app = app();
         app.preview = true;
-        app.input.clear();
+        app.conversation.clear_response();
 
         let _ = app.update(Message::Submit);
 
         assert_eq!(app.phase, Phase::WaitingForInput);
-        assert!(app.input.is_empty());
+        assert!(app.conversation.input().is_empty());
         assert_eq!(
             app.preview_message.as_deref(),
             Some("Preview mode: credentials were not sent")
@@ -867,13 +867,13 @@ mod tests {
     fn keyboard_activation_accepts_empty_response() {
         let mut app = app();
         app.preview = true;
-        app.input.clear();
+        app.conversation.clear_response();
         app.focus_target = Some(FocusTarget::Submit);
 
         let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
 
         assert_eq!(app.phase, Phase::WaitingForInput);
-        assert!(app.input.is_empty());
+        assert!(app.conversation.input().is_empty());
         assert_eq!(
             app.preview_message.as_deref(),
             Some("Preview mode: credentials were not sent")
@@ -906,7 +906,7 @@ mod tests {
                 )
             );
             assert!(!app.power_message_is_error);
-            assert_eq!(app.message.as_deref(), Some("Keep this message"));
+            assert_eq!(app.conversation.notice(), Some("Keep this message"));
         }
     }
 
@@ -942,21 +942,21 @@ mod tests {
 
         assert_eq!(app.phase, Phase::SelectingUser);
         assert_eq!(app.accounts.len(), 2);
-        assert_eq!(app.message.as_deref(), Some("Select a user"));
+        assert_eq!(app.conversation.notice(), Some("Select a user"));
     }
 
     #[test]
     fn change_user_waits_for_cancellation_before_selecting_an_account() {
         let mut app = app();
         app.accounts = vec![account("darwin"), account("alice")];
-        let attempt = app.attempt;
+        let attempt = app.conversation.attempt();
 
         let _ = app.update(Message::ChangeUser);
 
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
         assert!(app.username.is_empty());
-        assert!(app.input.is_empty());
-        assert_ne!(app.attempt, attempt);
+        assert!(app.conversation.input().is_empty());
+        assert_ne!(app.conversation.attempt(), attempt);
         assert!(!app.can_select_account());
         assert_eq!(app.focus_target, Some(FocusTarget::Session));
 
@@ -964,7 +964,7 @@ mod tests {
         assert!(app.username.is_empty());
 
         let _ = app.update(Message::UserSelectionCancelled {
-            attempt: app.attempt,
+            attempt: app.conversation.attempt(),
             result: Ok(()),
         });
         assert_eq!(app.phase, Phase::SelectingUser);
@@ -977,8 +977,8 @@ mod tests {
         assert_eq!(app.phase, Phase::CreatingSession);
         assert_eq!(app.username, "alice");
         assert_eq!(app.display_name, "ALICE");
-        assert!(app.input.is_empty());
-        assert!(app.message.is_none());
+        assert!(app.conversation.input().is_empty());
+        assert!(app.conversation.notice().is_none());
         assert!(!app.selection_session_cancelled);
     }
 
@@ -988,13 +988,13 @@ mod tests {
         app.accounts = vec![account("darwin"), account("alice")];
 
         let _ = app.update(Message::ChangeUser);
-        let attempt = app.attempt;
+        let attempt = app.conversation.attempt();
         let _ = app.update(Message::ChangeUser);
 
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
-        assert_eq!(app.attempt, attempt);
-        assert_eq!(app.message.as_deref(), Some("Changing user…"));
-        assert!(app.input.is_empty());
+        assert_eq!(app.conversation.attempt(), attempt);
+        assert_eq!(app.conversation.notice(), Some("Changing user…"));
+        assert!(app.conversation.input().is_empty());
     }
 
     #[test]
@@ -1002,14 +1002,14 @@ mod tests {
         let mut app = app();
         app.phase = Phase::Failed;
         app.accounts = vec![account("darwin"), account("alice")];
-        let attempt = app.attempt;
+        let attempt = app.conversation.attempt();
 
         let _ = app.update(Message::ChangeUser);
 
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
-        assert_ne!(app.attempt, attempt);
+        assert_ne!(app.conversation.attempt(), attempt);
         assert!(app.username.is_empty());
-        assert!(app.input.is_empty());
+        assert!(app.conversation.input().is_empty());
     }
 
     #[test]
@@ -1019,13 +1019,13 @@ mod tests {
 
         let _ = app.update(Message::ChangeUser);
         let _ = app.update(Message::UserSelectionCancelled {
-            attempt: app.attempt,
+            attempt: app.conversation.attempt(),
             result: Err("greetd unavailable".into()),
         });
 
         assert_eq!(app.phase, Phase::UserSelectionCancellationFailed);
-        assert_eq!(app.message.as_deref(), Some("greetd unavailable"));
-        assert!(app.message_is_error);
+        assert_eq!(app.conversation.notice(), Some("greetd unavailable"));
+        assert!(app.conversation.notice_is_error());
         assert!(!app.can_select_account());
         assert_eq!(app.focus_target, Some(FocusTarget::RetryAccountSelection));
 
@@ -1034,7 +1034,7 @@ mod tests {
 
         let _ = app.update(Message::RetryUserSelectionCancellation);
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
-        assert_eq!(app.message.as_deref(), Some("Changing user…"));
+        assert_eq!(app.conversation.notice(), Some("Changing user…"));
         assert_eq!(app.focus_target, Some(FocusTarget::Session));
     }
 
@@ -1044,19 +1044,19 @@ mod tests {
         app.accounts = vec![account("darwin"), account("alice")];
 
         let _ = app.update(Message::ChangeUser);
-        let attempt = app.attempt;
+        let attempt = app.conversation.attempt();
         let _ = app.update(Message::UserSelectionCancellationSlow { attempt });
 
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
-        assert_eq!(app.message.as_deref(), Some("Still changing user…"));
-        assert!(!app.message_is_error);
+        assert_eq!(app.conversation.notice(), Some("Still changing user…"));
+        assert!(!app.conversation.notice_is_error());
         assert!(!app.can_select_account());
 
         let _ = app.update(Message::RetryUserSelectionCancellation);
         let _ = app.update(Message::SelectAccount(account("alice")));
 
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
-        assert_eq!(app.attempt, attempt);
+        assert_eq!(app.conversation.attempt(), attempt);
         assert!(app.username.is_empty());
     }
 
@@ -1066,23 +1066,23 @@ mod tests {
         app.accounts = vec![account("darwin"), account("alice")];
 
         let _ = app.update(Message::ChangeUser);
-        let old_attempt = app.attempt;
+        let old_attempt = app.conversation.attempt();
         let _ = app.update(Message::UserSelectionCancelled {
             attempt: old_attempt,
             result: Err("greetd unavailable".into()),
         });
         let _ = app.update(Message::RetryUserSelectionCancellation);
-        let current_attempt = app.attempt;
+        let current_attempt = app.conversation.attempt();
 
         assert_ne!(current_attempt, old_attempt);
-        assert_eq!(app.message.as_deref(), Some("Changing user…"));
+        assert_eq!(app.conversation.notice(), Some("Changing user…"));
 
         let _ = app.update(Message::UserSelectionCancellationSlow {
             attempt: old_attempt,
         });
 
-        assert_eq!(app.attempt, current_attempt);
-        assert_eq!(app.message.as_deref(), Some("Changing user…"));
+        assert_eq!(app.conversation.attempt(), current_attempt);
+        assert_eq!(app.conversation.notice(), Some("Changing user…"));
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
     }
 
@@ -1096,7 +1096,7 @@ mod tests {
 
         assert_eq!(app.phase, Phase::SelectingUser);
         assert!(app.username.is_empty());
-        assert_eq!(app.message.as_deref(), Some("Select a user"));
+        assert_eq!(app.conversation.notice(), Some("Select a user"));
     }
 
     #[test]
@@ -1264,7 +1264,7 @@ mod tests {
         let key = app.session_selector_key;
 
         let _ = app.update(Message::AuthResult {
-            attempt: app.attempt,
+            attempt: app.conversation.attempt(),
             result: Ok((
                 None,
                 auth::Response::Prompt {
@@ -1438,17 +1438,17 @@ mod tests {
 
         assert_eq!(app.phase, Phase::Failed);
         assert_eq!(
-            app.message.as_deref(),
+            app.conversation.notice(),
             Some("AccountsService found no unlocked non-system users")
         );
-        assert!(app.message_is_error);
+        assert!(app.conversation.notice_is_error());
     }
 
     #[test]
     fn ignores_responses_from_abandoned_attempts() {
         let mut app = app();
         let _ = app.update(Message::AuthResult {
-            attempt: Attempt::initial(),
+            attempt: Conversation::new().attempt(),
             result: Ok((
                 None,
                 auth::Response::Error {
@@ -1459,19 +1459,20 @@ mod tests {
         });
 
         assert_eq!(app.phase, Phase::WaitingForInput);
-        assert_eq!(app.input, "secret");
-        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+        assert_eq!(app.conversation.input(), "secret");
+        assert_eq!(app.conversation.notice(), Some("Keep this message"));
     }
 
     #[test]
     fn ignores_input_outside_a_pam_prompt() {
         let mut app = app();
+        let _ = app.conversation.submit();
         app.phase = Phase::Authenticating;
 
         let _ = app.update(Message::InputChanged("replacement".into()));
         let _ = app.update(Message::Submit);
 
-        assert_eq!(app.input, "secret");
+        assert!(app.conversation.input().is_empty());
         assert_eq!(app.phase, Phase::Authenticating);
     }
 
@@ -1496,7 +1497,7 @@ mod tests {
     #[test]
     fn authentication_error_waits_for_explicit_retry() {
         let mut app = app();
-        let attempt = app.attempt;
+        let attempt = app.conversation.attempt();
 
         let _ = app.update(Message::AuthResult {
             attempt,
@@ -1510,43 +1511,43 @@ mod tests {
         });
 
         assert_eq!(app.phase, Phase::Failed);
-        assert_eq!(app.attempt, attempt);
-        assert_eq!(app.message.as_deref(), Some("Authentication failed"));
+        assert_eq!(app.conversation.attempt(), attempt);
+        assert_eq!(app.conversation.notice(), Some("Authentication failed"));
         assert_eq!(app.focus_target, Some(FocusTarget::RetryAuthentication));
 
         let _ = app.update(Message::Retry);
         assert_eq!(app.phase, Phase::CreatingSession);
-        assert_ne!(app.attempt, attempt);
+        assert_ne!(app.conversation.attempt(), attempt);
     }
 
     #[test]
     fn prompt_sequences_replace_and_clear_the_previous_response() {
         let mut app = app();
-        app.input = "previous response".into();
+        app.conversation.update_input("previous response");
 
         let _ = app.handle_auth_response(auth::Response::Prompt {
             secret: false,
             message: "Login code:".into(),
         });
         assert_eq!(app.phase, Phase::WaitingForInput);
-        assert_eq!(app.prompt, "Login code");
-        assert!(!app.secret);
-        assert!(app.input.is_empty());
-        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+        assert_eq!(app.conversation.prompt(), "Login code");
+        assert!(!app.conversation.is_secret());
+        assert!(app.conversation.input().is_empty());
+        assert_eq!(app.conversation.notice(), Some("Keep this message"));
 
         app.set_auth_notice("First security-key instruction".into(), false);
         app.set_auth_notice("Security key accepted".into(), false);
 
-        app.input = "123456".into();
+        app.conversation.update_input("123456");
         let _ = app.handle_auth_response(auth::Response::Prompt {
             secret: true,
             message: "Password:".into(),
         });
-        assert_eq!(app.prompt, "Password");
-        assert!(app.secret);
-        assert!(app.input.is_empty());
-        assert_eq!(app.message.as_deref(), Some("Security key accepted"));
-        assert!(!app.message_is_error);
+        assert_eq!(app.conversation.prompt(), "Password");
+        assert!(app.conversation.is_secret());
+        assert!(app.conversation.input().is_empty());
+        assert_eq!(app.conversation.notice(), Some("Security key accepted"));
+        assert!(!app.conversation.notice_is_error());
     }
 
     #[test]
@@ -1560,7 +1561,7 @@ mod tests {
 
         let _ = app.update(Message::RetrySession);
 
-        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+        assert_eq!(app.conversation.notice(), Some("Keep this message"));
         assert_eq!(
             app.session_message.as_deref(),
             Some("No valid Wayland sessions are installed")
@@ -1577,35 +1578,40 @@ mod tests {
         app.phase = Phase::StartingSession;
 
         let _ = app.update(Message::AuthResult {
-            attempt: app.attempt,
+            attempt: app.conversation.attempt(),
             result: Err("greetd closed the socket".into()),
         });
 
         assert_eq!(app.phase, Phase::Failed);
-        assert_eq!(app.message.as_deref(), Some("greetd closed the socket"));
-        assert!(app.message_is_error);
+        assert_eq!(app.conversation.notice(), Some("greetd closed the socket"));
+        assert!(app.conversation.notice_is_error());
     }
 
     #[test]
     fn successful_authentication_supersedes_the_previous_pam_notice() {
         let mut app = app();
         app.phase = Phase::Authenticating;
-        app.message = Some("Previous PAM error".into());
-        app.message_is_error = true;
+        app.conversation
+            .set_notice("Previous PAM error".into(), true);
 
+        let session = app.selected_session.clone();
+        let attempt = app.conversation.attempt();
         let transition = super::auth_flow::transition(
+            &mut app.conversation,
             app.phase,
+            attempt,
             auth::Response::Success,
-            app.selected_session.as_ref(),
-        );
+            session.as_ref(),
+        )
+        .unwrap();
         assert!(matches!(
             app.apply_auth_transition(transition),
             super::auth_flow::AuthEffect::StartSession(_)
         ));
 
         assert_eq!(app.phase, Phase::StartingSession);
-        assert!(app.message.is_none());
-        assert!(!app.message_is_error);
+        assert!(app.conversation.notice().is_none());
+        assert!(!app.conversation.notice_is_error());
         assert_eq!(
             super::view::authentication_controls(Phase::StartingSession, true),
             super::view::AuthenticationControls::Progress("Starting session…")
@@ -1619,11 +1625,11 @@ mod tests {
         let _ = app.update(Message::PowerResult(Err("not authorized".into())));
 
         assert_eq!(app.phase, Phase::WaitingForInput);
-        assert_eq!(app.input, "secret");
+        assert_eq!(app.conversation.input(), "secret");
         assert_eq!(app.power_state, PowerState::Idle);
         assert_eq!(app.power_message.as_deref(), Some("not authorized"));
         assert!(app.power_message_is_error);
-        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+        assert_eq!(app.conversation.notice(), Some("Keep this message"));
     }
 
     #[test]
@@ -1646,7 +1652,7 @@ mod tests {
             PowerState::Confirming(PowerAction::PowerOff)
         );
         assert_eq!(app.phase, Phase::WaitingForInput);
-        assert_eq!(app.input, "secret");
+        assert_eq!(app.conversation.input(), "secret");
         assert_eq!(
             app.selected_session
                 .as_ref()
@@ -1742,7 +1748,7 @@ mod tests {
 
         assert_eq!(app.power_state, PowerState::Idle);
         assert_eq!(app.power_message, None);
-        assert_eq!(app.message.as_deref(), Some("Keep this message"));
+        assert_eq!(app.conversation.notice(), Some("Keep this message"));
         assert_eq!(app.phase, Phase::WaitingForInput);
     }
 
@@ -1787,7 +1793,7 @@ mod tests {
         assert_eq!(app.phase, Phase::CancellingForUserSelection);
 
         let _ = app.update(Message::UserSelectionCancelled {
-            attempt: app.attempt,
+            attempt: app.conversation.attempt(),
             result: Err("greetd unavailable".into()),
         });
 
@@ -1816,7 +1822,7 @@ mod tests {
         app.closing = Some(Closing::WaitingForClient(window));
 
         let _ = app.update(Message::AuthResult {
-            attempt: app.attempt,
+            attempt: app.conversation.attempt(),
             result: Err("socket closed".into()),
         });
 
@@ -1827,13 +1833,13 @@ mod tests {
     fn close_timeout_invalidates_a_late_creation_result() {
         let mut app = app();
         let window = window::Id::unique();
-        let old_attempt = app.attempt;
+        let old_attempt = app.conversation.attempt();
         app.phase = Phase::CreatingSession;
         app.closing = Some(Closing::WaitingForClient(window));
 
         let _ = app.update(Message::CloseTimeout(window));
         assert_eq!(app.closing, Some(Closing::Dispatching(window)));
-        assert_ne!(app.attempt, old_attempt);
+        assert_ne!(app.conversation.attempt(), old_attempt);
 
         let _ = app.update(Message::AuthResult {
             attempt: old_attempt,
@@ -1847,26 +1853,26 @@ mod tests {
         });
 
         assert_eq!(app.phase, Phase::CreatingSession);
-        assert_eq!(app.prompt, "Password");
+        assert_eq!(app.conversation.prompt(), "Password");
     }
 
     #[test]
     fn idle_close_without_a_client_enters_bounded_cleanup() {
         let mut app = app();
         let window = window::Id::unique();
-        let old_attempt = app.attempt;
+        let old_attempt = app.conversation.attempt();
         app.phase = Phase::Failed;
 
         let _ = app.update(Message::CloseRequested(window));
 
         assert_eq!(app.closing, Some(Closing::Cancelling(window)));
-        assert_ne!(app.attempt, old_attempt);
-        let closing_attempt = app.attempt;
+        assert_ne!(app.conversation.attempt(), old_attempt);
+        let closing_attempt = app.conversation.attempt();
 
         let _ = app.update(Message::Retry);
 
         assert_eq!(app.phase, Phase::Failed);
-        assert_eq!(app.attempt, closing_attempt);
+        assert_eq!(app.conversation.attempt(), closing_attempt);
         assert_eq!(app.closing, Some(Closing::Cancelling(window)));
     }
 
@@ -1874,7 +1880,7 @@ mod tests {
     fn retry_is_ignored_after_cancellation_dispatches_close() {
         let mut app = app();
         let window = window::Id::unique();
-        let attempt = app.attempt;
+        let attempt = app.conversation.attempt();
         app.phase = Phase::Failed;
         app.closing = Some(Closing::Cancelling(window));
 
@@ -1884,7 +1890,7 @@ mod tests {
         let _ = app.update(Message::Retry);
 
         assert_eq!(app.phase, Phase::Failed);
-        assert_eq!(app.attempt, attempt);
+        assert_eq!(app.conversation.attempt(), attempt);
         assert_eq!(app.closing, Some(Closing::Dispatching(window)));
     }
 }

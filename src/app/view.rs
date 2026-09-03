@@ -326,8 +326,8 @@ impl App {
         flow: bool,
     ) -> Element<'_, Message> {
         let status = self.status_for(
-            self.message
-                .as_deref()
+            self.conversation
+                .notice()
                 .filter(|message| *message != "Select a user"),
             flow,
         );
@@ -397,7 +397,7 @@ impl App {
         let controls: Element<'_, Message> =
             match authentication_controls(self.phase, self.selected_session.is_some()) {
                 AuthenticationControls::Prompt => {
-                    let has_input = !self.input.is_empty();
+                    let has_input = !self.conversation.input().is_empty();
                     let submit = button(
                         Canvas::new(SubmitArrow {
                             color: if has_input {
@@ -422,11 +422,11 @@ impl App {
                         style
                     });
                     let input = container(stack![
-                        text_input("", &self.input)
+                        text_input("", self.conversation.input())
                             .id(self.input_id.clone())
                             .on_input_maybe(interactive.then_some(Message::InputChanged))
                             .on_submit_maybe(interactive.then_some(Message::Submit))
-                            .secure(self.secret)
+                            .secure(self.conversation.is_secret())
                             .padding(
                                 padding::all(12)
                                     .left(18)
@@ -445,7 +445,7 @@ impl App {
                     .id(iced::widget::Id::new("authentication-input-anchor"))
                     .width(Fill);
                     column![
-                        text(&self.prompt)
+                        text(self.conversation.prompt())
                             .size(15)
                             .color(theme::primary_text())
                             .width(Fill)
@@ -506,7 +506,7 @@ impl App {
             column![
                 avatar(&self.display_name, 100.0, 38),
                 identity,
-                column![controls, self.status_for(self.message.as_deref(), flow)]
+                column![controls, self.status_for(self.conversation.notice(), flow)]
                     .width(Fill)
                     .align_x(Alignment::Center)
                     .spacing(8),
@@ -522,10 +522,10 @@ impl App {
     }
 
     pub(super) fn requires_flow_layout(&self) -> bool {
-        dynamic_text_requires_flow(&self.prompt)
+        dynamic_text_requires_flow(self.conversation.prompt())
             || self
-                .message
-                .as_deref()
+                .conversation
+                .notice()
                 .is_some_and(dynamic_text_requires_flow)
             || dynamic_text_requires_flow(&self.display_name)
             || dynamic_text_requires_flow(&self.username)
@@ -549,7 +549,7 @@ impl App {
 
     fn status_for<'a>(&'a self, message: Option<&'a str>, _flow: bool) -> Element<'a, Message> {
         let status = message.unwrap_or(" ");
-        let color = theme::status_text(self.message_is_error);
+        let color = theme::status_text(self.conversation.notice_is_error());
         let status = text(status)
             .size(14)
             .color(color)

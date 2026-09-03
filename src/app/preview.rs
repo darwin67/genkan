@@ -6,7 +6,7 @@ use iced::widget::Id;
 use iced::Task;
 
 use crate::accounts::Account;
-use crate::conversation::Attempt;
+use crate::conversation::{Conversation, Status as ConversationStatus};
 use crate::power::Action as PowerAction;
 use crate::sessions::Session;
 use crate::wallpaper;
@@ -70,6 +70,18 @@ pub(super) fn build(
         .unwrap_or_else(|| (String::new(), "Select a user".into()));
     let power_state = state.power_state;
     let confirming_power = matches!(power_state, PowerState::Confirming(_));
+    let conversation = Conversation::for_preview(
+        state.input,
+        state.prompt,
+        state.message,
+        state.message_is_error,
+        state.secret,
+        match state.phase {
+            Phase::WaitingForInput => ConversationStatus::Waiting,
+            Phase::Failed => ConversationStatus::Failed,
+            _ => ConversationStatus::Submitting,
+        },
+    );
     let mut app = App {
         username,
         display_name,
@@ -78,16 +90,12 @@ pub(super) fn build(
         focus_before_modal: None,
         account_scroll_id: Id::unique(),
         page_scroll_id: Id::unique(),
-        input: state.input,
         input_id,
-        prompt: state.prompt,
-        message: state.message,
-        message_is_error: state.message_is_error,
+        conversation,
         session_message: state.session_message,
         power_message: state.power_message,
         power_message_is_error: state.power_message_is_error,
         preview_message: state.preview_message,
-        secret: state.secret,
         phase: state.phase,
         client: None,
         sessions,
@@ -98,7 +106,6 @@ pub(super) fn build(
         started_at: Instant::now(),
         now: preview_now(),
         power_state: PowerState::Idle,
-        attempt: Attempt::initial(),
         selection_session_cancelled: false,
         closing: None,
         preview: true,
@@ -308,7 +315,7 @@ mod tests {
         let (selected, _) = build_fixture(Fixture::Selected);
         assert_eq!(selected.username, "preview");
         assert_eq!(selected.display_name, "Preview User");
-        assert!(selected.input.is_empty());
+        assert!(selected.conversation.input().is_empty());
         assert_eq!(selected.accounts, vec![selected.accounts[0].clone()]);
         assert_eq!(
             selected.selected_session.as_ref().unwrap(),
@@ -316,7 +323,7 @@ mod tests {
         );
 
         let (visible_prompt, _) = build_fixture(Fixture::VisiblePrompt);
-        assert_eq!(visible_prompt.input, "123456");
+        assert_eq!(visible_prompt.conversation.input(), "123456");
     }
 
     #[test]
@@ -360,12 +367,19 @@ mod tests {
     #[test]
     fn preview_account_changes_clear_simulated_responses_without_a_client() {
         let (mut app, _) = build_fixture(Fixture::Users);
-        app.input = "simulated response".into();
+        app.conversation = Conversation::for_preview(
+            "simulated response".into(),
+            "Password".into(),
+            Some("Select a user".into()),
+            false,
+            true,
+            ConversationStatus::Waiting,
+        );
         let account = app.accounts[0].clone();
 
         let _ = app.update(Message::SelectAccount(account));
 
-        assert!(app.input.is_empty());
+        assert!(app.conversation.input().is_empty());
         assert!(app.client.is_none());
         assert_eq!(app.phase, Phase::WaitingForInput);
         assert!(app.preview_message.is_some());
@@ -406,26 +420,26 @@ mod tests {
     fn prompt_and_failure_fixtures_expose_expected_states() {
         let (visible, _) = build_fixture(Fixture::VisiblePrompt);
         assert_eq!(visible.phase, Phase::WaitingForInput);
-        assert!(!visible.secret);
+        assert!(!visible.conversation.is_secret());
 
         let (long, _) = build_fixture(Fixture::LongAuthentication);
-        assert!(long.prompt.chars().count() >= 500);
-        assert!(long.message.as_deref().unwrap().chars().count() >= 500);
+        assert!(long.conversation.prompt().chars().count() >= 500);
+        assert!(long.conversation.notice().unwrap().chars().count() >= 500);
         assert!(long.username.chars().count() >= 240);
         assert!(long.requires_flow_layout());
 
         let (secret, _) = build_fixture(Fixture::SecretPrompt);
-        assert!(secret.secret);
+        assert!(secret.conversation.is_secret());
 
         let (consecutive, _) = build_fixture(Fixture::ConsecutiveMessages);
         assert_eq!(
-            consecutive.message.as_deref(),
+            consecutive.conversation.notice(),
             Some("Security key accepted; enter your password")
         );
 
         let (authentication, _) = build_fixture(Fixture::AuthenticationFailure);
         assert_eq!(authentication.phase, Phase::Failed);
-        assert!(authentication.message_is_error);
+        assert!(authentication.conversation.notice_is_error());
         assert_eq!(
             authentication.focus_target,
             Some(FocusTarget::RetryAuthentication)
@@ -450,7 +464,7 @@ mod tests {
             cancellation_failure.phase,
             Phase::UserSelectionCancellationFailed
         );
-        assert!(cancellation_failure.message_is_error);
+        assert!(cancellation_failure.conversation.notice_is_error());
         assert_eq!(
             cancellation_failure.focus_target,
             Some(FocusTarget::RetryAccountSelection)
