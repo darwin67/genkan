@@ -21,6 +21,8 @@ pkgs.runCommand "genkan-graphics-smoke"
     export HOME="$TMPDIR/home"
     export XDG_RUNTIME_DIR="$TMPDIR/runtime"
     export XDG_DATA_DIRS="$TMPDIR/data/share"
+    output_width=640
+    output_height=360
     mkdir -p "$HOME/.cache/fontconfig" "$XDG_RUNTIME_DIR" "$XDG_DATA_DIRS/wayland-sessions"
     chmod 700 "$XDG_RUNTIME_DIR"
 
@@ -68,12 +70,14 @@ pkgs.runCommand "genkan-graphics-smoke"
     }
     start_weston() {
       local log=$1
+      local width=$2
+      local height=$3
 
       weston \
         --backend=headless-backend.so \
         --renderer=pixman \
-        --width=1280 \
-        --height=720 \
+        --width="$width" \
+        --height="$height" \
         --idle-time=0 \
         --shell=kiosk \
         --socket=wayland-genkan \
@@ -113,7 +117,7 @@ pkgs.runCommand "genkan-graphics-smoke"
     EOF
     chmod +x "$TMPDIR/run-genkan"
 
-    start_weston "$TMPDIR/weston-cage.log"
+    start_weston "$TMPDIR/weston-cage.log" 1280 720
 
     WAYLAND_DISPLAY=wayland-genkan \
       ICED_BACKEND=wgpu \
@@ -151,12 +155,12 @@ pkgs.runCommand "genkan-graphics-smoke"
 
     stop_smoke
     stop_weston
-    start_weston "$TMPDIR/weston-preview.log"
+    start_weston "$TMPDIR/weston-preview.log" "$output_width" "$output_height"
 
     cat > "$TMPDIR/run-genkan-static" <<EOF
     #!${pkgs.runtimeShell}
     echo \$\$ > "$TMPDIR/genkan.pid"
-    exec ${genkan}/bin/genkan login --windowed --preview selected --width 1280 --height 720
+    exec ${genkan}/bin/genkan login --windowed --preview selected --width $output_width --height $output_height
     EOF
     chmod +x "$TMPDIR/run-genkan-static"
 
@@ -215,7 +219,7 @@ pkgs.runCommand "genkan-graphics-smoke"
     cat > "$TMPDIR/run-genkan-animated" <<EOF
     #!${pkgs.runtimeShell}
     echo \$\$ > "$TMPDIR/genkan.pid"
-    exec ${genkan}/bin/genkan login --windowed --preview selected --animated-preview --width 1280 --height 720
+    exec ${genkan}/bin/genkan login --windowed --preview selected --animated-preview --width $output_width --height $output_height
     EOF
     chmod +x "$TMPDIR/run-genkan-animated"
 
@@ -242,6 +246,15 @@ pkgs.runCommand "genkan-graphics-smoke"
     done
     test -s "$TMPDIR/genkan.pid"
     genkan_pid=$(cat "$TMPDIR/genkan.pid")
+
+    # Let 4K HEVC decoding start before screenshot capture competes for the
+    # software renderer on constrained CI runners.
+    sleep 20
+    if ! kill -0 "$genkan_pid" 2>/dev/null; then
+      cat "$TMPDIR/animated.log"
+      echo "Genkan exited while animated playback was warming up" >&2
+      exit 1
+    fi
 
     distinct_frames=""
     frame_count=0
