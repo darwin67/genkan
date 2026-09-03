@@ -114,6 +114,12 @@ EOF
   done
   [[ -s "$case_dir/genkan.pid" ]]
 
+  # The wrapper PID exists before iced has mapped and painted its window. Give
+  # constrained software renderers time to move past a stable compositor-only
+  # frame before accepting screenshot stability.
+  sleep 2
+  require_running_process "$app_pid" "$case_dir/genkan.log"
+
   screenshot=""
   for _ in $(seq 1 50); do
     require_running_process "$app_pid" "$case_dir/genkan.log"
@@ -130,7 +136,11 @@ EOF
     if [[ -n $screenshot ]] && valid_preview_frame "$screenshot" "$width" "$height"; then
       frame_hash=$(sha256sum "$screenshot" | cut -d' ' -f1)
       if advance_frame_stability previous_hash "$frame_hash"; then
-        break
+        if [[ -z ${PREVIEW_REFERENCE_DIR:-} || ! -f $PREVIEW_REFERENCE_DIR/$name.png ]] ||
+          check_preview_baseline \
+            "$screenshot" "$PREVIEW_REFERENCE_DIR/$name.png" >/dev/null 2>&1; then
+          break
+        fi
       fi
     else
       advance_frame_stability previous_hash "" || true
