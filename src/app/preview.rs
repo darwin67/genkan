@@ -6,11 +6,12 @@ use iced::widget::Id;
 use iced::Task;
 
 use crate::accounts::Account;
+use crate::conversation::Attempt;
 use crate::power::Action as PowerAction;
 use crate::sessions::Session;
 use crate::wallpaper;
 
-use super::auth_flow::{Attempt, Phase};
+use super::auth_flow::Phase;
 use super::focus::Target as FocusTarget;
 use super::{App, Message, PowerState};
 

@@ -8,7 +8,7 @@ mod view;
 
 use std::time::{Duration, Instant};
 
-use auth_flow::{Attempt, Phase};
+use auth_flow::Phase;
 use chrono::Local;
 use focus::{Navigation as FocusNavigation, Target as FocusTarget};
 use greetd_ipc::Request;
@@ -16,6 +16,7 @@ use iced::widget::{operation, scrollable, Id};
 use iced::{event, keyboard, time, window, Subscription, Task};
 
 use crate::accounts::{self, Account};
+use crate::conversation::{self, Attempt};
 use crate::power::{self, Action as PowerAction};
 use crate::sessions::{self, Session};
 use crate::wallpaper;
@@ -350,7 +351,7 @@ impl App {
                 result: Err(error),
             } if attempt == self.attempt && self.phase == Phase::CancellingForUserSelection => {
                 self.phase = Phase::UserSelectionCancellationFailed;
-                self.message = Some(auth_flow::bounded_auth_text(&error));
+                self.message = Some(conversation::bounded_text(&error));
                 self.message_is_error = true;
                 self.set_focus(FocusTarget::RetryAccountSelection)
             }
@@ -512,7 +513,7 @@ impl App {
             Message::PowerResult(Ok(())) => Task::none(),
             Message::PowerResult(Err(error)) => {
                 self.power_state = PowerState::Idle;
-                self.power_message = Some(auth_flow::bounded_auth_text(&error));
+                self.power_message = Some(conversation::bounded_text(&error));
                 self.power_message_is_error = true;
                 self.leave_power_dialog()
             }

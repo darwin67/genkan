@@ -32,13 +32,13 @@ each new boundary, and do not ship a production path that unlocks without PAM.
 
 * Phase 3: Separate the reusable conversation model
 
-- [ ] Extract prompt, notice, response, attempt, success, and failure transitions
+- [X] Extract prompt, notice, response, attempt, success, and failure transitions
   from greetd-specific `StartSession` effects without changing current behavior.
-- [ ] Keep greetd connection, cancellation, retry, and selected-session startup
+- [X] Keep greetd connection, cancellation, retry, and selected-session startup
   in a login adapter.
-- [ ] Prove with transition and application tests that the refactor preserves
+- [X] Prove with transition and application tests that the refactor preserves
   every current prompt type, retry path, stale-attempt guard, and close cleanup.
-- [ ] Extract only presentation components actually shared by greeter and
+- [X] Extract only presentation components actually shared by greeter and
   locker; do not add a mode branch to the existing top-level `App`.
 
 * Phase 4: Establish the compositor lock boundary

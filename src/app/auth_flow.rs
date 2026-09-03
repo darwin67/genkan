@@ -3,11 +3,12 @@ use iced::{window, Task};
 
 use genkan::auth::{self, Client};
 
+use crate::conversation::{self, Attempt};
+
 use super::{App, Closing, Message};
 
 const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const USER_SELECTION_CANCEL_PROGRESS_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
-const MAX_AUTH_TEXT_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Phase {
@@ -22,9 +23,6 @@ pub(super) enum Phase {
     StartingSession,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Attempt(u64);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AuthTransition {
     phase: Phase,
@@ -33,15 +31,8 @@ pub(super) struct AuthTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AuthEffect {
-    Prompt {
-        secret: bool,
-        message: String,
-    },
-    Acknowledge {
-        error: bool,
-        message: String,
-        request: AuthRequest,
-    },
+    Prompt { secret: bool, message: String },
+    Acknowledge { error: bool, message: String },
     StartSession(AuthRequest),
     Exit,
     Fail(String),
@@ -49,27 +40,14 @@ pub(super) enum AuthEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AuthRequest {
-    Acknowledge,
     StartSession { cmd: Vec<String>, env: Vec<String> },
 }
 
 impl AuthRequest {
     fn into_greetd(self) -> Request {
         match self {
-            Self::Acknowledge => Request::PostAuthMessageResponse { response: None },
             Self::StartSession { cmd, env } => Request::StartSession { cmd, env },
         }
-    }
-}
-
-impl Attempt {
-    pub(super) fn initial() -> Self {
-        Self(1)
-    }
-
-    pub(super) fn advance(&mut self) -> Self {
-        self.0 = self.0.wrapping_add(1);
-        *self
     }
 }
 
@@ -106,21 +84,17 @@ impl App {
         let transition = transition(self.phase, response, self.selected_session.as_ref());
         match self.apply_auth_transition(transition) {
             AuthEffect::Prompt { secret, message } => {
-                self.prompt = clean_prompt(&message);
+                self.prompt = message;
                 self.secret = secret;
                 self.input.clear();
                 self.focus_input()
             }
-            AuthEffect::Acknowledge {
-                error,
-                message,
-                request,
-            } => {
+            AuthEffect::Acknowledge { error, message } => {
                 self.set_auth_notice(message, error);
                 let Some(client) = self.client.clone() else {
                     return self.fail("Lost connection to greetd".into());
                 };
-                exchange(client, request.into_greetd(), self.attempt)
+                exchange(client, acknowledge_request(), self.attempt)
             }
             AuthEffect::Exit => iced::exit(),
             AuthEffect::StartSession(request) => {
@@ -146,13 +120,13 @@ impl App {
         self.input.clear();
         self.prompt = "Password".into();
         self.secret = true;
-        self.message = Some(bounded_auth_text(&message));
+        self.message = Some(conversation::bounded_text(&message));
         self.message_is_error = true;
         self.focus_first()
     }
 
     pub(super) fn set_auth_notice(&mut self, message: String, error: bool) {
-        self.message = Some(bounded_auth_text(&message));
+        self.message = Some(conversation::bounded_text(&message));
         self.message_is_error = error;
     }
 
@@ -167,23 +141,37 @@ pub(super) fn transition(
     response: auth::Response,
     session: Option<&crate::sessions::Session>,
 ) -> AuthTransition {
-    let (phase, effect) = match response {
-        auth::Response::Prompt { secret, message } => (
+    if phase == Phase::StartingSession && response == auth::Response::Success {
+        return AuthTransition {
+            phase,
+            effect: AuthEffect::Exit,
+        };
+    }
+
+    let response = match response {
+        auth::Response::Prompt { secret, message } => {
+            conversation::Response::Prompt { secret, message }
+        }
+        auth::Response::Message { error, message } => {
+            conversation::Response::Notice { error, message }
+        }
+        auth::Response::Success => conversation::Response::Success,
+        auth::Response::Error {
+            authentication: true,
+            ..
+        } => conversation::Response::Failure("Authentication failed".into()),
+        auth::Response::Error { description, .. } => conversation::Response::Failure(description),
+    };
+
+    let (phase, effect) = match conversation::transition(response) {
+        conversation::Effect::Prompt { secret, message } => (
             Phase::WaitingForInput,
             AuthEffect::Prompt { secret, message },
         ),
-        auth::Response::Message { error, message } => (
-            phase,
-            AuthEffect::Acknowledge {
-                error,
-                message,
-                request: AuthRequest::Acknowledge,
-            },
-        ),
-        auth::Response::Success if phase == Phase::StartingSession => {
-            (Phase::StartingSession, AuthEffect::Exit)
+        conversation::Effect::Acknowledge { error, message } => {
+            (phase, AuthEffect::Acknowledge { error, message })
         }
-        auth::Response::Success => match session {
+        conversation::Effect::Authenticated => match session {
             Some(session) => (
                 Phase::StartingSession,
                 AuthEffect::StartSession(AuthRequest::StartSession {
@@ -196,16 +184,13 @@ pub(super) fn transition(
                 AuthEffect::Fail("No valid Wayland session is selected".into()),
             ),
         },
-        auth::Response::Error {
-            authentication: true,
-            ..
-        } => (
-            Phase::Failed,
-            AuthEffect::Fail("Authentication failed".into()),
-        ),
-        auth::Response::Error { description, .. } => (Phase::Failed, AuthEffect::Fail(description)),
+        conversation::Effect::Failed(message) => (Phase::Failed, AuthEffect::Fail(message)),
     };
     AuthTransition { phase, effect }
+}
+
+fn acknowledge_request() -> Request {
+    Request::PostAuthMessageResponse { response: None }
 }
 
 pub(super) fn begin(username: String, attempt: Attempt, recover: bool) -> Task<Message> {
@@ -284,48 +269,9 @@ pub(super) fn close_timeout(window: window::Id) -> Task<Message> {
     )
 }
 
-pub(super) fn clean_prompt(prompt: &str) -> String {
-    let prompt = prompt.trim().trim_end_matches(':').trim();
-    bounded_auth_text(if prompt.is_empty() {
-        "Password"
-    } else {
-        prompt
-    })
-}
-
-pub(super) fn bounded_auth_text(value: &str) -> String {
-    let mut characters = value.chars();
-    let mut bounded = characters
-        .by_ref()
-        .take(MAX_AUTH_TEXT_CHARS)
-        .collect::<String>();
-    if characters.next().is_some() {
-        bounded.pop();
-        bounded.push('…');
-    }
-    bounded
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalizes_pam_prompts() {
-        assert_eq!(clean_prompt("Password: "), "Password");
-        assert_eq!(clean_prompt(""), "Password");
-    }
-
-    #[test]
-    fn bounds_pathological_authentication_text() {
-        let bounded = bounded_auth_text(&"界".repeat(MAX_AUTH_TEXT_CHARS + 100));
-        assert_eq!(bounded.chars().count(), MAX_AUTH_TEXT_CHARS);
-        assert!(bounded.ends_with('…'));
-        assert_eq!(
-            clean_prompt(&format!("{}:", "x".repeat(600))),
-            bounded_auth_text(&"x".repeat(600))
-        );
-    }
 
     #[test]
     fn maps_every_authentication_response_transition() {
@@ -346,7 +292,7 @@ mod tests {
                     phase: Phase::WaitingForInput,
                     effect: AuthEffect::Prompt {
                         secret: true,
-                        message: "Password:".into(),
+                        message: "Password".into(),
                     },
                 },
             ),
@@ -361,7 +307,6 @@ mod tests {
                     effect: AuthEffect::Acknowledge {
                         error: false,
                         message: "Touch the security key".into(),
-                        request: AuthRequest::Acknowledge,
                     },
                 },
             ),
@@ -434,11 +379,10 @@ mod tests {
             AuthEffect::Acknowledge {
                 error: false,
                 message: "Touch the security key".into(),
-                request: AuthRequest::Acknowledge,
             }
         );
         assert!(matches!(
-            AuthRequest::Acknowledge.into_greetd(),
+            acknowledge_request(),
             Request::PostAuthMessageResponse { response: None }
         ));
     }
