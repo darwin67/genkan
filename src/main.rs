@@ -1,6 +1,7 @@
 mod accounts;
 mod app;
 mod background;
+mod conversation;
 mod power;
 mod sessions;
 mod theme;
