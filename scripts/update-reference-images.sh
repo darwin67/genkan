@@ -52,7 +52,7 @@ trap 'exit 143' TERM
 system=$(nix eval --raw --impure --expr builtins.currentSystem)
 output=$(
   cd "$repo_root"
-  nix build ".#checks.$system.preview-evidence" --no-link --print-out-paths
+  nix build ".#packages.$system.preview-evidence-capture" --no-link --print-out-paths
 )
 
 for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do

@@ -184,7 +184,7 @@ impl App {
                 let center = container(
                     column![
                         self.clock(),
-                        Space::new(Fill, Fill),
+                        Space::new().width(Fill).height(Fill),
                         self.identity(Some(292.0), None, false)
                     ]
                     .width(Fill)
@@ -309,7 +309,7 @@ impl App {
 
     fn preview_indicator(&self) -> Element<'_, Message> {
         let Some(message) = self.preview_message.as_deref() else {
-            return Space::new(Length::Shrink, Length::Fixed(0.0)).into();
+            return Space::new().height(0).into();
         };
         container(text(message).size(13).wrapping(Wrapping::WordOrGlyph))
             .padding([7, 12])
@@ -359,7 +359,7 @@ impl App {
                 })
                 .into()
         } else {
-            Space::new(Length::Shrink, Length::Fixed(0.0)).into()
+            Space::new().height(0).into()
         };
 
         container(
@@ -442,9 +442,7 @@ impl App {
                             .align_x(Alignment::End)
                             .align_y(Alignment::Center),
                     ])
-                    .id(iced::widget::container::Id::new(
-                        "authentication-input-anchor",
-                    ))
+                    .id(iced::widget::Id::new("authentication-input-anchor"))
                     .width(Fill);
                     column![
                         text(&self.prompt)
@@ -472,9 +470,7 @@ impl App {
                 AuthenticationControls::Progress(label) => {
                     text(label).size(15).color(theme::secondary_text()).into()
                 }
-                AuthenticationControls::Unavailable => {
-                    Space::new(Length::Shrink, Length::Fixed(0.0)).into()
-                }
+                AuthenticationControls::Unavailable => Space::new().height(0).into(),
             };
         let change_user: Element<'_, Message> = if self.can_change_user() {
             button(text("Change User").size(14))
@@ -485,7 +481,7 @@ impl App {
                 })
                 .into()
         } else {
-            Space::new(Length::Shrink, Length::Fixed(0.0)).into()
+            Space::new().height(0).into()
         };
         let identity = column![
             text(&self.display_name)
@@ -611,7 +607,7 @@ impl App {
                     })
                     .into()
             } else {
-                Space::new(Length::Shrink, Length::Fixed(0.0)).into()
+                Space::new().height(0).into()
             };
         column![
             text("Session").size(13).color(theme::secondary_text()),
@@ -642,7 +638,7 @@ pub(super) fn authentication_controls(phase: Phase, has_session: bool) -> Authen
 
 fn notice<'a>(message: Option<&'a str>, error: bool) -> Element<'a, Message> {
     let Some(message) = message else {
-        return Space::new(Length::Shrink, Length::Fixed(0.0)).into();
+        return Space::new().height(0).into();
     };
     text(message)
         .size(13)
@@ -657,7 +653,7 @@ fn account_grid<'a>(
     focused_account: Option<usize>,
     height: Option<f32>,
     width: Option<f32>,
-    scroll_id: &'a scrollable::Id,
+    scroll_id: &'a iced::widget::Id,
 ) -> Element<'a, Message> {
     if let Some(height) = height {
         container(responsive(move |size| {
@@ -749,7 +745,7 @@ fn dynamic_text_requires_flow(value: &str) -> bool {
 fn avatar<'a>(name: &str, diameter: f32, text_size: u16) -> Element<'a, Message> {
     container(
         text(initials(name))
-            .size(text_size)
+            .size(u32::from(text_size))
             .color(theme::primary_text()),
     )
     .width(Length::Fixed(diameter))
@@ -795,7 +791,7 @@ fn modal<'a>(
     stack![
         main_content.into(),
         modal_widget::barrier(stack![
-            container(Space::new(Fill, Fill)).style(theme::modal_scrim),
+            container(Space::new().width(Fill).height(Fill)).style(theme::modal_scrim),
             container(dialog)
                 .width(Fill)
                 .height(Fill)

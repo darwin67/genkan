@@ -35,6 +35,24 @@ advance_frame_stability() {
   [[ $stable == true ]]
 }
 
+check_preview_baseline() {
+  local actual=$1
+  local expected=$2
+  local difference normalized status=0
+
+  difference=$(compare -metric PDC -channel RGB -fuzz 5% "$expected" "$actual" null: 2>&1) || status=$?
+  normalized=${difference##*(}
+  normalized=${normalized%)*}
+  # The iced 0.14 migration changes 3.66% of pixels beyond this fuzz while
+  # preserving the reviewed colors and geometry, so leave a narrow margin.
+  if [[ $status -le 1 ]] && awk -v difference="$normalized" 'BEGIN { exit !(difference <= 0.04) }'; then
+    return 0
+  fi
+
+  echo "preview differs from baseline: $(basename "$actual") ($difference pixels beyond 5% fuzz; maximum 4%)" >&2
+  return 1
+}
+
 check_preview_connections() {
   local trace=$1
   local allowed_wayland_socket=$2

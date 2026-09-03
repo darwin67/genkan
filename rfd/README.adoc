@@ -13,6 +13,9 @@ authoritative merely because it exists; its `state` says how it should be read.
 
 |link:0002/README.adoc[2: Animated 4K greeter wallpaper]
 |Full-resolution video wallpaper playback, packaging, fallback behavior, and verification
+
+|link:0003/README.adoc[3: Secure session locking across suspend and resume]
+|Lock-before-suspend lifecycle, existing-session reauthentication, and secure Wayland unlock
 |===
 
 == Source format

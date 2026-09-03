@@ -164,7 +164,10 @@ make_presentation_stubs() {
 
   cat > "$fixture/bin/vulkaninfo" <<'EOF'
 #!/usr/bin/env bash
-printf 'vendorID = 0x1002\n'
+case ${VK_DRIVER_FILES:-} in
+  *nvidia*) printf 'vendorID = 0x10de\n' ;;
+  *) printf 'vendorID = 0x1002\n' ;;
+esac
 EOF
   cat > "$fixture/bin/cage" <<'EOF'
 #!/usr/bin/env bash
@@ -172,6 +175,10 @@ for argument in "$@"; do
   command=$argument
 done
 echo $$ > "$GENKAN_TEST_STATE/leader.pid"
+exec 9< "$GENKAN_TEST_DRI/card2"
+if [[ ${GENKAN_TEST_CAGE_WRONG_DRI:-0} == 1 ]]; then
+  exec 8< "$GENKAN_TEST_DRI/card-wrong"
+fi
 "$command" &
 child=$!
 echo "$child" > "$GENKAN_TEST_STATE/child.pid"
@@ -180,7 +187,14 @@ wait "$child"
 EOF
   cat > "$fixture/bin/genkan" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" > "$GENKAN_TEST_STATE/genkan.args"
 exec 9< "$GENKAN_TEST_DRI/card2"
+if [[ ${GENKAN_TEST_GENKAN_WRONG_DRI:-0} == 1 ]]; then
+  exec 8< "$GENKAN_TEST_DRI/card-wrong"
+fi
+if [[ -n ${GENKAN_TEST_OPPOSING_DRIVER:-} ]]; then
+  exec env LD_PRELOAD="$GENKAN_TEST_OPPOSING_DRIVER" sleep 30
+fi
 sleep 30
 EOF
   cat > "$fixture/bin/swaymsg" <<'EOF'
@@ -237,14 +251,41 @@ assert_fixture_process_stopped() {
 
 test_representative_selection_placement_and_cleanup() {
   local fixture="$tmp_dir/presentation"
+  local library
   make_drm_fixture "$fixture"
   mkdir -p "$fixture/state"
   make_presentation_stubs "$fixture"
+  library=$(ldd "$(type -P sleep)" | awk '/libc\.so/ { print $3; exit }')
+  cp "$library" "$fixture/libnvidia-fixture.so"
+  cp "$library" "$fixture/libvulkan_radeon-fixture.so"
+
+  expect_failure "unexpectedly loaded or opened an NVIDIA driver" \
+    run_presentation_fixture "$fixture" GENKAN_TEST_OPPOSING_DRIVER="$fixture/libnvidia-fixture.so"
+  assert_fixture_process_stopped "$fixture"
 
   run_presentation_fixture "$fixture" > "$tmp_dir/presentation.log"
   grep -Fq 'Skipping card0; it has no render node' "$tmp_dir/presentation.log"
   grep -Fq 'Testing radeon-card2' "$tmp_dir/presentation.log"
   grep -Fq 'presentation on DP-1' "$tmp_dir/presentation.log"
+  grep -Fxq 'login --username smoke --reduce-motion' "$fixture/state/genkan.args"
+  assert_fixture_process_stopped "$fixture"
+
+  printf '0x10de\n' > "$fixture/drm/card2/device/vendor"
+  : > "$fixture/icd/nvidia_icd.json"
+  expect_failure "unexpectedly loaded an AMD driver" \
+    run_presentation_fixture "$fixture" GENKAN_TEST_OPPOSING_DRIVER="$fixture/libvulkan_radeon-fixture.so"
+  assert_fixture_process_stopped "$fixture"
+  run_presentation_fixture "$fixture" > "$tmp_dir/nvidia-presentation.log"
+  grep -Fq 'Testing nvidia-card2' "$tmp_dir/nvidia-presentation.log"
+  grep -Fxq 'login --username smoke --reduce-motion' "$fixture/state/genkan.args"
+  assert_fixture_process_stopped "$fixture"
+
+  : > "$fixture/dri/card-wrong"
+  expect_failure "opened a DRM node belonging to another adapter" \
+    run_presentation_fixture "$fixture" GENKAN_TEST_CAGE_WRONG_DRI=1
+  assert_fixture_process_stopped "$fixture"
+  expect_failure "opened a DRM node belonging to another adapter" \
+    run_presentation_fixture "$fixture" GENKAN_TEST_GENKAN_WRONG_DRI=1
   assert_fixture_process_stopped "$fixture"
 
   expect_failure "Cage was not found on Sway output DP-1" \
@@ -257,10 +298,21 @@ test_ci_watches_all_scripts() {
     fail "CI push and pull_request filters must watch scripts/**"
 }
 
+test_ci_serializes_software_graphics_checks() {
+  grep -Fq \
+    'run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs' \
+    "$repo_root/.github/workflows/ci.yml" ||
+    fail "CI must run graphics-smoke in its own build"
+  grep -Fq \
+    'run: nix build .#checks.${{ matrix.system }}.preview-evidence --print-build-logs' \
+    "$repo_root/.github/workflows/ci.yml" ||
+    fail "CI must run preview-evidence only after graphics-smoke"
+}
+
 test_dev_preview_does_not_inherit_host_identity() {
   local command
   command=$(env -u PREVIEW make --no-print-directory -n -C "$repo_root" PREVIEW=selected dev)
-  [[ $command == *'--windowed --preview "selected"'* ]] ||
+  [[ $command == *'-- login --windowed --preview "selected"'* ]] ||
     fail "make dev must select the deterministic default fixture"
   [[ $command != *'--username'* ]] ||
     fail "make dev must not inject a host-dependent username"
@@ -306,6 +358,28 @@ test_preview_evidence_requires_consecutive_frames() {
   ! advance_frame_stability previous frame-a
   [[ $previous == frame-a ]]
   advance_frame_stability previous frame-a
+}
+
+test_preview_evidence_rejects_baseline_differences() {
+  # shellcheck source=preview-evidence-lib.sh
+  source "$repo_root/scripts/preview-evidence-lib.sh"
+  local fixture="$tmp_dir/preview-baseline"
+  mkdir -p "$fixture/bin"
+  cat > "$fixture/bin/compare" <<'EOF'
+#!/usr/bin/env bash
+[[ $* == '-metric PDC -channel RGB -fuzz 5% expected.png actual.png null:' ]] || exit 2
+printf '40000 (0.039)' >&2
+exit 1
+EOF
+  chmod +x "$fixture/bin/compare"
+
+  PATH="$fixture/bin:$PATH" check_preview_baseline actual.png expected.png >/dev/null 2>&1 ||
+    fail "preview evidence must accept differences within its changed-pixel boundary"
+
+  sed -i 's/(0.039)/(0.041)/' "$fixture/bin/compare"
+  if PATH="$fixture/bin:$PATH" check_preview_baseline actual.png expected.png >/dev/null 2>&1; then
+    fail "preview evidence must reject pixel differences from its baseline"
+  fi
 }
 
 test_preview_evidence_rejects_unexpected_connections() {
@@ -409,12 +483,33 @@ make_reference_nix_stub() {
 if [[ $1 == eval ]]; then
   printf 'x86_64-linux'
 elif [[ $1 == build ]]; then
+  if [[ -n ${NIX_BUILD_ARGS:-} ]]; then
+    printf '%s\n' "$*" > "$NIX_BUILD_ARGS"
+  fi
   printf '%s\n' "$REFERENCE_SOURCE"
 else
   exit 2
 fi
 EOF
   chmod +x "$bin_dir/nix"
+}
+
+test_reference_image_refresh_uses_capture_only_derivation() {
+  local source="$tmp_dir/capture-only-source"
+  local destination="$tmp_dir/capture-only-destination"
+  local bin_dir="$tmp_dir/capture-only-bin"
+  local build_args="$tmp_dir/capture-only-build-args"
+  make_reference_fixture "$source"
+  make_reference_fixture "$destination"
+  make_reference_nix_stub "$bin_dir"
+
+  env PATH="$bin_dir:$PATH" REFERENCE_SOURCE="$source" \
+    REFERENCE_IMAGE_DIR="$destination" NIX_BUILD_ARGS="$build_args" \
+    "$repo_root/scripts/update-reference-images.sh" > /dev/null
+
+  grep -Fxq \
+    'build .#packages.x86_64-linux.preview-evidence-capture --no-link --print-out-paths' \
+    "$build_args" || fail "reference refresh must build the capture-only derivation"
 }
 
 test_reference_image_refresh_is_failure_safe_and_removes_stale_files() {
@@ -679,15 +774,18 @@ test_sway_query_failure_is_not_masked
 test_external_output_must_be_active
 test_representative_selection_placement_and_cleanup
 test_ci_watches_all_scripts
+test_ci_serializes_software_graphics_checks
 test_dev_preview_does_not_inherit_host_identity
 test_preview_evidence_rejects_dead_application
 test_preview_evidence_rejects_blank_frame
 test_preview_evidence_requires_consecutive_frames
+test_preview_evidence_rejects_baseline_differences
 test_preview_evidence_rejects_unexpected_connections
 test_reference_image_manifest_rejects_missing_and_invalid_images
 test_reference_image_manifest_rejects_dimensions_and_extra_entries
 test_reference_image_manifest_rejects_symlinks
 test_reference_image_manifest_propagates_enumeration_failure
+test_reference_image_refresh_uses_capture_only_derivation
 test_reference_image_refresh_is_failure_safe_and_removes_stale_files
 test_reference_image_refresh_rolls_back_replacement_failures
 test_reference_image_refresh_survives_backup_preparation_failure

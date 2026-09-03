@@ -1,0 +1,405 @@
+:authors: Darwin D. Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/darwin67/genkan/pull/19
+:labels: session-lock, authentication, suspend, wayland, security
+
+= RFD 3 Secure session locking across suspend and resume
+
+== Goal
+
+Extend Genkan's presentation and authentication experience to an existing
+Wayland desktop session without treating resume as another login. The desktop
+must be securely locked before suspend, remain locked while the machine sleeps
+and resumes, and become visible again only after the current user successfully
+reauthenticates.
+
+== Context
+
+Genkan currently runs as greetd's default greeter under Cage. It creates a
+greetd authentication session, conducts the PAM conversation through greetd,
+asks greetd to start a selected desktop command, and exits. greetd starts the
+desktop only after the greeter terminates. The greeter process and its Wayland
+compositor therefore do not remain inside the resulting user session.
+
+A desktop locker has a different security and process lifecycle. It runs as the
+already logged-in user, connects to that user's compositor, covers every
+output, excludes ordinary clients from input, reauthenticates one fixed
+identity, and releases the existing session. The greetd protocol has no request
+that releases an existing compositor lock. A successful greetd exchange instead
+authorizes starting a new command in a new login session.
+
+The reusable part is the visual presentation and authentication-conversation
+model. Account discovery, account switching, desktop-session selection,
+`StartSession`, and greetd attempt cancellation are login-only behavior.
+
+This RFD uses _lock before suspend_ rather than _lock on resume_. Starting a
+locker only after wake creates an interval in which resumed session content may
+be visible or receive input. The lock must already be compositor-owned before
+the system is allowed to sleep.
+
+== Decision
+
+Genkan exposes login and locking as explicit subcommands of one user-facing
+binary:
+
+[source,sh]
+----
+genkan login
+genkan lock
+----
+
+Invoking `genkan` without a subcommand prints command help and performs no
+service discovery, authentication, locking, or power action. The current
+top-level greeter options move under `genkan login`; there is no compatibility
+alias because Genkan has no external compatibility requirement yet.
+
+`genkan lock` supports compositors that implement `ext-session-lock-v1`. The
+subcommands share theme, wallpaper, identity presentation, bounded prompt text,
+and a transport-neutral authentication-conversation model, but dispatch to
+separate top-level state machines and side effects.
+
+[source,text]
+----
+                   shared presentation
+            theme, wallpaper, prompt widgets
+                          |
+             +------------+------------+
+             |                         |
+             v                         v
+    +------------------+      +------------------+
+    | genkan login     |      | genkan lock      |
+    | greetd IPC       |      | session-lock-v1  |
+    | choose identity  |      | current user     |
+    | choose desktop   |      | PAM worker       |
+    | StartSession     |      | unlock existing  |
+    +------------------+      +------------------+
+----
+
+The locker is not a mode in the current application state. A dedicated locker
+state prevents a login-only exit, close, account, session, or power transition
+from accidentally becoming an unlock path. It also keeps a security review of
+the locker smaller than a review of the complete greeter state machine.
+
+== Session-lock lifecycle
+
+`genkan lock` connects only to the invoking user's Wayland session. It requires
+the compositor to advertise `ext_session_lock_manager_v1`; fullscreen xdg-shell
+and layer-shell surfaces are not fallbacks.
+
+The locker follows this sequence:
+
+. Resolve the current identity from the real user ID and reject an attempt to
+  authenticate or select another account.
+. Connect to the compositor and verify every required protocol before reporting
+  readiness.
+. Request one `ext_session_lock_v1` object.
+. Create one lock surface for every advertised output and for each output added
+  while the lock remains pending or active.
+. Configure and draw each surface only after its lock-surface configure event.
+. Wait for the compositor's `locked` event.
+. Report readiness to the invoking process only after that event.
+. Keep the lock active across authentication failures, suspend, and resume.
+. After successful authentication, send `unlock_and_destroy`, synchronize with
+  the Wayland server, and then exit.
+
+The protocol's `locked` event is the confidentiality boundary. The compositor
+must not emit it until ordinary session content is no longer visible on any
+output; it may blank an output while waiting for a client frame. A
+client-specific first-frame event is useful for presentation diagnostics but is
+not a substitute for, or a prerequisite to, the compositor's authoritative
+lock confirmation.
+
+`finished` before confirmation is lock denial and must fail startup without
+reporting readiness. `finished` after confirmation, loss of a surface for a
+still-present output, renderer failure, and compositor disconnection are fatal
+availability failures. None authorizes an unlock request.
+
+After a confirmed lock receives `finished`, Genkan terminates by abandoning the
+Wayland connection and lock runtime without constructing iced's generic exit
+task, `unlock_and_destroy`, or any other graceful unlock action. Although the
+protocol directs a client to destroy a finished lock object with
+`unlock_and_destroy`, the fail-closed policy deliberately treats compositor
+termination as an abort path rather than a second authorization source. The
+compositor owns recovery after ending the lock, and Genkan does not represent
+that event as successful authentication.
+
+An output added while locked receives a lock surface before it can present
+ordinary session content. Output removal destroys the corresponding local
+rendering state without releasing the global lock. Scale, transform, and size
+changes redraw the affected surface.
+
+== Suspend and manual-lock integration
+
+The locker supports direct foreground execution and a readiness-aware launcher:
+
+[source,sh]
+----
+genkan lock
+genkan lock --daemonize
+----
+
+`--daemonize` does not call `fork` after initializing Wayland, threads, PAM, or
+the graphics stack. A small parent invocation creates a private readiness pipe,
+spawns a fresh foreground child, and exits successfully only after the child
+observes the compositor's `locked` event. Child startup failure, lock denial,
+or loss of the child before readiness makes the parent fail.
+
+This contract permits an idle manager holding a logind delay inhibitor to wait
+without waiting for the entire locked lifetime. A wlroots-style integration is:
+
+[source,sh]
+----
+swayidle -w \
+  lock 'genkan lock --daemonize' \
+  before-sleep 'genkan lock --daemonize'
+----
+
+The same instance must tolerate both hooks racing or running while a lock is
+already active. A second invocation detects the existing live locker and
+returns success only when that locker is confirmed locked; it must not compete
+for another protocol lock and mistake denial for readiness.
+
+The first implementation delegates idle policy and logind inhibition to the
+session's idle manager. Genkan may later provide a user service that listens for
+logind session `Lock` and `PrepareForSleep` signals, but only if it can retain a
+delay inhibitor until compositor confirmation. Resume itself does not trigger
+unlock or a fresh authentication attempt.
+
+== Authentication boundary
+
+greetd continues to own login authentication and desktop-session creation.
+Unlock reauthentication uses a dedicated PAM service and a small same-user
+worker process. The graphical locker never becomes setuid and never reads a
+password database.
+
+[source,text]
+----
+ +----------------+   private socketpair   +--------------------+
+ | genkan lock UI |<---------------------->| genkan-lock-auth   |
+ | unprivileged   |                        | PAM conversation   |
+ +----------------+                        +----------+---------+
+                                                   |
+                                                   v
+                                         /etc/pam.d/genkan-lock
+----
+
+The worker invokes `pam_authenticate` for the real-UID account. It does not call
+`pam_open_session`, create credentials for a new login, change identity, or
+launch a command. PAM remains the credential validator; neither the UI nor the
+worker implements password comparison.
+
+The private protocol represents each PAM message independently:
+
+* secret and visible prompts with a unique response identifier;
+* informational and error messages requiring no response;
+* cancellation;
+* terminal authentication success or failure.
+
+It preserves arbitrary prompt sequences and requests a fresh response whenever
+PAM requests one. It does not reduce authentication to one password string or
+reuse one response for multiple prompts. Messages and responses are bounded.
+Responses are never logged, persisted, placed on the clipboard, included in
+diagnostics, or exposed through preview fixtures. Mutable response buffers are
+cleared promptly in both processes. The IPC peer and worker lifetime are bound
+to the locker invocation through a private inherited socket rather than a
+discoverable public service.
+
+Worker crash, protocol failure, cancellation, and PAM failure leave the Wayland
+session locked. Only the top-level locker state may translate a terminal PAM
+success for the expected worker and active attempt into the one explicit
+unlock action.
+
+== Shared application boundaries
+
+The existing authentication transition code combines prompt handling with the
+login-only decision to send `StartSession`. It is split in a behavior-preserving
+refactor before adding the locker.
+
+The shared conversation reducer owns:
+
+* current prompt text and whether its response is secret;
+* bounded informational and error notices;
+* waiting, submitting, succeeded, and failed states;
+* attempt identity and rejection of stale asynchronous results;
+* response clearing between prompts and attempts.
+
+The greetd adapter maps conversation success to the existing validated desktop
+`StartSession` request. The locker adapter maps success to its explicit unlock
+authorization. Transport connection, cancellation, retry, and terminal side
+effects remain adapter-owned.
+
+The locker reuses the selected-identity presentation but has no AccountsService
+discovery, Change User action, session selector, or fast-user-switching path.
+Power controls are excluded initially so the first security boundary contains
+only locking and reauthentication.
+
+== Rendering and dependency strategy
+
+Normal iced applications create xdg-shell windows through winit. Such a window
+cannot become a secure session-lock surface. Genkan therefore needs an iced
+runtime backed directly by `ext-session-lock-v1`.
+
+The iced-0.13-compatible `iced_sessionlock` 0.13 line is rejected. Its relevant
+release discards lock confirmation and denial, has incomplete output-removal
+and scaling behavior, and predates subsequent TTY and multi-output fixes.
+
+The implementation first upgrades the complete UI boundary to iced 0.14 while
+preserving greeter behavior. It then evaluates and pins the corresponding
+`iced_exwlshell` 0.20 line. That line exposes confirmed, denied, and finished
+lock events and current output lifecycle handling, but remains security-critical
+third-party code. Before use, Genkan records an audit of its exact locked crate
+versions, graceful-exit mapping, panic paths, output hotplug, scaling, required
+Wayland globals, and renderer recovery.
+
+If the audited release cannot meet the invariants in this RFD, Genkan either
+contributes the required fixes upstream and pins a released result or implements
+a minimal local shell using Smithay Client Toolkit and iced's renderer/runtime
+components. It does not paper over a shell deficiency in application state.
+
+Any generic iced exit action in a session-lock runtime may map to
+`unlock_and_destroy`. The locker exposes no generic close or exit action after
+confirmation. The sole graceful exit is constructed in the authenticated
+transition, and tests enumerate every task and event capable of reaching it.
+Those reachability tests include both pre-confirmation and post-confirmation
+`finished` events and prove that neither can reach generic iced exit or an
+unlock request.
+
+Wallpaper decoding and animation remain decorative. Their failure restores an
+opaque static or generated background without stopping the lock owner, the PAM
+worker, or input handling. A lock surface is always opaque from the
+application's perspective even though the compositor must independently blank
+uncovered outputs.
+
+== Compositor compatibility
+
+`genkan lock` supports only compositors that advertise
+`ext_session_lock_manager_v1` and the additional rendering protocols required
+by the selected iced shell. This includes the project's intended niri target
+and commonly includes Sway, River, Hyprland, and other wlroots compositors.
+Support is detected at runtime rather than inferred from a compositor name.
+
+Desktop environments that reserve locking for an internal shell or do not
+advertise the protocol, including relevant GNOME and KWin releases, are not
+supported by the native locker. Genkan fails before readiness and documents use
+of the desktop environment's own locker. It does not use a visually similar but
+insecure fullscreen fallback.
+
+== Security and failure invariants
+
+The implementation must preserve all of these invariants:
+
+* No normal client content is considered protected until the compositor emits
+  `locked`.
+* Suspend integration does not release its delay until confirmed lock readiness.
+* Authentication failure, worker failure, renderer failure, signal termination,
+  panic, and compositor disconnection never request unlock.
+* Only successful PAM authentication for the invoking real-UID account can
+  authorize `unlock_and_destroy`.
+* Successful authentication received for a stale or cancelled attempt cannot
+  unlock a newer lock lifecycle.
+* A new output cannot expose the unlocked session while the lock is active.
+* Secret responses never enter logs, command-line arguments, environment
+  variables, persistent files, preview data, or diagnostics.
+* The graphical process and PAM worker remain unprivileged and are never
+  installed setuid.
+
+The Wayland protocol deliberately fails closed when a confirmed locker crashes:
+the compositor must not reveal the session merely because the client vanished.
+Depending on compositor policy, that may leave a blank or fallback screen until
+another trusted locker takes ownership or the user terminates the session from
+another VT. Genkan documents this recovery boundary and tests the supported
+compositor behavior. Availability recovery must not weaken confidentiality.
+
+== Packaging and deployment
+
+The default package installs the `genkan` command and its private PAM worker
+without automatically enabling a locker. The PAM worker is an implementation
+detail rather than a third public command. A NixOS module may install the
+package and define the dedicated PAM service, but compositor idle policy
+remains explicit host or user configuration. The module must not silently
+replace a desktop environment's built-in locker.
+
+The PAM service follows the host's normal authentication policy unless the
+administrator overrides it. Packaging includes no fallback password database,
+embedded credential, permissive test module, or setuid executable. Deterministic
+test PAM configuration exists only inside the NixOS VM test.
+
+== Verification
+
+Unit tests cover conversation transitions, stale results, cancellation,
+multi-prompt exchanges, terminal success authorization, and every failure path
+that must retain the lock.
+
+A feature-gated protocol harness and x86_64 NixOS VM run a real headless Sway
+session with deterministic PAM. The VM verifies:
+
+* readiness occurs only after compositor lock confirmation;
+* every initial output displays lock content;
+* output addition, removal, scaling, and re-addition retain the lock;
+* keyboard and pointer input do not reach a focused ordinary client;
+* failed authentication retains input isolation and lock ownership;
+* successful authentication performs explicit unlock and restores input;
+* killing the locker after confirmation leaves the compositor fail-closed;
+* duplicate lock and before-sleep requests cannot race readiness;
+* the suspend marker cannot occur before readiness.
+
+Diagnostics used by tests contain only lifecycle events, output identifiers,
+dimensions, and authentication success or failure. They never include input
+events, prompt responses, or PAM tokens.
+
+Package and graphics checks continue to exercise the greetd binary. Physical
+validation adds lock, suspend, resume, authentication retry, mixed-output
+hotplug, and crash-recovery checks on supported compositors and available AMD
+and NVIDIA hardware.
+
+== Alternatives considered
+
+=== Reuse greetd IPC for unlock
+
+greetd authenticates toward starting a new command and does not release an
+existing compositor session lock. Its greeter socket and process lifecycle also
+belong to the pre-login session. Reusing it would conflate login creation with
+reauthentication and is rejected.
+
+=== Use a fullscreen or layer-shell iced window
+
+Ordinary windows cannot provide compositor-enforced input exclusion, complete
+output coverage, or fail-closed behavior. Visual coverage is not a security
+boundary. There is no insecure fallback when the session-lock protocol is
+missing.
+
+=== Configure an existing locker only
+
+Swaylock and waylock already provide mature lock-before-suspend behavior and
+remain the recommended short-term deployment choice. Configuring them does not
+deliver Genkan's interaction, full prompt conversation, or shared presentation,
+so it does not satisfy the goal of this RFD.
+
+=== Invoke PAM inside the graphical process
+
+This is common among small lockers but loads arbitrary PAM modules into the
+same process as the compositor protocol, renderer, wallpaper decoder, and UI.
+A small worker gives better crash and review isolation while remaining
+unprivileged and preserving interactive PAM conversations.
+
+=== Fork after lock initialization
+
+Forking after threads, graphics drivers, Wayland, or PAM are initialized is
+unsafe and difficult to audit. The readiness launcher spawns a fresh child
+before those facilities initialize.
+
+== Non-goals
+
+This RFD does not add fast user switching, remote unlock, biometric-specific UI,
+automatic support for compositor-private lock systems, a privileged credential
+daemon, session creation through the locker, or a fullscreen fallback. It does
+not promise that Genkan can repair kernel, firmware, graphics-driver, or
+compositor suspend/resume failures.
+
+It also does not make account selection or desktop-session selection available
+while locked. The identity is fixed to the invoking session's real user ID.
+
+== Implementation
+
+Phased work and verification are tracked in
+link:IMPLEMENTATION.org[RFD 3 implementation checklist].

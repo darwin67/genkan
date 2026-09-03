@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use chrono::{Local, TimeZone};
 use clap::ValueEnum;
-use iced::widget::{scrollable, text_input};
+use iced::widget::Id;
 use iced::Task;
 
 use crate::accounts::Account;
@@ -58,7 +58,7 @@ pub(super) fn build(
     display_name: Option<String>,
     wallpaper_settings: wallpaper::Settings,
 ) -> (App, Task<Message>) {
-    let input_id = text_input::Id::new("authentication-input");
+    let input_id = Id::new("authentication-input");
     let state = State::new(fixture, username, display_name);
     let selected_session = state.session.clone();
     let sessions = state.session.into_iter().collect();
@@ -75,8 +75,8 @@ pub(super) fn build(
         accounts: state.accounts,
         focus_target: None,
         focus_before_modal: None,
-        account_scroll_id: scrollable::Id::unique(),
-        page_scroll_id: scrollable::Id::unique(),
+        account_scroll_id: Id::unique(),
+        page_scroll_id: Id::unique(),
         input: state.input,
         input_id,
         prompt: state.prompt,

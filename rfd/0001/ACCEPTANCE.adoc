@@ -88,7 +88,7 @@ link:reference-images/[reference-images/] for review across later design changes
 |===
 
 Run `make update-reference-images` to deliberately refresh them from the current
-packaged `preview-evidence` output. `make check-rfds` verifies the exact manifest,
+packaged capture-only preview output. `make check-rfds` verifies the exact manifest,
 PNG headers, and dimensions. It does not compare pixels: these images preserve
 review context without turning compositor output into a brittle visual test.
 

@@ -9,7 +9,7 @@ source "${PREVIEW_EVIDENCE_LIB:-$script_dir/preview-evidence-lib.sh}"
 : "${GENKAN_BIN:?set GENKAN_BIN to the packaged Genkan executable}"
 : "${PREVIEW_OUTPUT_DIR:?set PREVIEW_OUTPUT_DIR to the screenshot destination}"
 
-for command in identify strace weston weston-screenshooter; do
+for command in compare identify strace weston weston-screenshooter; do
   command -v "$command" >/dev/null || {
     echo "missing preview evidence dependency: $command" >&2
     exit 1
@@ -40,7 +40,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$PREVIEW_OUTPUT_DIR"
-mapfile -t preview_fixtures < <("$GENKAN_BIN" --list-preview-fixtures)
+mapfile -t preview_fixtures < <("$GENKAN_BIN" login --list-preview-fixtures)
 [[ ${#preview_fixtures[@]} -gt 0 ]]
 declare -A covered_fixtures=()
 
@@ -87,7 +87,7 @@ capture() {
 #!${SHELL:-/bin/sh}
 echo \$\$ > "$case_dir/genkan.pid"
 exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
-  "$GENKAN_BIN" --windowed --preview "$fixture" --width "$width" --height "$height"
+  "$GENKAN_BIN" login --windowed --preview "$fixture" --width "$width" --height "$height"
 EOF
   chmod +x "$case_dir/run-genkan"
 
@@ -114,6 +114,12 @@ EOF
   done
   [[ -s "$case_dir/genkan.pid" ]]
 
+  # The wrapper PID exists before iced has mapped and painted its window. Give
+  # constrained software renderers time to move past a stable compositor-only
+  # frame before accepting screenshot stability.
+  sleep 2
+  require_running_process "$app_pid" "$case_dir/genkan.log"
+
   screenshot=""
   for _ in $(seq 1 50); do
     require_running_process "$app_pid" "$case_dir/genkan.log"
@@ -130,7 +136,11 @@ EOF
     if [[ -n $screenshot ]] && valid_preview_frame "$screenshot" "$width" "$height"; then
       frame_hash=$(sha256sum "$screenshot" | cut -d' ' -f1)
       if advance_frame_stability previous_hash "$frame_hash"; then
-        break
+        if [[ -z ${PREVIEW_REFERENCE_DIR:-} || ! -f $PREVIEW_REFERENCE_DIR/$name.png ]] ||
+          check_preview_baseline \
+            "$screenshot" "$PREVIEW_REFERENCE_DIR/$name.png" >/dev/null 2>&1; then
+          break
+        fi
       fi
     else
       advance_frame_stability previous_hash "" || true
@@ -171,5 +181,15 @@ for fixture in "${preview_fixtures[@]}"; do
     capture "fixture-$fixture" 1280 800 "$fixture"
   fi
 done
+
+if [[ -n ${PREVIEW_REFERENCE_DIR:-} ]]; then
+  : "${PREVIEW_REFERENCE_MANIFEST:?set PREVIEW_REFERENCE_MANIFEST with PREVIEW_REFERENCE_DIR}"
+  # shellcheck source=reference-images-manifest.sh
+  source "$PREVIEW_REFERENCE_MANIFEST"
+  for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
+    read -r name _ <<<"$entry"
+    check_preview_baseline "$PREVIEW_OUTPUT_DIR/$name" "$PREVIEW_REFERENCE_DIR/$name"
+  done
+fi
 
 printf 'Captured %s deterministic preview images\n' "$(find "$PREVIEW_OUTPUT_DIR" -name '*.png' | wc -l)"

@@ -141,9 +141,14 @@ let
       ${builtins.readFile ../scripts/hardware-smoke.sh}
     '';
   };
+  previewEvidenceCapture = import ./tests/preview-evidence.nix {
+    inherit pkgs;
+    genkan = package;
+    checkBaseline = false;
+  };
 in
 {
-  inherit package devShell;
+  inherit package devShell previewEvidenceCapture;
 
   hardwareSmokeApp = {
     type = "app";
