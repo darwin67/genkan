@@ -1,0 +1,21 @@
+[package]
+name = "genkan-session-lock"
+version = "0.1.0"
+edition = "2021"
+description = "Fail-closed ext-session-lock-v1 runtime for Genkan"
+license = "MIT"
+
+[features]
+default = []
+# Enables the deterministic authorization source used by nested compositor tests.
+lock-test = []
+
+[dependencies]
+bytes = "1.10.1"
+calloop = "=0.14.4"
+calloop-wayland-source = "=0.4.1"
+libc = "=0.2.189"
+smithay-client-toolkit = { version = "=0.20.0", default-features = false, features = ["calloop"] }
+thiserror = "2.0.9"
+wayland-client = "=0.31.15"
+wayland-protocols = { version = "=0.32.13", features = ["client", "staging"] }

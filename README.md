@@ -27,7 +27,8 @@ synthetic accounts and sessions and never sends credentials or power requests.
 - Reproducible Nix packaging for x86_64-linux and aarch64-linux.
 - Service-free deterministic previews for UI development and review.
 - An experimental `ext-session-lock-v1` compositor boundary with fail-closed
-  multi-output coverage and lock-confirmation readiness reporting.
+  multi-output coverage and lock-confirmation readiness reporting, isolated in
+  the independently tested `genkan-session-lock` workspace crate.
 
 ## Try the UI
 

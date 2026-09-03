@@ -1,11 +1,11 @@
 mod identity;
-mod runtime;
 
 use std::os::fd::RawFd;
 
-use crate::wallpaper;
+use genkan_session_lock::{Presentation, Refresh};
+use thiserror::Error;
 
-pub(crate) use identity::Identity;
+use crate::wallpaper;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
@@ -15,163 +15,38 @@ pub(crate) struct Config {
     pub(crate) test_unlock_after_ready: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Lifecycle {
-    Requesting,
-    Locked,
-    Denied,
-    Aborted,
-    #[cfg(any(test, feature = "lock-test"))]
-    Unlocking,
+#[derive(Debug, Error)]
+pub(crate) enum Error {
+    #[error("could not resolve lock identity: {0}")]
+    Identity(#[from] identity::Error),
+    #[error(transparent)]
+    Runtime(#[from] genkan_session_lock::Error),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Event {
-    LockConfirmed,
-    LockFinished,
-    RuntimeFailed,
-    WallpaperFailed,
-    #[cfg(test)]
-    CloseRequested,
-    #[cfg(test)]
-    EscapePressed,
-}
+struct WallpaperPresentation(wallpaper::State);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Action {
-    None,
-    ReportReady,
-    Abort,
-    #[cfg(any(test, feature = "lock-test"))]
-    UnlockAndSynchronize,
-}
-
-#[derive(Debug)]
-struct State {
-    identity: Identity,
-    lifecycle: Lifecycle,
-    wallpaper_failed: bool,
-}
-
-impl State {
-    fn new(identity: Identity) -> Self {
-        Self {
-            identity,
-            lifecycle: Lifecycle::Requesting,
-            wallpaper_failed: false,
+impl Presentation for WallpaperPresentation {
+    fn receive_latest(&mut self) -> Refresh {
+        match self.0.receive_latest() {
+            wallpaper::Refresh::Unchanged => Refresh::Unchanged,
+            wallpaper::Refresh::Frame => Refresh::Frame,
+            wallpaper::Refresh::Failed => Refresh::Failed,
         }
     }
 
-    fn update(&mut self, event: Event) -> Action {
-        match event {
-            Event::LockConfirmed if self.lifecycle == Lifecycle::Requesting => {
-                self.lifecycle = Lifecycle::Locked;
-                Action::ReportReady
-            }
-            Event::LockFinished if self.lifecycle == Lifecycle::Requesting => {
-                self.lifecycle = Lifecycle::Denied;
-                Action::Abort
-            }
-            Event::LockFinished | Event::RuntimeFailed => {
-                self.lifecycle = Lifecycle::Aborted;
-                Action::Abort
-            }
-            Event::WallpaperFailed => {
-                self.wallpaper_failed = true;
-                Action::None
-            }
-            #[cfg(test)]
-            Event::CloseRequested | Event::EscapePressed => Action::None,
-            Event::LockConfirmed => Action::None,
-        }
-    }
-
-    #[cfg(any(test, feature = "lock-test"))]
-    fn authorize_unlock(&mut self, _authorization: UnlockAuthorization) -> Action {
-        if self.lifecycle != Lifecycle::Locked {
-            return Action::None;
-        }
-        self.lifecycle = Lifecycle::Unlocking;
-        Action::UnlockAndSynchronize
+    fn frame(&self) -> Option<genkan_session_lock::RgbaFrame> {
+        self.0.rgba_frame()
     }
 }
 
-#[cfg(any(test, feature = "lock-test"))]
-#[derive(Debug, Clone, Copy)]
-struct UnlockAuthorization(());
-
-#[cfg(any(test, feature = "lock-test"))]
-impl UnlockAuthorization {
-    fn test_source() -> Self {
-        Self(())
-    }
-}
-
-pub(crate) fn run(config: Config) -> Result<(), runtime::Error> {
-    runtime::run(config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn state() -> State {
-        State::new(Identity::fixture())
-    }
-
-    #[test]
-    fn compositor_confirmation_is_the_only_readiness_boundary() {
-        let mut state = state();
-
-        assert_eq!(state.update(Event::WallpaperFailed), Action::None);
-        assert_eq!(state.update(Event::CloseRequested), Action::None);
-        assert_eq!(state.update(Event::EscapePressed), Action::None);
-        assert_eq!(state.lifecycle, Lifecycle::Requesting);
-        assert_eq!(state.update(Event::LockConfirmed), Action::ReportReady);
-        assert_eq!(state.lifecycle, Lifecycle::Locked);
-        assert_eq!(state.update(Event::LockConfirmed), Action::None);
-    }
-
-    #[test]
-    fn finished_and_runtime_failures_abort_without_unlocking() {
-        for event in [Event::LockFinished, Event::RuntimeFailed] {
-            let mut pending = state();
-            assert_eq!(pending.update(event), Action::Abort);
-            assert!(matches!(
-                pending.lifecycle,
-                Lifecycle::Denied | Lifecycle::Aborted
-            ));
-            assert_eq!(pending.update(Event::LockConfirmed), Action::None);
-
-            let mut locked = state();
-            assert_eq!(locked.update(Event::LockConfirmed), Action::ReportReady);
-            assert_eq!(locked.update(event), Action::Abort);
-            assert_eq!(locked.lifecycle, Lifecycle::Aborted);
-        }
-    }
-
-    #[test]
-    fn presentation_failure_keeps_lock_ownership() {
-        let mut state = state();
-        assert_eq!(state.update(Event::LockConfirmed), Action::ReportReady);
-
-        assert_eq!(state.update(Event::WallpaperFailed), Action::None);
-        assert_eq!(state.lifecycle, Lifecycle::Locked);
-        assert!(state.wallpaper_failed);
-    }
-
-    #[test]
-    fn only_the_test_authorization_source_constructs_unlock() {
-        let mut state = state();
-        assert_eq!(
-            state.authorize_unlock(UnlockAuthorization::test_source()),
-            Action::None
-        );
-        assert_eq!(state.update(Event::LockConfirmed), Action::ReportReady);
-        assert_eq!(
-            state.authorize_unlock(UnlockAuthorization::test_source()),
-            Action::UnlockAndSynchronize
-        );
-        assert_eq!(state.lifecycle, Lifecycle::Unlocking);
-    }
+pub(crate) fn run(config: Config) -> Result<(), Error> {
+    let identity = identity::Identity::current()?;
+    let runtime_identity =
+        genkan_session_lock::Identity::new(identity.uid, identity.username, identity.display_name);
+    let presentation = WallpaperPresentation(wallpaper::State::start(config.wallpaper));
+    let runtime = genkan_session_lock::Config::new(runtime_identity, presentation, config.ready_fd);
+    #[cfg(feature = "lock-test")]
+    let runtime = runtime.with_test_unlock_after_ready(config.test_unlock_after_ready);
+    genkan_session_lock::run(runtime)?;
+    Ok(())
 }

@@ -19,8 +19,7 @@ use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_buffer, wl_output, wl_region, wl_shm, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 
-use super::{Action, Config, Event, Identity, State};
-use crate::wallpaper::{self, RgbaFrame};
+use super::{Action, Config, Event, Presentation, Refresh, RgbaFrame, State};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const FALLBACK_RGB: [u8; 3] = [5, 9, 24];
@@ -29,9 +28,7 @@ const DIM_DENOMINATOR: u16 = 5;
 const MAX_SURFACE_PIXELS: usize = 16_384 * 16_384;
 
 #[derive(Debug, Error)]
-pub(crate) enum Error {
-    #[error("could not resolve lock identity: {0}")]
-    Identity(#[from] super::identity::Error),
+pub enum Error {
     #[error("invalid readiness descriptor {0}; descriptors 0, 1, and 2 are reserved")]
     InvalidReadyFd(RawFd),
     #[error("could not duplicate readiness descriptor: {0}")]
@@ -65,7 +62,7 @@ struct Runtime {
     session_lock: Option<SessionLock>,
     surfaces: Vec<Surface>,
     state: State,
-    wallpaper: wallpaper::State,
+    presentation: Box<dyn Presentation>,
     ready: Option<File>,
     failure: Option<Error>,
     terminate: bool,
@@ -73,8 +70,7 @@ struct Runtime {
     test_unlock_after_ready: bool,
 }
 
-pub(crate) fn run(config: Config) -> Result<(), Error> {
-    let identity = Identity::current()?;
+pub(super) fn run(config: Config) -> Result<(), Error> {
     let ready = config.ready_fd.map(ready_file).transpose()?;
     let conn = Connection::connect_to_env().map_err(|error| Error::Connect(error.to_string()))?;
     let (globals, mut event_queue) =
@@ -95,8 +91,8 @@ pub(crate) fn run(config: Config) -> Result<(), Error> {
         session_lock_state: SessionLockState::new(&globals, &qh),
         session_lock: None,
         surfaces: Vec::new(),
-        state: State::new(identity),
-        wallpaper: wallpaper::State::start(config.wallpaper),
+        state: State::new(config.identity),
+        presentation: config.presentation,
         ready,
         failure: None,
         terminate: false,
@@ -139,12 +135,12 @@ pub(crate) fn run(config: Config) -> Result<(), Error> {
             runtime.fail(Error::Runtime(error.to_string()));
             break;
         }
-        match runtime.wallpaper.receive_latest() {
-            wallpaper::Refresh::Unchanged => {}
-            wallpaper::Refresh::Frame => runtime.redraw_all(&qh),
-            wallpaper::Refresh::Failed => {
-                let _ = runtime.state.update(Event::WallpaperFailed);
-                eprintln!("genkan lock: wallpaper failed; retaining opaque fallback");
+        match runtime.presentation.receive_latest() {
+            Refresh::Unchanged => {}
+            Refresh::Frame => runtime.redraw_all(&qh),
+            Refresh::Failed => {
+                let _ = runtime.state.update(Event::PresentationFailed);
+                eprintln!("genkan lock: presentation failed; retaining opaque fallback");
                 runtime.redraw_all(&qh);
             }
         }
@@ -243,7 +239,7 @@ impl Runtime {
             pool.mmap(),
             buffer_width,
             buffer_height,
-            self.wallpaper.rgba_frame().as_ref(),
+            self.presentation.frame().as_ref(),
         );
         let buffer = pool.create_buffer(
             0,

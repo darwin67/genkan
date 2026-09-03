@@ -28,7 +28,7 @@ lint:
 
 test: scripts-test
 	cargo test
-	cargo test --features lock-test locker::
+	cargo test -p genkan-session-lock --features lock-test
 
 scripts-test:
 	bash scripts/regression-tests.sh

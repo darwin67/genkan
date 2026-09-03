@@ -30,15 +30,6 @@ impl Identity {
     pub(crate) fn current() -> Result<Self, Error> {
         resolve(rustix::process::getuid().as_raw())
     }
-
-    #[cfg(test)]
-    pub(crate) fn fixture() -> Self {
-        Self {
-            uid: 1000,
-            username: "alice".into(),
-            display_name: "Alice".into(),
-        }
-    }
 }
 
 fn resolve(uid: u32) -> Result<Identity, Error> {

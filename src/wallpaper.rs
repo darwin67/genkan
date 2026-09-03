@@ -111,13 +111,6 @@ pub(crate) enum Refresh {
     Failed,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RgbaFrame {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) pixels: Bytes,
-}
-
 impl State {
     pub(crate) fn start(settings: Settings) -> Self {
         let spec = settings.catalog.spec();
@@ -190,7 +183,7 @@ impl State {
         }
     }
 
-    pub(crate) fn rgba_frame(&self) -> Option<RgbaFrame> {
+    pub(crate) fn rgba_frame(&self) -> Option<genkan_session_lock::RgbaFrame> {
         let image::Handle::Rgba {
             width,
             height,
@@ -200,11 +193,7 @@ impl State {
         else {
             return None;
         };
-        Some(RgbaFrame {
-            width: *width,
-            height: *height,
-            pixels: pixels.clone(),
-        })
+        genkan_session_lock::RgbaFrame::new(*width, *height, pixels.clone())
     }
 
     pub(crate) fn view<Message: 'static>(&self) -> Option<Element<'static, Message>> {

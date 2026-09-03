@@ -9,11 +9,14 @@ an unrestricted unlock action, maps generic iced exit to
 `unlock_and_destroy`, and calls `unlock_and_destroy` after a confirmed lock
 receives `finished`. Those paths violate the lifecycle in this RFD.
 
-The lock command instead owns a small ext-session-lock-only runtime in
-`src/locker/runtime.rs`. It uses Smithay Client Toolkit's protocol wrappers,
-which require an explicit `SessionLock::unlock` call and otherwise destroy the
-protocol object without requesting unlock. The upstream implementations
-consulted during development are MIT licensed:
+The lock command instead delegates its security boundary to the small,
+independently tested `genkan-session-lock` workspace crate in
+`crates/session-lock`. The crate accepts presentation frames through a narrow
+interface and has no dependency on iced, GStreamer, PAM, or greetd. It uses
+Smithay Client Toolkit's protocol wrappers, which require an explicit
+`SessionLock::unlock` call and otherwise destroy the protocol object without
+requesting unlock. The upstream implementations consulted during development
+are MIT licensed:
 
 * https://github.com/waycrate/exwlshelleventloop/tree/efde776a41cb246cba48ff2165aa35efc14d3591[`iced_exwlshell` / `exwlshellev` 0.20.0]
 * https://github.com/Smithay/client-toolkit/tree/v0.20.0[Smithay Client Toolkit 0.20.0]
