@@ -298,6 +298,17 @@ test_ci_watches_all_scripts() {
     fail "CI push and pull_request filters must watch scripts/**"
 }
 
+test_ci_serializes_software_graphics_checks() {
+  grep -Fq \
+    'run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs' \
+    "$repo_root/.github/workflows/ci.yml" ||
+    fail "CI must run graphics-smoke in its own build"
+  grep -Fq \
+    'run: nix build .#checks.${{ matrix.system }}.preview-evidence --print-build-logs' \
+    "$repo_root/.github/workflows/ci.yml" ||
+    fail "CI must run preview-evidence only after graphics-smoke"
+}
+
 test_dev_preview_does_not_inherit_host_identity() {
   local command
   command=$(env -u PREVIEW make --no-print-directory -n -C "$repo_root" PREVIEW=selected dev)
@@ -763,6 +774,7 @@ test_sway_query_failure_is_not_masked
 test_external_output_must_be_active
 test_representative_selection_placement_and_cleanup
 test_ci_watches_all_scripts
+test_ci_serializes_software_graphics_checks
 test_dev_preview_does_not_inherit_host_identity
 test_preview_evidence_rejects_dead_application
 test_preview_evidence_rejects_blank_frame
