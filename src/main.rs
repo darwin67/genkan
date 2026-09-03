@@ -156,9 +156,10 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         },
     };
 
-    iced::application("Genkan", App::update, App::view)
+    iced::application(move || App::new(config.clone()), App::update, App::view)
+        .title("Genkan")
         .subscription(App::subscription)
-        .theme(|_| Theme::Dark)
+        .theme(|_: &App| Theme::Dark)
         .window(window::Settings {
             size: window_size,
             decorations: windowed,
@@ -166,7 +167,7 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         })
         .exit_on_close_request(false)
         .antialiasing(true)
-        .run_with(|| App::new(config))
+        .run()
 }
 
 #[cfg(test)]

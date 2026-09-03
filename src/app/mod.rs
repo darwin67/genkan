@@ -12,7 +12,7 @@ use auth_flow::{Attempt, Phase};
 use chrono::Local;
 use focus::{Navigation as FocusNavigation, Target as FocusTarget};
 use greetd_ipc::Request;
-use iced::widget::{scrollable, text_input};
+use iced::widget::{operation, scrollable, Id};
 use iced::{event, keyboard, time, window, Subscription, Task};
 
 use crate::accounts::{self, Account};
@@ -58,6 +58,7 @@ impl Closing {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Config {
     pub(crate) username: Option<String>,
     pub(crate) display_name: Option<String>,
@@ -79,10 +80,10 @@ pub(crate) struct App {
     accounts: Vec<Account>,
     focus_target: Option<FocusTarget>,
     focus_before_modal: Option<FocusTarget>,
-    account_scroll_id: scrollable::Id,
-    page_scroll_id: scrollable::Id,
+    account_scroll_id: Id,
+    page_scroll_id: Id,
     input: String,
-    input_id: text_input::Id,
+    input_id: Id,
     prompt: String,
     message: Option<String>,
     message_is_error: bool,
@@ -179,10 +180,10 @@ impl App {
             accounts,
             focus_target: None,
             focus_before_modal: None,
-            account_scroll_id: scrollable::Id::unique(),
-            page_scroll_id: scrollable::Id::unique(),
+            account_scroll_id: Id::unique(),
+            page_scroll_id: Id::unique(),
             input: String::new(),
-            input_id: text_input::Id::new("authentication-input"),
+            input_id: Id::new("authentication-input"),
             prompt: "Password".into(),
             message: None,
             message_is_error: false,
@@ -651,16 +652,16 @@ impl App {
         let scrollables = [self.page_scroll_id.clone(), self.account_scroll_id.clone()];
         Task::batch(scrollables.map(|id| match navigation {
             PageNavigation::Up => {
-                scrollable::scroll_by(id, scrollable::AbsoluteOffset { x: 0.0, y: -400.0 })
+                operation::scroll_by(id, scrollable::AbsoluteOffset { x: 0.0, y: -400.0 })
             }
             PageNavigation::Down => {
-                scrollable::scroll_by(id, scrollable::AbsoluteOffset { x: 0.0, y: 400.0 })
+                operation::scroll_by(id, scrollable::AbsoluteOffset { x: 0.0, y: 400.0 })
             }
             PageNavigation::Start => {
-                scrollable::snap_to(id, scrollable::RelativeOffset { x: 0.0, y: 0.0 })
+                operation::snap_to(id, scrollable::RelativeOffset { x: 0.0, y: 0.0 })
             }
             PageNavigation::End => {
-                scrollable::snap_to(id, scrollable::RelativeOffset { x: 0.0, y: 1.0 })
+                operation::snap_to(id, scrollable::RelativeOffset { x: 0.0, y: 1.0 })
             }
         }))
     }
@@ -794,10 +795,10 @@ mod tests {
             accounts: Vec::new(),
             focus_target: Some(FocusTarget::AuthenticationInput),
             focus_before_modal: None,
-            account_scroll_id: scrollable::Id::unique(),
-            page_scroll_id: scrollable::Id::unique(),
+            account_scroll_id: Id::unique(),
+            page_scroll_id: Id::unique(),
             input: "secret".into(),
-            input_id: text_input::Id::new("test-authentication-input"),
+            input_id: Id::new("test-authentication-input"),
             prompt: "Password".into(),
             message: Some("Keep this message".into()),
             message_is_error: false,
@@ -1179,7 +1180,7 @@ mod tests {
     fn pointer_focused_input_synchronizes_logical_focus() {
         let mut app = app();
         app.focus_target = Some(FocusTarget::Submit);
-        let input: iced::advanced::widget::Id = app.input_id.clone().into();
+        let input = app.input_id.clone();
 
         let _ = app.update(Message::WidgetFocused(input));
 
@@ -1378,6 +1379,7 @@ mod tests {
             location: keyboard::Location::Standard,
             modifiers: keyboard::Modifiers::empty(),
             text: None,
+            repeat: false,
         });
         assert!(matches!(
             focus::keyboard_navigation(event, event::Status::Captured, window::Id::unique()),

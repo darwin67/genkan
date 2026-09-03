@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{Seek, SeekFrom};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -89,7 +90,7 @@ impl Catalog {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Settings {
     pub(crate) catalog: Catalog,
     pub(crate) override_path: Option<PathBuf>,
@@ -241,17 +242,32 @@ impl Player {
     }
 
     fn subscription(&self) -> Subscription<()> {
-        let receiver = self.signal.clone();
-        Subscription::run_with_id(
-            "wallpaper-frame-ready",
-            stream::unfold(receiver, |mut receiver| async move {
-                receiver.changed().await.ok().map(|()| ((), receiver))
-            }),
+        Subscription::run_with(
+            FrameSignal {
+                player: Arc::as_ptr(&self.shared) as usize,
+                receiver: self.signal.clone(),
+            },
+            |signal| {
+                stream::unfold(signal.receiver.clone(), |mut receiver| async move {
+                    receiver.changed().await.ok().map(|()| ((), receiver))
+                })
+            },
         )
     }
 
     fn take_latest(&self) -> Option<Update> {
         lock(&self.shared.state).pending.take()
+    }
+}
+
+struct FrameSignal {
+    player: usize,
+    receiver: watch::Receiver<u64>,
+}
+
+impl Hash for FrameSignal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.player.hash(state);
     }
 }
 

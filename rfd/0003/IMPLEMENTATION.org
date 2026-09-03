@@ -19,15 +19,15 @@ each new boundary, and do not ship a production path that unlocks without PAM.
 
 * Phase 2: Upgrade the iced UI boundary
 
-- [ ] Upgrade the complete GUI dependency family from iced 0.13 to iced 0.14
+- [X] Upgrade the complete GUI dependency family from iced 0.13 to iced 0.14
   without changing greeter behavior or presentation.
-- [ ] Port application boot, tasks, subscriptions, image handles, text-input
+- [X] Port application boot, tasks, subscriptions, image handles, text-input
   focus, and window events to the iced 0.14 APIs.
-- [ ] Port the account tile, modal barrier, resettable widget, and custom widget
+- [X] Port the account tile, modal barrier, resettable widget, and custom widget
   operations while preserving event capture, focus, touch, and reveal behavior.
-- [ ] Verify wallpaper frame delivery and resource bounds with the upgraded
+- [X] Verify wallpaper frame delivery and resource bounds with the upgraded
   renderer stack.
-- [ ] Run all unit, deterministic preview, package, graphics, hardware, and real
+- [X] Run all unit, deterministic preview, package, graphics, hardware, and real
   greetd checks before introducing session-lock behavior.
 
 * Phase 3: Separate the reusable conversation model

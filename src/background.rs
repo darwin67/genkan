@@ -30,7 +30,7 @@ impl Background {
 }
 
 pub fn dimming<Message: 'static>() -> Element<'static, Message> {
-    container(Space::new(Length::Fill, Length::Fill))
+    container(Space::new().width(Length::Fill).height(Length::Fill))
         .style(|_| container::Style {
             background: Some(iced::Background::Color(DIM_COLOR)),
             ..Default::default()

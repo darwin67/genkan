@@ -7,6 +7,7 @@ set -euo pipefail
 drm_root=${GENKAN_DRM_SYSFS_ROOT:-/sys/class/drm}
 dri_root=${GENKAN_DRI_ROOT:-/dev/dri}
 icd_root=${GENKAN_VULKAN_ICD_ROOT:-/run/opengl-driver/share/vulkan/icd.d}
+egl_vendor_root=${GENKAN_EGL_VENDOR_ROOT:-/run/opengl-driver/share/glvnd/egl_vendor.d}
 
 if [[ ! -d $drm_root || ! -d $dri_root ]]; then
   echo "No DRM devices are available" >&2
@@ -117,13 +118,21 @@ run_adapter() {
   local display_connected=$6
   local label=$7
   local run_dir="$tmp_dir/$label"
-  local cage_pid genkan_pid expected_render expected_card fd target
+  local cage_pid genkan_pid expected_render expected_card egl_vendor fd motion_option target
+
+  if [[ $vendor == 1002 ]]; then
+    egl_vendor="$egl_vendor_root/50_mesa.json"
+    motion_option=--reduce-motion
+  else
+    egl_vendor="$egl_vendor_root/10_nvidia.json"
+    motion_option=
+  fi
 
   mkdir -p "$run_dir"
   cat > "$run_dir/run-genkan" <<EOF
 #!/usr/bin/env bash
 echo \$\$ > "$run_dir/genkan.pid"
-exec "$GENKAN_BIN" login --username smoke
+exec "$GENKAN_BIN" login --username smoke $motion_option
 EOF
   chmod +x "$run_dir/run-genkan"
 
@@ -141,6 +150,7 @@ EOF
   fi
 
   XDG_DATA_DIRS="$tmp_dir/data/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}" \
+    __EGL_VENDOR_LIBRARY_FILENAMES="$egl_vendor" \
     ICED_BACKEND=wgpu \
     WLR_RENDERER=vulkan \
     WGPU_BACKEND=vulkan \
@@ -206,6 +216,11 @@ EOF
     exit 1
   fi
   if [[ $vendor == 1002 ]] && { ((found_nvidia != 0)) || grep -Fiq nvidia /proc/"$genkan_pid"/maps; }; then
+    grep -Fi nvidia /proc/"$genkan_pid"/maps >&2 || true
+    for fd in /proc/"$genkan_pid"/fd/*; do
+      target=$(readlink "$fd" 2>/dev/null || true)
+      [[ $target == /dev/nvidia* ]] && printf '%s -> %s\n' "$fd" "$target" >&2
+    done
     echo "The AMD-only run unexpectedly loaded or opened an NVIDIA driver" >&2
     exit 1
   fi

@@ -180,6 +180,7 @@ wait "$child"
 EOF
   cat > "$fixture/bin/genkan" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" > "$GENKAN_TEST_STATE/genkan.args"
 exec 9< "$GENKAN_TEST_DRI/card2"
 sleep 30
 EOF
@@ -245,6 +246,7 @@ test_representative_selection_placement_and_cleanup() {
   grep -Fq 'Skipping card0; it has no render node' "$tmp_dir/presentation.log"
   grep -Fq 'Testing radeon-card2' "$tmp_dir/presentation.log"
   grep -Fq 'presentation on DP-1' "$tmp_dir/presentation.log"
+  grep -Fxq 'login --username smoke --reduce-motion' "$fixture/state/genkan.args"
   assert_fixture_process_stopped "$fixture"
 
   expect_failure "Cage was not found on Sway output DP-1" \

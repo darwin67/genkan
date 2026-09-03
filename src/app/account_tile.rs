@@ -2,10 +2,9 @@ use iced::advanced::layout;
 use iced::advanced::renderer::{self, Renderer as _};
 use iced::advanced::widget::{self, operation, tree, Tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget};
-use iced::widget::{button, scrollable};
+use iced::widget::button;
 use iced::{
-    event, mouse, touch, Background, Color, Element, Length, Padding, Point, Rectangle, Size, Task,
-    Vector,
+    mouse, touch, Background, Color, Element, Length, Padding, Point, Rectangle, Size, Task, Vector,
 };
 
 use crate::theme;
@@ -40,12 +39,12 @@ struct AccountTile<'a, Message> {
 }
 
 pub(super) fn id(username: &str) -> widget::Id {
-    widget::Id::new(format!("account-{username}"))
+    format!("account-{username}").into()
 }
 
 pub(super) fn reveal<Message: Send + 'static>(
     account: widget::Id,
-    scrollables: Vec<scrollable::Id>,
+    scrollables: Vec<widget::Id>,
 ) -> Task<Message> {
     iced::advanced::widget::operate(RevealAccount::find(account, scrollables)).discard()
 }
@@ -122,27 +121,28 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
         layout::padded(limits, self.width, Length::Shrink, self.padding, |limits| {
             self.content
-                .as_widget()
+                .as_widget_mut()
                 .layout(&mut tree.children[0], renderer, limits)
         })
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &iced::Renderer,
         operation: &mut dyn iced::advanced::widget::Operation,
     ) {
-        operation.container(Some(&self.id), layout.bounds(), &mut |operation| {
-            self.content.as_widget().operate(
+        operation.container(Some(&self.id), layout.bounds());
+        operation.traverse(&mut |operation| {
+            self.content.as_widget_mut().operate(
                 &mut tree.children[0],
                 layout.children().next().expect("account tile content"),
                 renderer,
@@ -151,38 +151,39 @@ where
         });
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut Tree,
-        event: iced::Event,
+        event: &iced::Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &iced::Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status {
-        if let event::Status::Captured = self.content.as_widget_mut().on_event(
+    ) {
+        self.content.as_widget_mut().update(
             &mut tree.children[0],
-            event.clone(),
+            event,
             layout.children().next().expect("account tile content"),
             cursor,
             renderer,
             clipboard,
             shell,
             viewport,
-        ) {
-            return event::Status::Captured;
+        );
+        if shell.is_event_captured() {
+            return;
         }
 
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
-        match event {
+        let capture = match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if self.on_press.is_some() && cursor.is_over(bounds) =>
             {
                 state.press_mouse();
-                event::Status::Captured
+                true
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
                 if state.mouse_pressed =>
@@ -192,22 +193,22 @@ where
                         shell.publish(message);
                     }
                 }
-                event::Status::Captured
+                true
             }
             iced::Event::Touch(touch::Event::FingerPressed { id, position })
                 if self.on_press.is_some() && cursor.is_over(bounds) =>
             {
-                state.start_touch(id, position);
-                event::Status::Ignored
+                state.start_touch(*id, *position);
+                false
             }
             iced::Event::Touch(touch::Event::FingerMoved { id, position }) => {
-                state.move_touch(id, position);
-                event::Status::Ignored
+                state.move_touch(*id, *position);
+                false
             }
             iced::Event::Touch(touch::Event::FingerLifted { id, .. })
-                if state.touch_finger == Some(id) =>
+                if state.touch_finger == Some(*id) =>
             {
-                let activate = state.finish_touch(id) && cursor.is_over(bounds);
+                let activate = state.finish_touch(*id) && cursor.is_over(bounds);
                 if activate {
                     if let Some(message) = self.on_press.clone() {
                         shell.publish(message);
@@ -215,18 +216,21 @@ where
                 }
                 // Let an enclosing scrollable observe every touch release so it
                 // can always finish its own tap-or-drag gesture bookkeeping.
-                event::Status::Ignored
+                false
             }
             iced::Event::Touch(touch::Event::FingerLost { id, .. })
-                if state.touch_finger == Some(id) =>
+                if state.touch_finger == Some(*id) =>
             {
                 state.touch_finger = None;
                 state.touch_start = None;
                 state.touch_dragged = false;
                 state.mouse_pressed = false;
-                event::Status::Ignored
+                false
             }
-            _ => event::Status::Ignored,
+            _ => false,
+        };
+        if capture {
+            shell.capture_event();
         }
     }
 
@@ -259,6 +263,7 @@ where
                 bounds,
                 border: style.border,
                 shadow: style.shadow,
+                snap: true,
             },
             style
                 .background
@@ -300,26 +305,25 @@ struct RevealAccount {
 }
 
 impl RevealAccount {
-    fn find(account: widget::Id, scrollables: Vec<scrollable::Id>) -> Self {
+    fn find(account: widget::Id, scrollables: Vec<widget::Id>) -> Self {
         Self {
             account,
-            scrollables: scrollables.into_iter().map(Into::into).collect(),
+            scrollables,
             bounds: None,
         }
     }
 }
 
 impl operation::Operation for RevealAccount {
-    fn container(
-        &mut self,
-        id: Option<&widget::Id>,
-        bounds: Rectangle,
-        operate_on_children: &mut dyn FnMut(&mut dyn operation::Operation),
-    ) {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn operation::Operation)) {
+        if self.bounds.is_none() {
+            operate(self);
+        }
+    }
+
+    fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle) {
         if id == Some(&self.account) {
             self.bounds = Some(bounds);
-        } else {
-            operate_on_children(self);
         }
     }
 
@@ -339,26 +343,21 @@ struct RevealInScrollables {
 }
 
 impl operation::Operation for RevealInScrollables {
-    fn container(
-        &mut self,
-        _id: Option<&widget::Id>,
-        _bounds: Rectangle,
-        operate_on_children: &mut dyn FnMut(&mut dyn operation::Operation),
-    ) {
-        operate_on_children(self);
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn operation::Operation)) {
+        operate(self);
     }
 
     fn scrollable(
         &mut self,
-        state: &mut dyn operation::Scrollable,
         id: Option<&widget::Id>,
         bounds: Rectangle,
         content_bounds: Rectangle,
         translation: Vector,
+        state: &mut dyn operation::Scrollable,
     ) {
         if id.is_some_and(|id| self.scrollables.contains(id)) {
             if let Some(offset) = reveal_offset(bounds, content_bounds, translation, self.target) {
-                state.scroll_to(offset);
+                state.scroll_to(offset.into());
             }
         }
     }

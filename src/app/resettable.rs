@@ -1,6 +1,6 @@
 use iced::advanced::widget::{Tree, Widget};
 use iced::advanced::{Clipboard, Layout, Shell};
-use iced::{event, mouse, Element, Length, Rectangle, Size};
+use iced::{mouse, Element, Length, Rectangle, Size};
 
 pub(super) fn reset<'a, Message, Theme, Renderer>(
     generation: u64,
@@ -64,40 +64,40 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &iced::advanced::layout::Limits,
     ) -> iced::advanced::layout::Node {
         self.content
-            .as_widget()
+            .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits)
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
         operation: &mut dyn iced::advanced::widget::Operation,
     ) {
         self.content
-            .as_widget()
+            .as_widget_mut()
             .operate(&mut tree.children[0], layout, renderer, operation);
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut Tree,
-        event: iced::Event,
+        event: &iced::Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status {
-        self.content.as_widget_mut().on_event(
+    ) {
+        self.content.as_widget_mut().update(
             &mut tree.children[0],
             event,
             layout,
@@ -150,13 +150,18 @@ where
     fn overlay<'a>(
         &'a mut self,
         tree: &'a mut Tree,
-        layout: Layout<'_>,
+        layout: Layout<'a>,
         renderer: &Renderer,
+        viewport: &Rectangle,
         translation: iced::Vector,
     ) -> Option<iced::advanced::overlay::Element<'a, Message, Theme, Renderer>> {
-        self.content
-            .as_widget_mut()
-            .overlay(&mut tree.children[0], layout, renderer, translation)
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
     }
 }
 
@@ -180,7 +185,7 @@ mod tests {
         }
 
         fn layout(
-            &self,
+            &mut self,
             _tree: &mut Tree,
             _renderer: &TestRenderer,
             limits: &iced::advanced::layout::Limits,
@@ -214,7 +219,15 @@ mod tests {
             _background: impl Into<iced::Background>,
         ) {
         }
-        fn clear(&mut self) {}
+        fn reset(&mut self, _new_bounds: Rectangle) {}
+        fn allocate_image(
+            &mut self,
+            _handle: &iced::advanced::image::Handle,
+            _callback: impl FnOnce(Result<iced::advanced::image::Allocation, iced::advanced::image::Error>)
+                + Send
+                + 'static,
+        ) {
+        }
     }
 
     fn widget(generation: u64, initial: u8) -> Resettable<'static, (), (), TestRenderer> {

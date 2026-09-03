@@ -1,7 +1,7 @@
 use iced::advanced::widget::{self, operation};
 use iced::event;
 use iced::keyboard;
-use iced::widget::text_input;
+use iced::widget::operation as widget_operation;
 use iced::{window, Task};
 
 use crate::power::Action as PowerAction;
@@ -158,7 +158,7 @@ impl App {
     }
 
     pub(super) fn apply_widget_focus(&mut self, focused: widget::Id) -> Task<Message> {
-        let input: widget::Id = self.input_id.clone().into();
+        let input = self.input_id.clone();
         if focused == input && self.phase == Phase::WaitingForInput {
             self.focus_target = Some(Target::AuthenticationInput);
         }
@@ -250,7 +250,7 @@ impl App {
         self.focus_target = Some(target);
         match target {
             Target::AuthenticationInput => Task::batch([
-                text_input::focus(self.input_id.clone()),
+                widget_operation::focus(self.input_id.clone()),
                 account_tile_reveal_input(self.page_scroll_id.clone()),
             ]),
             Target::Account(index) => self.reveal_account(index),
@@ -314,7 +314,7 @@ impl App {
     }
 }
 
-fn account_tile_reveal_input(page: iced::widget::scrollable::Id) -> Task<Message> {
+fn account_tile_reveal_input(page: widget::Id) -> Task<Message> {
     super::account_tile::reveal(widget::Id::new("authentication-input-anchor"), vec![page])
 }
 

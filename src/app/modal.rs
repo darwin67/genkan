@@ -1,6 +1,6 @@
 use iced::advanced::widget::{Tree, Widget};
 use iced::advanced::{Clipboard, Layout, Shell};
-use iced::{event, mouse, touch, Element, Length, Rectangle, Size};
+use iced::{mouse, touch, Element, Length, Rectangle, Size};
 
 pub(super) fn barrier<'a, Message, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
@@ -49,51 +49,42 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &iced::advanced::layout::Limits,
     ) -> iced::advanced::layout::Node {
-        self.content.as_widget().layout(tree, renderer, limits)
+        self.content.as_widget_mut().layout(tree, renderer, limits)
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
         operation: &mut dyn iced::advanced::widget::Operation,
     ) {
         self.content
-            .as_widget()
+            .as_widget_mut()
             .operate(tree, layout, renderer, operation);
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut Tree,
-        event: iced::Event,
+        event: &iced::Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status {
-        let content_status = self.content.as_widget_mut().on_event(
-            tree,
-            event.clone(),
-            layout,
-            cursor,
-            renderer,
-            clipboard,
-            shell,
-            viewport,
+    ) {
+        self.content.as_widget_mut().update(
+            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
         );
-        if content_status == event::Status::Captured || blocks_background(&event) {
-            event::Status::Captured
-        } else {
-            event::Status::Ignored
+        if blocks_background(event) {
+            shell.capture_event();
         }
     }
 
@@ -128,13 +119,14 @@ where
     fn overlay<'a>(
         &'a mut self,
         tree: &'a mut Tree,
-        layout: Layout<'_>,
+        layout: Layout<'a>,
         renderer: &Renderer,
+        viewport: &Rectangle,
         translation: iced::Vector,
     ) -> Option<iced::advanced::overlay::Element<'a, Message, Theme, Renderer>> {
         self.content
             .as_widget_mut()
-            .overlay(tree, layout, renderer, translation)
+            .overlay(tree, layout, renderer, viewport, translation)
     }
 }
 
@@ -156,6 +148,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use iced::event;
 
     struct TestRenderer;
 
@@ -175,7 +168,16 @@ mod tests {
         ) {
         }
 
-        fn clear(&mut self) {}
+        fn reset(&mut self, _new_bounds: Rectangle) {}
+
+        fn allocate_image(
+            &mut self,
+            _handle: &iced::advanced::image::Handle,
+            _callback: impl FnOnce(Result<iced::advanced::image::Allocation, iced::advanced::image::Error>)
+                + Send
+                + 'static,
+        ) {
+        }
     }
 
     struct Spy {
@@ -189,7 +191,7 @@ mod tests {
         }
 
         fn layout(
-            &self,
+            &mut self,
             _tree: &mut Tree,
             _renderer: &TestRenderer,
             _limits: &iced::advanced::layout::Limits,
@@ -209,19 +211,21 @@ mod tests {
         ) {
         }
 
-        fn on_event(
+        fn update(
             &mut self,
             _tree: &mut Tree,
-            _event: iced::Event,
+            _event: &iced::Event,
             _layout: Layout<'_>,
             _cursor: mouse::Cursor,
             _renderer: &TestRenderer,
             _clipboard: &mut dyn Clipboard,
             _shell: &mut Shell<'_, ()>,
             _viewport: &Rectangle,
-        ) -> event::Status {
+        ) {
             self.events.set(self.events.get() + 1);
-            self.status
+            if self.status == event::Status::Captured {
+                _shell.capture_event();
+            }
         }
     }
 
@@ -239,9 +243,9 @@ mod tests {
         let mut clipboard = iced::advanced::clipboard::Null;
         let mut messages = Vec::new();
         let mut shell = Shell::new(&mut messages);
-        let status = barrier.on_event(
+        barrier.update(
             &mut tree,
-            event,
+            &event,
             layout,
             mouse::Cursor::Available(iced::Point::ORIGIN),
             &TestRenderer,
@@ -249,6 +253,11 @@ mod tests {
             &mut shell,
             &Rectangle::new(iced::Point::ORIGIN, Size::new(100.0, 100.0)),
         );
+        let status = if shell.is_event_captured() {
+            event::Status::Captured
+        } else {
+            event::Status::Ignored
+        };
         (status, events.get())
     }
 
@@ -291,6 +300,7 @@ mod tests {
             location: iced::keyboard::Location::Standard,
             modifiers: iced::keyboard::Modifiers::empty(),
             text: None,
+            repeat: false,
         });
 
         assert_eq!(

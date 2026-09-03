@@ -1,6 +1,6 @@
 use iced::overlay::menu;
 use iced::widget::{button, container, pick_list, scrollable, text_input};
-use iced::{Background, Border, Color, Theme};
+use iced::{Background, Border, Color, Shadow, Theme};
 
 const CONTROL_RADIUS: f32 = 18.0;
 const EMPHASIS_WIDTH: f32 = 3.0;
@@ -62,7 +62,7 @@ pub fn modal_scrim(_theme: &Theme) -> container::Style {
 }
 
 pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let focused = matches!(status, text_input::Status::Focused);
+    let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {
         background: material(0.72),
         border: outline(0.42, focused),
@@ -75,7 +75,7 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
 
 pub fn selector(_theme: &Theme, status: pick_list::Status, focused: bool) -> pick_list::Style {
     let hovered = matches!(status, pick_list::Status::Hovered);
-    let opened = matches!(status, pick_list::Status::Opened);
+    let opened = matches!(status, pick_list::Status::Opened { .. });
     pick_list::Style {
         text_color: primary_text(),
         placeholder_color: Color::from_rgba8(255, 255, 255, 0.72),
@@ -98,6 +98,7 @@ pub fn selector_menu(_theme: &Theme) -> menu::Style {
         text_color: primary_text(),
         selected_text_color: primary_text(),
         selected_background: Background::Color(Color::from_rgb8(56, 92, 204)),
+        shadow: Default::default(),
     }
 }
 
@@ -197,10 +198,11 @@ pub fn scrollbar(_theme: &Theme, status: scrollable::Status) -> scrollable::Styl
     let hovered = Color::from_rgb8(190, 196, 220);
     let dragged = Color::from_rgb8(225, 229, 241);
     let (horizontal, vertical) = match status {
-        scrollable::Status::Active => (active, active),
+        scrollable::Status::Active { .. } => (active, active),
         scrollable::Status::Hovered {
             is_horizontal_scrollbar_hovered,
             is_vertical_scrollbar_hovered,
+            ..
         } => (
             if is_horizontal_scrollbar_hovered {
                 hovered
@@ -216,6 +218,7 @@ pub fn scrollbar(_theme: &Theme, status: scrollable::Status) -> scrollable::Styl
         scrollable::Status::Dragged {
             is_horizontal_scrollbar_dragged,
             is_vertical_scrollbar_dragged,
+            ..
         } => (
             if is_horizontal_scrollbar_dragged {
                 dragged
@@ -236,7 +239,7 @@ pub fn scrollbar(_theme: &Theme, status: scrollable::Status) -> scrollable::Styl
             ..Default::default()
         },
         scroller: scrollable::Scroller {
-            color,
+            background: Background::Color(color),
             border: Border {
                 radius: 2.0.into(),
                 ..Default::default()
@@ -248,6 +251,12 @@ pub fn scrollbar(_theme: &Theme, status: scrollable::Status) -> scrollable::Styl
         horizontal_rail: rail(horizontal),
         vertical_rail: rail(vertical),
         gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: material(0.9),
+            border: outline(0.42, false),
+            shadow: Shadow::default(),
+            icon: primary_text(),
+        },
     }
 }
 
@@ -520,7 +529,7 @@ mod tests {
                 for status in [
                     pick_list::Status::Active,
                     pick_list::Status::Hovered,
-                    pick_list::Status::Opened,
+                    pick_list::Status::Opened { is_hovered: false },
                 ] {
                     let style = selector(&theme, status, false);
                     let surface =
@@ -621,7 +630,8 @@ mod tests {
                     );
                 }
 
-                let focused_input = input(&theme, text_input::Status::Focused);
+                let focused_input =
+                    input(&theme, text_input::Status::Focused { is_hovered: false });
                 let focused_account = account_tile(&theme, button::Status::Active, true);
                 let focused_primary = primary_button(&theme, button::Status::Active, true);
                 let focused_selector = selector(&theme, pick_list::Status::Active, true);
@@ -664,23 +674,31 @@ mod tests {
     fn scrollbar_thumbs_meet_component_contrast_in_every_state() {
         let theme = Theme::Dark;
         for status in [
-            scrollable::Status::Active,
+            scrollable::Status::Active {
+                is_horizontal_scrollbar_disabled: false,
+                is_vertical_scrollbar_disabled: false,
+            },
             scrollable::Status::Hovered {
                 is_horizontal_scrollbar_hovered: true,
                 is_vertical_scrollbar_hovered: true,
+                is_horizontal_scrollbar_disabled: false,
+                is_vertical_scrollbar_disabled: false,
             },
             scrollable::Status::Dragged {
                 is_horizontal_scrollbar_dragged: true,
                 is_vertical_scrollbar_dragged: true,
+                is_horizontal_scrollbar_disabled: false,
+                is_vertical_scrollbar_disabled: false,
             },
         ] {
             let style = scrollbar(&theme, status);
             for rail in [style.horizontal_rail, style.vertical_rail] {
                 let track = background_color(rail.background.expect("scrollbar track"));
                 assert!(
-                    contrast(rail.scroller.color, track) >= NON_TEXT_CONTRAST,
+                    contrast(background_color(rail.scroller.background), track)
+                        >= NON_TEXT_CONTRAST,
                     "scrollbar thumb contrast was {}",
-                    contrast(rail.scroller.color, track)
+                    contrast(background_color(rail.scroller.background), track)
                 );
             }
         }
@@ -714,10 +732,14 @@ mod tests {
     fn controls_share_corner_and_focus_treatment() {
         let theme = Theme::Dark;
         let active_input = input(&theme, text_input::Status::Active);
-        let focused_input = input(&theme, text_input::Status::Focused);
+        let focused_input = input(&theme, text_input::Status::Focused { is_hovered: false });
         let focused_account = account_tile(&theme, button::Status::Active, true);
         let focused_dialog = dialog_button(&theme, button::Status::Active, true, false);
-        let opened_selector = selector(&theme, pick_list::Status::Opened, false);
+        let opened_selector = selector(
+            &theme,
+            pick_list::Status::Opened { is_hovered: false },
+            false,
+        );
         let dialog = dialog(&theme);
         let selector_menu = selector_menu(&theme);
 
@@ -751,7 +773,11 @@ mod tests {
     fn opened_selector_is_emphasized_without_claiming_keyboard_focus() {
         let theme = Theme::Dark;
         let closed = selector(&theme, pick_list::Status::Active, false);
-        let opened = selector(&theme, pick_list::Status::Opened, false);
+        let opened = selector(
+            &theme,
+            pick_list::Status::Opened { is_hovered: false },
+            false,
+        );
 
         assert_eq!(closed.border.width, 1.0);
         assert_eq!(opened.border.width, EMPHASIS_WIDTH);
