@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::time::Duration;
+#[cfg(feature = "lock-test")]
+use std::time::Instant;
 
 use calloop::EventLoop;
 use calloop_wayland_source::WaylandSource;
@@ -13,10 +15,13 @@ use smithay_client_toolkit::session_lock::{
     SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
     SessionLockSurfaceConfigure,
 };
-use smithay_client_toolkit::shm::{raw::RawPool, Shm, ShmHandler};
+use smithay_client_toolkit::shm::{
+    slot::{Buffer, SlotPool},
+    Shm, ShmHandler,
+};
 use thiserror::Error;
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_buffer, wl_output, wl_region, wl_shm, wl_surface};
+use wayland_client::protocol::{wl_output, wl_region, wl_shm, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 
 use super::{Action, Config, Event, Presentation, Refresh, RgbaFrame, State};
@@ -26,6 +31,10 @@ const FALLBACK_RGB: [u8; 3] = [5, 9, 24];
 const DIM_NUMERATOR: u16 = 4;
 const DIM_DENOMINATOR: u16 = 5;
 const MAX_SURFACE_PIXELS: usize = 16_384 * 16_384;
+const MAX_SURFACE_DIMENSION: u32 = 16_384;
+const BUFFER_COUNT: usize = 2;
+#[cfg(feature = "lock-test")]
+const TEST_UNLOCK_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -45,6 +54,41 @@ struct Surface {
     size: Option<(u32, u32)>,
     scale: i32,
     transform: wl_output::Transform,
+    buffers: Vec<SurfaceBuffer>,
+    redraw: RedrawState,
+    first_presented: bool,
+}
+
+struct SurfaceBuffer {
+    size: (u32, u32),
+    buffer: Buffer,
+}
+
+#[derive(Default)]
+struct RedrawState {
+    frame_pending: bool,
+    redraw_pending: bool,
+}
+
+impl RedrawState {
+    fn request(&mut self) -> bool {
+        self.redraw_pending = true;
+        !self.frame_pending
+    }
+
+    fn committed(&mut self) {
+        self.redraw_pending = false;
+        self.frame_pending = true;
+    }
+
+    fn retry_scheduled(&mut self) {
+        self.frame_pending = true;
+    }
+
+    fn frame_done(&mut self) -> bool {
+        self.frame_pending = false;
+        self.redraw_pending
+    }
 }
 
 struct Runtime {
@@ -54,6 +98,7 @@ struct Runtime {
     output_state: OutputState,
     registry_state: RegistryState,
     shm: Shm,
+    pool: SlotPool,
     session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
     surfaces: Vec<Surface>,
@@ -64,6 +109,8 @@ struct Runtime {
     terminate: bool,
     #[cfg(feature = "lock-test")]
     test_unlock_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    test_unlock_at: Option<Instant>,
 }
 
 pub(super) fn run(config: Config) -> Result<(), Error> {
@@ -76,6 +123,8 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         .map_err(|error| Error::MissingProtocol(format!("wl_compositor ({error})")))?;
     let shm = Shm::bind(&globals, &qh)
         .map_err(|error| Error::MissingProtocol(format!("wl_shm ({error})")))?;
+    let pool = SlotPool::new(1, &shm)
+        .map_err(|error| Error::Runtime(format!("could not initialize lock buffers: {error}")))?;
 
     let mut runtime = Runtime {
         #[cfg(feature = "lock-test")]
@@ -84,6 +133,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         output_state: OutputState::new(&globals, &qh),
         registry_state: RegistryState::new(&globals),
         shm,
+        pool,
         session_lock_state: SessionLockState::new(&globals, &qh),
         session_lock: None,
         surfaces: Vec::new(),
@@ -94,6 +144,8 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         terminate: false,
         #[cfg(feature = "lock-test")]
         test_unlock_after_ready: config.test_unlock_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_unlock_at: None,
     };
     eprintln!(
         "genkan lock: requesting compositor lock for uid {} ({}; {})",
@@ -131,6 +183,12 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
             runtime.fail(Error::Runtime(error.to_string()));
             break;
         }
+        if let Err(error) = runtime.reconcile_outputs(&qh) {
+            runtime.fail(error);
+            break;
+        }
+        #[cfg(feature = "lock-test")]
+        runtime.advance_test_unlock();
         match refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state) {
             Refresh::Unchanged => {}
             Refresh::Frame => runtime.redraw_all(&qh),
@@ -145,6 +203,14 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
 }
 
 impl Runtime {
+    fn reconcile_outputs(&mut self, qh: &QueueHandle<Self>) -> Result<(), Error> {
+        let outputs = self.output_state.outputs().collect::<Vec<_>>();
+        for output in outputs {
+            self.add_surface(output, qh)?;
+        }
+        Ok(())
+    }
+
     fn add_surface(
         &mut self,
         output: wl_output::WlOutput,
@@ -160,7 +226,7 @@ impl Runtime {
         let surface = self.compositor.create_surface(qh);
         let lock_surface = lock.create_lock_surface(surface, &output, qh);
         eprintln!(
-            "genkan lock: created opaque surface for output {}",
+            "genkan lock: created lock surface for output {}",
             output.id().protocol_id()
         );
         self.surfaces.push(Surface {
@@ -169,6 +235,12 @@ impl Runtime {
             size: None,
             scale: 1,
             transform: wl_output::Transform::Normal,
+            buffers: Vec::with_capacity(BUFFER_COUNT),
+            redraw: RedrawState {
+                redraw_pending: true,
+                ..RedrawState::default()
+            },
+            first_presented: false,
         });
         Ok(())
     }
@@ -176,9 +248,11 @@ impl Runtime {
     fn redraw_all(&mut self, qh: &QueueHandle<Self>) {
         let configured = self
             .surfaces
-            .iter()
+            .iter_mut()
             .enumerate()
-            .filter_map(|(index, surface)| surface.size.map(|_| index))
+            .filter_map(|(index, surface)| {
+                (surface.size.is_some() && surface.redraw.request()).then_some(index)
+            })
             .collect::<Vec<_>>();
         for index in configured {
             if let Err(error) = self.render(index, qh) {
@@ -195,7 +269,7 @@ impl Runtime {
             .ok_or_else(|| Error::Runtime("attempted to render an unconfigured surface".into()))?;
         let scale = surface.scale.max(1) as u32;
         let (buffer_width, buffer_height) = buffer_size(width, height, scale, surface.transform)?;
-        let bytes = buffer_width
+        let _bytes = buffer_width
             .checked_mul(buffer_height)
             .and_then(|pixels| usize::try_from(pixels).ok())
             .filter(|pixels| *pixels <= MAX_SURFACE_PIXELS)
@@ -203,34 +277,66 @@ impl Runtime {
             .ok_or_else(|| {
                 Error::Runtime("compositor requested an unsafe lock-surface size".into())
             })?;
-        let mut pool = RawPool::new(bytes, &self.shm)
-            .map_err(|error| Error::Runtime(format!("could not allocate lock buffer: {error}")))?;
-        draw_opaque(
-            pool.mmap(),
-            buffer_width,
-            buffer_height,
-            self.presentation.frame().as_ref(),
-        );
-        let buffer = pool.create_buffer(
-            0,
-            buffer_width as i32,
-            buffer_height as i32,
-            (buffer_width * 4) as i32,
-            wl_shm::Format::Argb8888,
-            (),
-            qh,
-        );
-        let wl_surface = surface.lock_surface.wl_surface();
+        let transform = surface.transform;
+        let wl_surface = surface.lock_surface.wl_surface().clone();
+        let output_id = surface.output.id().protocol_id();
+        let frame = self.presentation.frame();
+        let (pool, surfaces) = (&mut self.pool, &mut self.surfaces);
+        let surface = &mut surfaces[index];
+        surface
+            .buffers
+            .retain(|item| item.size == (buffer_width, buffer_height));
+        let reusable = surface.buffers.iter().position(|item| {
+            item.size == (buffer_width, buffer_height) && pool.canvas(&item.buffer).is_some()
+        });
+        let buffer_index = if let Some(buffer_index) = reusable {
+            let canvas = pool
+                .canvas(&surface.buffers[buffer_index].buffer)
+                .expect("buffer release state changed without dispatch");
+            draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
+            buffer_index
+        } else {
+            if surface.buffers.len() >= BUFFER_COUNT {
+                wl_surface.frame(qh, wl_surface.clone());
+                wl_surface.commit();
+                surface.redraw.retry_scheduled();
+                return Ok(());
+            }
+            let (buffer, canvas) = pool
+                .create_buffer(
+                    buffer_width as i32,
+                    buffer_height as i32,
+                    (buffer_width * 4) as i32,
+                    wl_shm::Format::Argb8888,
+                )
+                .map_err(|error| {
+                    Error::Runtime(format!("could not allocate lock buffer: {error}"))
+                })?;
+            draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
+            surface.buffers.push(SurfaceBuffer {
+                size: (buffer_width, buffer_height),
+                buffer,
+            });
+            surface.buffers.len() - 1
+        };
+        surface.buffers[buffer_index]
+            .buffer
+            .attach_to(&wl_surface)
+            .map_err(|error| Error::Runtime(format!("could not attach lock buffer: {error}")))?;
         let region = self.compositor.wl_compositor().create_region(qh, ());
         region.add(0, 0, width as i32, height as i32);
         wl_surface.set_opaque_region(Some(&region));
         region.destroy();
         wl_surface.set_buffer_scale(scale as i32);
-        wl_surface.set_buffer_transform(surface.transform);
-        wl_surface.attach(Some(&buffer), 0, 0);
+        wl_surface.set_buffer_transform(transform);
         wl_surface.damage_buffer(0, 0, buffer_width as i32, buffer_height as i32);
+        wl_surface.frame(qh, wl_surface.clone());
         wl_surface.commit();
-        buffer.destroy();
+        surface.redraw.committed();
+        if !surface.first_presented {
+            eprintln!("genkan lock: presented opaque buffer for output {output_id}");
+            surface.first_presented = true;
+        }
         Ok(())
     }
 
@@ -246,10 +352,7 @@ impl Runtime {
                 }
                 #[cfg(feature = "lock-test")]
                 if self.test_unlock_after_ready && !self.terminate {
-                    let action = self
-                        .state
-                        .authorize_unlock(super::UnlockAuthorization::test_source());
-                    self.apply(action);
+                    self.test_unlock_at = Some(Instant::now() + TEST_UNLOCK_DELAY);
                 }
             }
             Action::Abort => {
@@ -278,6 +381,17 @@ impl Runtime {
         let _ = self.state.update(Event::RuntimeFailed);
         self.failure.get_or_insert(error);
         self.terminate = true;
+    }
+
+    #[cfg(feature = "lock-test")]
+    fn advance_test_unlock(&mut self) {
+        if self.test_unlock_at.is_some_and(|at| Instant::now() >= at) {
+            self.test_unlock_at = None;
+            let action = self
+                .state
+                .authorize_unlock(super::UnlockAuthorization::test_source());
+            self.apply(action);
+        }
     }
 }
 
@@ -311,6 +425,7 @@ impl SessionLockHandler for Runtime {
             return;
         };
         self.surfaces[index].size = Some(configure.new_size);
+        self.surfaces[index].redraw.request();
         if let Err(error) = self.render(index, qh) {
             self.fail(error);
         }
@@ -331,6 +446,7 @@ impl CompositorHandler for Runtime {
             .position(|item| item.lock_surface.wl_surface() == surface)
         {
             self.surfaces[index].scale = scale.max(1);
+            self.surfaces[index].redraw.request();
             if self.surfaces[index].size.is_some() {
                 if let Err(error) = self.render(index, qh) {
                     self.fail(error);
@@ -352,6 +468,7 @@ impl CompositorHandler for Runtime {
             .position(|item| item.lock_surface.wl_surface() == surface)
         {
             self.surfaces[index].transform = transform;
+            self.surfaces[index].redraw.request();
             if self.surfaces[index].size.is_some() {
                 if let Err(error) = self.render(index, qh) {
                     self.fail(error);
@@ -363,10 +480,22 @@ impl CompositorHandler for Runtime {
     fn frame(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
+        let Some(index) = self
+            .surfaces
+            .iter()
+            .position(|item| item.lock_surface.wl_surface() == surface)
+        else {
+            return;
+        };
+        if self.surfaces[index].redraw.frame_done() {
+            if let Err(error) = self.render(index, qh) {
+                self.fail(error);
+            }
+        }
     }
 
     fn surface_enter(
@@ -447,7 +576,6 @@ smithay_client_toolkit::delegate_output!(Runtime);
 smithay_client_toolkit::delegate_registry!(Runtime);
 smithay_client_toolkit::delegate_session_lock!(Runtime);
 smithay_client_toolkit::delegate_shm!(Runtime);
-wayland_client::delegate_noop!(Runtime: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(Runtime: ignore wl_region::WlRegion);
 
 fn buffer_size(
@@ -468,53 +596,92 @@ fn buffer_size(
     } else {
         (width, height)
     };
-    width
+    let (width, height) = width
         .checked_mul(scale)
         .zip(height.checked_mul(scale))
-        .ok_or_else(|| Error::Runtime("compositor lock-surface dimensions overflow".into()))
+        .ok_or_else(|| Error::Runtime("compositor lock-surface dimensions overflow".into()))?;
+    if width == 0 || height == 0 {
+        return Err(Error::Runtime(
+            "compositor requested an empty lock surface".into(),
+        ));
+    }
+    if width > MAX_SURFACE_DIMENSION || height > MAX_SURFACE_DIMENSION {
+        return Err(Error::Runtime(
+            "compositor lock-surface dimensions exceed the supported limit".into(),
+        ));
+    }
+    Ok((width, height))
 }
 
 fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&RgbaFrame>) {
+    let coordinates = frame.and_then(|frame| cover_coordinates(frame, width, height));
     for (index, pixel) in target.chunks_exact_mut(4).enumerate() {
-        let x = index as u32 % width;
-        let y = index as u32 / width;
-        let [red, green, blue] = frame
-            .filter(|frame| frame.width > 0 && frame.height > 0)
-            .map(|frame| sample_cover(frame, width, height, x, y))
-            .unwrap_or(FALLBACK_RGB);
-        pixel[0] = dim(blue);
-        pixel[1] = dim(green);
-        pixel[2] = dim(red);
-        pixel[3] = u8::MAX;
+        let color = coordinates.as_ref().and_then(|(source_x, source_y)| {
+            let x = source_x.get(index % width as usize)?;
+            let y = source_y.get(index / width as usize)?;
+            frame_pixel(frame?, *x, *y)
+        });
+        let [red, green, blue] = color.unwrap_or(FALLBACK_RGB);
+        pixel.copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
     }
 }
 
-fn sample_cover(frame: &RgbaFrame, width: u32, height: u32, x: u32, y: u32) -> [u8; 3] {
+#[cfg(test)]
+fn sample_cover(frame: &RgbaFrame, width: u32, height: u32, x: u32, y: u32) -> Option<[u8; 3]> {
+    let geometry = cover_geometry(frame, width, height)?;
+    frame_pixel(
+        frame,
+        source_coordinate(x, geometry.0, geometry.2, frame.width),
+        source_coordinate(y, geometry.1, geometry.3, frame.height),
+    )
+}
+
+fn cover_coordinates(frame: &RgbaFrame, width: u32, height: u32) -> Option<(Vec<u32>, Vec<u32>)> {
+    let geometry = cover_geometry(frame, width, height)?;
+    let source_x = (0..width)
+        .map(|x| source_coordinate(x, geometry.0, geometry.2, frame.width))
+        .collect();
+    let source_y = (0..height)
+        .map(|y| source_coordinate(y, geometry.1, geometry.3, frame.height))
+        .collect();
+    Some((source_x, source_y))
+}
+
+fn cover_geometry(frame: &RgbaFrame, width: u32, height: u32) -> Option<(u128, u128, u128, u128)> {
+    if frame.width == 0 || frame.height == 0 || width == 0 || height == 0 {
+        return None;
+    }
     let source_wider =
-        u64::from(frame.width) * u64::from(height) > u64::from(width) * u64::from(frame.height);
+        u128::from(frame.width) * u128::from(height) > u128::from(width) * u128::from(frame.height);
     let (scaled_width, scaled_height) = if source_wider {
         (
-            u64::from(frame.width) * u64::from(height) / u64::from(frame.height),
-            u64::from(height),
+            u128::from(frame.width) * u128::from(height) / u128::from(frame.height),
+            u128::from(height),
         )
     } else {
         (
-            u64::from(width),
-            u64::from(frame.height) * u64::from(width) / u64::from(frame.width),
+            u128::from(width),
+            u128::from(frame.height) * u128::from(width) / u128::from(frame.width),
         )
     };
-    let crop_x = scaled_width.saturating_sub(u64::from(width)) / 2;
-    let crop_y = scaled_height.saturating_sub(u64::from(height)) / 2;
-    let source_x = ((u64::from(x) + crop_x) * u64::from(frame.width) / scaled_width)
-        .min(u64::from(frame.width - 1));
-    let source_y = ((u64::from(y) + crop_y) * u64::from(frame.height) / scaled_height)
-        .min(u64::from(frame.height - 1));
-    let offset = ((source_y * u64::from(frame.width) + source_x) * 4) as usize;
-    [
-        frame.pixels[offset],
-        frame.pixels[offset + 1],
-        frame.pixels[offset + 2],
-    ]
+    let crop_x = scaled_width.saturating_sub(u128::from(width)) / 2;
+    let crop_y = scaled_height.saturating_sub(u128::from(height)) / 2;
+    Some((crop_x, crop_y, scaled_width, scaled_height))
+}
+
+fn source_coordinate(position: u32, crop: u128, scaled: u128, source: u32) -> u32 {
+    (((u128::from(position) + crop) * u128::from(source) / scaled).min(u128::from(source - 1)))
+        as u32
+}
+
+fn frame_pixel(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 3]> {
+    let offset = u64::from(source_y)
+        .checked_mul(u64::from(frame.width))?
+        .checked_add(u64::from(source_x))?
+        .checked_mul(4)
+        .and_then(|offset| usize::try_from(offset).ok())?;
+    let pixel = frame.pixels.get(offset..offset.checked_add(3)?)?;
+    Some([pixel[0], pixel[1], pixel[2]])
 }
 
 fn dim(value: u8) -> u8 {
@@ -596,6 +763,25 @@ mod tests {
             (2160, 3840)
         );
         assert!(buffer_size(u32::MAX, 1, 2, wl_output::Transform::Normal).is_err());
+        assert!(buffer_size(16_385, 1, 1, wl_output::Transform::Normal).is_err());
+        assert!(buffer_size(0, 1, 1, wl_output::Transform::Normal).is_err());
+    }
+
+    #[test]
+    fn redraws_are_coalesced_until_the_compositor_finishes_a_frame() {
+        let mut redraw = RedrawState::default();
+
+        assert!(redraw.request());
+        redraw.committed();
+        assert!(!redraw.request());
+        assert!(!redraw.request());
+        assert!(redraw.frame_done());
+        redraw.committed();
+        assert!(!redraw.frame_done());
+
+        redraw.request();
+        redraw.retry_scheduled();
+        assert!(redraw.frame_done());
     }
 
     #[test]
@@ -615,6 +801,34 @@ mod tests {
         let mut target = [0; 4];
         draw_opaque(&mut target, 1, 1, None);
         assert_eq!(target, [19, 7, 4, 255]);
+    }
+
+    #[test]
+    fn cover_sampling_handles_large_valid_coordinates_without_overflow() {
+        let mut pixels = vec![0; 400_000 * 4];
+        pixels[(399_999 * 4)..(400_000 * 4)].copy_from_slice(&[77, 88, 99, 255]);
+        let frame = RgbaFrame {
+            width: 400_000,
+            height: 1,
+            pixels: pixels.into(),
+        };
+
+        assert_eq!(
+            sample_cover(&frame, u32::MAX, 1, u32::MAX - 1, 0),
+            Some([77, 88, 99])
+        );
+    }
+
+    #[test]
+    fn cover_sampling_rejects_zero_dimensions() {
+        let frame = RgbaFrame {
+            width: 0,
+            height: 1,
+            pixels: Bytes::new(),
+        };
+
+        assert_eq!(sample_cover(&frame, 1, 1, 0, 0), None);
+        assert_eq!(sample_cover(&frame, 0, 1, 0, 0), None);
     }
 
     #[test]

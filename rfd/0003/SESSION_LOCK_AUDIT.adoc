@@ -65,19 +65,23 @@ binary.
 
 == Runtime invariants
 
-The runtime binds only `wl_compositor`, `wl_shm` with ARGB8888,
-`wl_output`, and `ext_session_lock_manager_v1`. Missing globals, no outputs,
-unsafe surface dimensions, rendering errors, and Wayland dispatch errors fail
-startup or terminate the connection. There is no xdg-shell, fullscreen, or
-layer-shell fallback.
+The runtime requires only `wl_compositor`, `wl_shm` with ARGB8888,
+`wl_output`, and `ext_session_lock_manager_v1` for its security boundary.
+Smithay Client Toolkit may also bind optional xdg-output metadata while
+tracking outputs. Missing required globals, no outputs, unsafe surface
+dimensions, rendering errors, and Wayland dispatch errors fail startup or
+terminate the connection. There is no xdg-shell, fullscreen, or layer-shell
+fallback.
 
 One lock surface is created for every initial output and for each output added
 later. Output removal drops only its corresponding local surface. Configure,
-integer scale, and buffer transform changes allocate and redraw a correctly
-sized buffer. Every committed buffer has alpha 255 and an explicit opaque
-region. Wallpaper frames use cover cropping and the same darkening treatment
-as login; decoder failure redraws the packaged poster or opaque generated
-fallback without changing lock lifecycle state.
+integer scale, and buffer transform changes redraw a correctly sized buffer.
+Each output keeps a double buffer for its configured size and reuses buffers
+after compositor release; animated redraws are coalesced behind compositor
+frame callbacks. Every committed buffer has alpha 255 and an explicit opaque
+region. Wallpaper frames use precomputed cover-cropping coordinates and the
+same darkening treatment as login; decoder failure redraws the packaged poster
+or opaque generated fallback without changing lock lifecycle state.
 
 Only the protocol's `locked` event transitions the state to locked and writes
 `READY` to `--ready-fd`. `finished` before confirmation is denial. `finished`
