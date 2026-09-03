@@ -1,0 +1,119 @@
+#+TITLE: RFD 0003 implementation checklist
+#+STARTUP: showall
+
+Implements [[file:README.adoc][RFD 3: Secure session locking across suspend and resume]].
+
+The phases are ordered. Preserve existing greeter behavior while establishing
+each new boundary, and do not ship a production path that unlocks without PAM.
+
+* Phase 1: Establish the command boundary
+
+- [ ] Replace the flat CLI with the required `genkan login` subcommand;
+  invoking bare `genkan` prints help and performs no side effect.
+- [ ] Move every current identity, preview, window, and wallpaper option under
+  `genkan login` without retaining a bare-command compatibility alias.
+- [ ] Dispatch `login` to the current greeter application through a typed login
+  configuration.
+- [ ] Test help, required subcommands, and login option ownership without
+  exposing a nonfunctional lock command before Phase 4.
+
+* Phase 2: Upgrade the iced UI boundary
+
+- [ ] Upgrade the complete GUI dependency family from iced 0.13 to iced 0.14
+  without changing greeter behavior or presentation.
+- [ ] Port application boot, tasks, subscriptions, image handles, text-input
+  focus, and window events to the iced 0.14 APIs.
+- [ ] Port the account tile, modal barrier, resettable widget, and custom widget
+  operations while preserving event capture, focus, touch, and reveal behavior.
+- [ ] Verify wallpaper frame delivery and resource bounds with the upgraded
+  renderer stack.
+- [ ] Run all unit, deterministic preview, package, graphics, hardware, and real
+  greetd checks before introducing session-lock behavior.
+
+* Phase 3: Separate the reusable conversation model
+
+- [ ] Extract prompt, notice, response, attempt, success, and failure transitions
+  from greetd-specific `StartSession` effects without changing current behavior.
+- [ ] Keep greetd connection, cancellation, retry, and selected-session startup
+  in a login adapter.
+- [ ] Prove with transition and application tests that the refactor preserves
+  every current prompt type, retry path, stale-attempt guard, and close cleanup.
+- [ ] Extract only presentation components actually shared by greeter and
+  locker; do not add a mode branch to the existing top-level `App`.
+
+* Phase 4: Establish the compositor lock boundary
+
+- [ ] Add and implement `genkan lock` with a dedicated top-level state machine
+  and typed lock configuration for the fixed real-UID identity; do not route it
+  through the login application state.
+- [ ] Audit and exactly pin the iced session-lock shell and every directly
+  security-relevant protocol dependency used by the lock binary.
+- [ ] Require `ext_session_lock_manager_v1` and all rendering protocols before
+  lock readiness; provide no fullscreen or layer-shell fallback.
+- [ ] Create and maintain one configured opaque lock surface for every output,
+  including output addition, removal, transform, size, and scale changes.
+- [ ] Expose lock-confirmed, denied, and finished events to application state and
+  treat the compositor's `locked` event as the sole readiness boundary.
+- [ ] Ensure generic close, escape, error, and exit paths cannot construct the
+  session-lock runtime's unlock action.
+- [ ] Keep wallpaper decoding and presentation failures visually recoverable
+  without releasing lock ownership.
+- [ ] Add non-secret `--ready-fd` and lifecycle diagnostics for automated tests.
+- [ ] Add a test-only unlock authorization source that cannot be compiled into
+  or selected by the production package.
+
+* Phase 5: Add unlock authentication
+
+- [ ] Define a bounded private socketpair protocol for visible prompts, secret
+  prompts, information, errors, responses, cancellation, success, and failure.
+- [ ] Add a small same-user PAM worker with no UI, setuid mode, session opening,
+  command launch, public socket, or password-validation implementation.
+- [ ] Resolve and bind authentication to the invoking process's real-UID account.
+- [ ] Preserve arbitrary PAM message arrays and request a distinct response for
+  every visible or secret prompt.
+- [ ] Clear mutable response buffers promptly on submission, prompt replacement,
+  cancellation, failure, success, worker exit, and locker exit.
+- [ ] Ensure responses cannot enter logs, diagnostics, environment variables,
+  command arguments, clipboard operations, preview fixtures, or persistent
+  files.
+- [ ] Map only terminal PAM success from the expected worker and active attempt
+  to `unlock_and_destroy`, followed by a Wayland synchronization before exit.
+- [ ] Keep the compositor lock active after PAM rejection, worker crash,
+  protocol error, cancellation, and stale success.
+- [ ] Add a NixOS PAM service using host policy and package no permissive
+  authentication fallback.
+
+* Phase 6: Integrate suspend and deployment
+
+- [ ] Implement foreground execution and a `--daemonize` launcher that spawns a
+  fresh child and waits on a private readiness pipe without post-initialization
+  `fork`.
+- [ ] Make concurrent manual-lock and before-sleep invocations join the same
+  confirmed lock lifecycle without treating protocol denial as success.
+- [ ] Document swayidle or equivalent delay-inhibitor integration that cannot
+  allow suspend before compositor confirmation.
+- [ ] Export an opt-in NixOS module for package and PAM setup without silently
+  replacing a desktop environment's own locker.
+- [ ] Document runtime protocol detection, supported-compositor requirements,
+  unsupported desktop environments, and fail-closed recovery from another VT.
+
+* Phase 7: Security and system verification
+
+- [ ] Add a feature-gated session-lock protocol and input observer harness that
+  never records key contents or PAM responses.
+- [ ] Add an x86_64 NixOS VM with headless Sway, multiple outputs, a focused
+  ordinary client, injected input, and deterministic test-only PAM policy.
+- [ ] Verify lock readiness, lock denial, duplicate invocation, initial output
+  coverage, output hotplug/removal, mixed scaling, and compositor finish events.
+- [ ] Verify keyboard and pointer isolation before and after explicit unlock.
+- [ ] Verify failed and multi-prompt authentication retain the lock and correct
+  authentication explicitly restores the existing session.
+- [ ] Verify `SIGKILL`, panic, worker death, renderer failure, and compositor
+  disconnection never request unlock and exercise compositor recovery policy.
+- [ ] Verify a simulated before-sleep action cannot proceed before readiness and
+  remains locked across the simulated resume boundary.
+- [ ] Run `make verify`, `make e2e`, the session-lock VM, and packaged graphics
+  checks on every supported architecture where each check is applicable.
+- [ ] Run physical lock, suspend, resume, retry, output hotplug, and crash
+  recovery checks on supported compositors with available AMD and NVIDIA
+  hardware and record the results.
