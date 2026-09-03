@@ -8,13 +8,13 @@ each new boundary, and do not ship a production path that unlocks without PAM.
 
 * Phase 1: Establish the command boundary
 
-- [ ] Replace the flat CLI with the required `genkan login` subcommand;
+- [X] Replace the flat CLI with the required `genkan login` subcommand;
   invoking bare `genkan` prints help and performs no side effect.
-- [ ] Move every current identity, preview, window, and wallpaper option under
+- [X] Move every current identity, preview, window, and wallpaper option under
   `genkan login` without retaining a bare-command compatibility alias.
-- [ ] Dispatch `login` to the current greeter application through a typed login
+- [X] Dispatch `login` to the current greeter application through a typed login
   configuration.
-- [ ] Test help, required subcommands, and login option ownership without
+- [X] Test help, required subcommands, and login option ownership without
   exposing a nonfunctional lock command before Phase 4.
 
 * Phase 2: Upgrade the iced UI boundary

@@ -123,7 +123,7 @@ run_adapter() {
   cat > "$run_dir/run-genkan" <<EOF
 #!/usr/bin/env bash
 echo \$\$ > "$run_dir/genkan.pid"
-exec "$GENKAN_BIN" --username smoke
+exec "$GENKAN_BIN" login --username smoke
 EOF
   chmod +x "$run_dir/run-genkan"
 

@@ -62,7 +62,7 @@ pkgs.runCommand "genkan-graphics-smoke"
     cat > "$TMPDIR/run-genkan" <<EOF
     #!${pkgs.runtimeShell}
     echo \$\$ > "$TMPDIR/genkan.pid"
-    exec ${genkan}/bin/genkan --username smoke
+    exec ${genkan}/bin/genkan login --username smoke
     EOF
     chmod +x "$TMPDIR/run-genkan"
 

@@ -260,7 +260,7 @@ test_ci_watches_all_scripts() {
 test_dev_preview_does_not_inherit_host_identity() {
   local command
   command=$(env -u PREVIEW make --no-print-directory -n -C "$repo_root" PREVIEW=selected dev)
-  [[ $command == *'--windowed --preview "selected"'* ]] ||
+  [[ $command == *'-- login --windowed --preview "selected"'* ]] ||
     fail "make dev must select the deterministic default fixture"
   [[ $command != *'--username'* ]] ||
     fail "make dev must not inject a host-dependent username"

@@ -36,7 +36,8 @@ PREVIEW=authentication-failure make dev
 PREVIEW=power-confirmation make dev
 ```
 
-Run `cargo run --bin genkan -- --help` to list every fixture and CLI option.
+Run `cargo run --bin genkan -- login --help` to list every fixture and login
+option.
 Pass an explicit `--username` only when a particular synthetic identity is
 useful. To exercise real services, run Genkan without `--preview` in the
 intended greeter environment.

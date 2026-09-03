@@ -9,16 +9,27 @@ mod wallpaper;
 use std::path::PathBuf;
 
 use app::{App, Config, PreviewFixture};
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use iced::{window, Theme};
 
 #[derive(Debug, Parser)]
+#[command(version, about, arg_required_else_help = true)]
+struct Arguments {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the greetd login frontend.
+    Login(LoginArguments),
+}
+
+#[derive(Debug, Args)]
 #[command(
-    version,
-    about,
     after_help = "Wallpaper playback failures restore the selected static poster. If the poster is unavailable, Genkan uses its generated background."
 )]
-struct Arguments {
+struct LoginArguments {
     #[arg(long, exclusive = true)]
     list_preview_fixtures: bool,
     #[arg(long, value_parser = parse_username)]
@@ -107,7 +118,11 @@ fn animate_wallpaper(preview: bool, reduce_motion: bool, animated_preview: bool)
 }
 
 pub fn main() -> iced::Result {
-    let arguments = Arguments::parse();
+    let Command::Login(arguments) = Arguments::parse().command;
+    run_login(arguments)
+}
+
+fn run_login(arguments: LoginArguments) -> iced::Result {
     if arguments.list_preview_fixtures {
         for fixture in PreviewFixture::value_variants() {
             println!(
@@ -157,11 +172,32 @@ pub fn main() -> iced::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
+    use clap::{error::ErrorKind, CommandFactory};
+
+    fn try_parse_login<const N: usize>(
+        arguments: [&str; N],
+    ) -> Result<LoginArguments, clap::Error> {
+        let arguments = ["genkan", "login"]
+            .into_iter()
+            .chain(arguments.into_iter().skip(1));
+        let parsed = Arguments::try_parse_from(arguments)?;
+        let Command::Login(arguments) = parsed.command;
+        Ok(arguments)
+    }
+
+    #[test]
+    fn command_is_required_and_login_options_are_scoped() {
+        assert_eq!(
+            Arguments::try_parse_from(["genkan"]).unwrap_err().kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+        assert!(Arguments::try_parse_from(["genkan", "--windowed"]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "login", "--windowed"]).is_ok());
+    }
 
     #[test]
     fn identity_overrides_are_optional() {
-        let arguments = Arguments::try_parse_from(["genkan"]).unwrap();
+        let arguments = try_parse_login(["genkan"]).unwrap();
         assert!(!arguments.list_preview_fixtures);
         assert_eq!(arguments.username, None);
         assert_eq!(arguments.display_name, None);
@@ -176,38 +212,28 @@ mod tests {
 
     #[test]
     fn preview_requires_a_window() {
-        assert!(Arguments::try_parse_from(["genkan", "--preview"]).is_err());
-        let arguments = Arguments::try_parse_from(["genkan", "--windowed", "--preview"])
+        assert!(try_parse_login(["genkan", "--preview"]).is_err());
+        let arguments = try_parse_login(["genkan", "--windowed", "--preview"])
             .expect("preview has a safe default fixture");
         assert_eq!(arguments.preview, Some(PreviewFixture::Selected));
-        assert!(Arguments::try_parse_from([
-            "genkan",
-            "--windowed",
-            "--preview",
-            "--username",
-            "preview",
-        ])
-        .is_ok());
+        assert!(
+            try_parse_login(["genkan", "--windowed", "--preview", "--username", "preview",])
+                .is_ok()
+        );
     }
 
     #[test]
     fn preview_accepts_named_fixtures() {
-        let arguments =
-            Arguments::try_parse_from(["genkan", "--windowed", "--preview", "users"]).unwrap();
+        let arguments = try_parse_login(["genkan", "--windowed", "--preview", "users"]).unwrap();
         assert_eq!(arguments.preview, Some(PreviewFixture::Users));
-        assert!(
-            Arguments::try_parse_from(["genkan", "--windowed", "--preview", "unknown",]).is_err()
-        );
+        assert!(try_parse_login(["genkan", "--windowed", "--preview", "unknown",]).is_err());
     }
 
     #[test]
     fn fixture_listing_is_exclusive_and_exhaustive() {
-        let arguments = Arguments::try_parse_from(["genkan", "--list-preview-fixtures"]).unwrap();
+        let arguments = try_parse_login(["genkan", "--list-preview-fixtures"]).unwrap();
         assert!(arguments.list_preview_fixtures);
-        assert!(
-            Arguments::try_parse_from(["genkan", "--list-preview-fixtures", "--windowed",])
-                .is_err()
-        );
+        assert!(try_parse_login(["genkan", "--list-preview-fixtures", "--windowed",]).is_err());
 
         let names = PreviewFixture::value_variants()
             .iter()
@@ -226,11 +252,9 @@ mod tests {
 
     #[test]
     fn window_dimensions_are_paired_bounded_and_windowed() {
-        assert!(
-            Arguments::try_parse_from(["genkan", "--width", "480", "--height", "600"]).is_err()
-        );
-        assert!(Arguments::try_parse_from(["genkan", "--windowed", "--width", "480"]).is_err());
-        let arguments = Arguments::try_parse_from([
+        assert!(try_parse_login(["genkan", "--width", "480", "--height", "600"]).is_err());
+        assert!(try_parse_login(["genkan", "--windowed", "--width", "480"]).is_err());
+        let arguments = try_parse_login([
             "genkan",
             "--windowed",
             "--preview",
@@ -243,35 +267,26 @@ mod tests {
         .unwrap();
         assert_eq!(arguments.width, Some(480));
         assert_eq!(arguments.height, Some(600));
-        assert!(Arguments::try_parse_from([
-            "genkan",
-            "--windowed",
-            "--width",
-            "200",
-            "--height",
-            "600",
-        ])
-        .is_err());
+        assert!(
+            try_parse_login(["genkan", "--windowed", "--width", "200", "--height", "600",])
+                .is_err()
+        );
     }
 
     #[test]
     fn display_name_override_requires_username() {
-        assert!(Arguments::try_parse_from(["genkan", "--display-name", "Operator"]).is_err());
+        assert!(try_parse_login(["genkan", "--display-name", "Operator"]).is_err());
     }
 
     #[test]
     fn identity_overrides_reject_empty_or_malformed_values() {
-        assert!(Arguments::try_parse_from(["genkan", "--username", ""]).is_err());
-        assert!(Arguments::try_parse_from(["genkan", "--username", "two users"]).is_err());
-        assert!(Arguments::try_parse_from([
-            "genkan",
-            "--username",
-            "operator",
-            "--display-name",
-            " \n ",
-        ])
-        .is_err());
-        assert!(Arguments::try_parse_from([
+        assert!(try_parse_login(["genkan", "--username", ""]).is_err());
+        assert!(try_parse_login(["genkan", "--username", "two users"]).is_err());
+        assert!(
+            try_parse_login(["genkan", "--username", "operator", "--display-name", " \n ",])
+                .is_err()
+        );
+        assert!(try_parse_login([
             "genkan",
             "--username",
             "operator",
@@ -279,7 +294,7 @@ mod tests {
             "\u{0600}\u{202e}\u{200b}",
         ])
         .is_err());
-        assert!(Arguments::try_parse_from(["genkan", "--username", "user\u{0600}"]).is_err());
+        assert!(try_parse_login(["genkan", "--username", "user\u{0600}"]).is_err());
     }
 
     #[test]
@@ -290,11 +305,11 @@ mod tests {
             "sequoia-morning",
             "sequoia-night",
         ] {
-            assert!(Arguments::try_parse_from(["genkan", "--wallpaper", name]).is_ok());
+            assert!(try_parse_login(["genkan", "--wallpaper", name]).is_ok());
         }
-        assert!(Arguments::try_parse_from(["genkan", "--wallpaper", "unknown"]).is_err());
-        assert!(Arguments::try_parse_from(["genkan", "--animated-preview"]).is_err());
-        assert!(Arguments::try_parse_from([
+        assert!(try_parse_login(["genkan", "--wallpaper", "unknown"]).is_err());
+        assert!(try_parse_login(["genkan", "--animated-preview"]).is_err());
+        assert!(try_parse_login([
             "genkan",
             "--windowed",
             "--preview",
@@ -310,7 +325,11 @@ mod tests {
 
     #[test]
     fn command_help_describes_wallpaper_fallbacks() {
-        let help = Arguments::command().render_long_help().to_string();
+        let help = Arguments::command()
+            .find_subcommand_mut("login")
+            .expect("login subcommand")
+            .render_long_help()
+            .to_string();
         assert!(help.contains("playback failures restore the selected static poster"));
         assert!(help.contains("poster is unavailable"));
         assert!(help.contains("generated background"));
@@ -321,8 +340,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("genkan-wallpaper-{}.mov", std::process::id()));
         std::fs::write(&path, []).unwrap();
-        let parsed =
-            Arguments::try_parse_from(["genkan", "--wallpaper-file", path.to_str().unwrap()]);
+        let parsed = try_parse_login(["genkan", "--wallpaper-file", path.to_str().unwrap()]);
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(parsed.unwrap().wallpaper_file, Some(path));
@@ -334,7 +352,7 @@ mod tests {
             "/does/not/exist.mov",
         ] {
             assert!(
-                Arguments::try_parse_from(["genkan", "--wallpaper-file", invalid]).is_err(),
+                try_parse_login(["genkan", "--wallpaper-file", invalid]).is_err(),
                 "accepted {invalid}"
             );
         }

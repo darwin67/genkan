@@ -40,7 +40,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$PREVIEW_OUTPUT_DIR"
-mapfile -t preview_fixtures < <("$GENKAN_BIN" --list-preview-fixtures)
+mapfile -t preview_fixtures < <("$GENKAN_BIN" login --list-preview-fixtures)
 [[ ${#preview_fixtures[@]} -gt 0 ]]
 declare -A covered_fixtures=()
 
@@ -87,7 +87,7 @@ capture() {
 #!${SHELL:-/bin/sh}
 echo \$\$ > "$case_dir/genkan.pid"
 exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
-  "$GENKAN_BIN" --windowed --preview "$fixture" --width "$width" --height "$height"
+  "$GENKAN_BIN" login --windowed --preview "$fixture" --width "$width" --height "$height"
 EOF
   chmod +x "$case_dir/run-genkan"
 

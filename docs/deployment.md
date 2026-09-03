@@ -40,7 +40,7 @@ services.greetd = {
   enable = true;
   settings.default_session = {
     user = "greeter";
-    command = "${pkgs.cage}/bin/cage -- ${genkanPackage}/bin/genkan";
+    command = "${pkgs.cage}/bin/cage -- ${genkanPackage}/bin/genkan login";
   };
 };
 

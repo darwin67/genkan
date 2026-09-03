@@ -6,11 +6,11 @@ WALLPAPER ?= tahoe-beach
 .PHONY: dev animated-dev check fmt fmt-fix lint test scripts-test check-rfds smoke evidence update-reference-images hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
-	cargo run --bin genkan -- --windowed --preview "$(PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)"
+	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)"
 
 animated-dev:
 	@test -n "$(GENKAN_WALLPAPER_DIR)" || { echo "GENKAN_WALLPAPER_DIR is unavailable; run this target inside nix develop" >&2; exit 1; }
-	cargo run --bin genkan -- --windowed --preview "$(PREVIEW)" --animated-preview --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)" --wallpaper-file "$(GENKAN_WALLPAPER_DIR)/$(WALLPAPER).mov"
+	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --animated-preview --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)" --wallpaper-file "$(GENKAN_WALLPAPER_DIR)/$(WALLPAPER).mov"
 
 check:
 	cargo check
