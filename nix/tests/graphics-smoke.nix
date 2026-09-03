@@ -49,8 +49,7 @@ pkgs.runCommand "genkan-graphics-smoke"
       wait "$smoke_pid" 2>/dev/null || true
       smoke_pid=""
     }
-    cleanup() {
-      stop_smoke
+    stop_weston() {
       if [ -n "$weston_pid" ]; then
         kill -TERM "$weston_pid" 2>/dev/null || true
         for _ in $(seq 1 20); do
@@ -63,7 +62,41 @@ pkgs.runCommand "genkan-graphics-smoke"
           kill -KILL "$weston_pid" 2>/dev/null || true
         fi
         wait "$weston_pid" 2>/dev/null || true
+        weston_pid=""
       fi
+      rm -f "$XDG_RUNTIME_DIR/wayland-genkan"
+    }
+    start_weston() {
+      local log=$1
+
+      weston \
+        --backend=headless-backend.so \
+        --renderer=pixman \
+        --width=1280 \
+        --height=720 \
+        --idle-time=0 \
+        --shell=kiosk \
+        --socket=wayland-genkan \
+        --debug \
+        --log="$log" &
+      weston_pid=$!
+
+      for _ in $(seq 1 100); do
+        if [ -S "$XDG_RUNTIME_DIR/wayland-genkan" ]; then
+          return
+        fi
+        if ! kill -0 "$weston_pid" 2>/dev/null; then
+          cat "$log"
+          exit 1
+        fi
+        sleep 0.1
+      done
+      echo "Weston did not create its Wayland socket" >&2
+      exit 1
+    }
+    cleanup() {
+      stop_smoke
+      stop_weston
     }
     trap cleanup EXIT
 
@@ -80,29 +113,7 @@ pkgs.runCommand "genkan-graphics-smoke"
     EOF
     chmod +x "$TMPDIR/run-genkan"
 
-    weston \
-      --backend=headless-backend.so \
-      --renderer=pixman \
-      --width=1280 \
-      --height=720 \
-      --idle-time=0 \
-      --shell=kiosk \
-      --socket=wayland-genkan \
-      --debug \
-      --log="$TMPDIR/weston.log" &
-    weston_pid=$!
-
-    for _ in $(seq 1 100); do
-      if [ -S "$XDG_RUNTIME_DIR/wayland-genkan" ]; then
-        break
-      fi
-      if ! kill -0 "$weston_pid" 2>/dev/null; then
-        cat "$TMPDIR/weston.log"
-        exit 1
-      fi
-      sleep 0.1
-    done
-    test -S "$XDG_RUNTIME_DIR/wayland-genkan"
+    start_weston "$TMPDIR/weston-cage.log"
 
     WAYLAND_DISPLAY=wayland-genkan \
       ICED_BACKEND=wgpu \
@@ -139,6 +150,8 @@ pkgs.runCommand "genkan-graphics-smoke"
     grep -F libvulkan_lvp /proc/"$genkan_pid"/maps
 
     stop_smoke
+    stop_weston
+    start_weston "$TMPDIR/weston-preview.log"
 
     cat > "$TMPDIR/run-genkan-static" <<EOF
     #!${pkgs.runtimeShell}
@@ -290,7 +303,8 @@ pkgs.runCommand "genkan-graphics-smoke"
 
     stop_smoke
 
-    cat "$TMPDIR/weston.log"
+    cat "$TMPDIR/weston-cage.log"
+    cat "$TMPDIR/weston-preview.log"
     cat "$TMPDIR/cage.log"
     cat "$TMPDIR/static.log"
     cat "$TMPDIR/animated.log"
