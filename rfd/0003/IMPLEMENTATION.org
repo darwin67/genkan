@@ -54,6 +54,9 @@ each new boundary, and do not ship a production path that unlocks without PAM.
   including output addition, removal, transform, size, and scale changes.
 - [ ] Expose lock-confirmed, denied, and finished events to application state and
   treat the compositor's `locked` event as the sole readiness boundary.
+- [ ] Abort the Wayland runtime on post-confirmation `finished` without generic
+  iced exit or `unlock_and_destroy`; do not treat compositor termination as
+  authentication success.
 - [ ] Ensure generic close, escape, error, and exit paths cannot construct the
   session-lock runtime's unlock action.
 - [ ] Keep wallpaper decoding and presentation failures visually recoverable

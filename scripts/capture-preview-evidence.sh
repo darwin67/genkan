@@ -9,7 +9,7 @@ source "${PREVIEW_EVIDENCE_LIB:-$script_dir/preview-evidence-lib.sh}"
 : "${GENKAN_BIN:?set GENKAN_BIN to the packaged Genkan executable}"
 : "${PREVIEW_OUTPUT_DIR:?set PREVIEW_OUTPUT_DIR to the screenshot destination}"
 
-for command in identify strace weston weston-screenshooter; do
+for command in compare identify strace weston weston-screenshooter; do
   command -v "$command" >/dev/null || {
     echo "missing preview evidence dependency: $command" >&2
     exit 1
@@ -171,5 +171,15 @@ for fixture in "${preview_fixtures[@]}"; do
     capture "fixture-$fixture" 1280 800 "$fixture"
   fi
 done
+
+if [[ -n ${PREVIEW_REFERENCE_DIR:-} ]]; then
+  : "${PREVIEW_REFERENCE_MANIFEST:?set PREVIEW_REFERENCE_MANIFEST with PREVIEW_REFERENCE_DIR}"
+  # shellcheck source=reference-images-manifest.sh
+  source "$PREVIEW_REFERENCE_MANIFEST"
+  for entry in "${REFERENCE_IMAGE_MANIFEST[@]}"; do
+    read -r name _ <<<"$entry"
+    check_preview_baseline "$PREVIEW_OUTPUT_DIR/$name" "$PREVIEW_REFERENCE_DIR/$name"
+  done
+fi
 
 printf 'Captured %s deterministic preview images\n' "$(find "$PREVIEW_OUTPUT_DIR" -name '*.png' | wc -l)"

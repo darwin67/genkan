@@ -35,6 +35,7 @@
     {
       packages = nixpkgs.lib.mapAttrs (_: config: {
         default = config.package;
+        preview-evidence-capture = config.previewEvidenceCapture;
       }) perSystem;
       apps = nixpkgs.lib.mapAttrs (_: config: {
         hardware-smoke = config.hardwareSmokeApp;

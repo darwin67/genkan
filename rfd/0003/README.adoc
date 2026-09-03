@@ -1,6 +1,6 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: prediscussion
-:discussion:
+:state: discussion
+:discussion: https://github.com/darwin67/genkan/pull/19
 :labels: session-lock, authentication, suspend, wayland, security
 
 = RFD 3 Secure session locking across suspend and resume
@@ -113,6 +113,15 @@ lock confirmation.
 reporting readiness. `finished` after confirmation, loss of a surface for a
 still-present output, renderer failure, and compositor disconnection are fatal
 availability failures. None authorizes an unlock request.
+
+After a confirmed lock receives `finished`, Genkan terminates by abandoning the
+Wayland connection and lock runtime without constructing iced's generic exit
+task, `unlock_and_destroy`, or any other graceful unlock action. Although the
+protocol directs a client to destroy a finished lock object with
+`unlock_and_destroy`, the fail-closed policy deliberately treats compositor
+termination as an abort path rather than a second authorization source. The
+compositor owns recovery after ending the lock, and Genkan does not represent
+that event as successful authentication.
 
 An output added while locked receives a lock surface before it can present
 ordinary session content. Output removal destroys the corresponding local
@@ -251,6 +260,9 @@ Any generic iced exit action in a session-lock runtime may map to
 `unlock_and_destroy`. The locker exposes no generic close or exit action after
 confirmation. The sole graceful exit is constructed in the authenticated
 transition, and tests enumerate every task and event capable of reaching it.
+Those reachability tests include both pre-confirmation and post-confirmation
+`finished` events and prove that neither can reach generic iced exit or an
+unlock request.
 
 Wallpaper decoding and animation remain decorative. Their failure restores an
 opaque static or generated background without stopping the lock owner, the PAM

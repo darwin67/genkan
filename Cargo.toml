@@ -41,7 +41,7 @@ gstreamer = { version = "0.24.2", features = ["v1_26"], optional = true }
 gstreamer-app = { version = "0.24.2", features = ["v1_26"], optional = true }
 gstreamer-video = { version = "0.24.2", features = ["v1_26"], optional = true }
 image = { version = "0.24.9", default-features = false, features = ["jpeg"], optional = true }
-iced = { version = "0.14.0", default-features = false, features = ["advanced", "canvas", "crisp", "image-without-codecs", "lazy", "thread-pool", "tiny-skia", "tokio", "wayland", "web-colors", "wgpu"], optional = true }
+iced = { version = "0.14.0", default-features = false, features = ["advanced", "canvas", "crisp", "image-without-codecs", "lazy", "thread-pool", "tiny-skia", "tokio", "wayland", "wgpu"], optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
 rustix = { version = "1.1.4", features = ["fs"], optional = true }
 thiserror = "2.0.9"

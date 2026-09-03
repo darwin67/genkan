@@ -114,25 +114,23 @@ run_adapter() {
   local card=$2
   local render_node=$3
   local icd=$4
-  local driver_library=$5
-  local display_connected=$6
-  local label=$7
+  local display_connected=$5
+  local label=$6
   local run_dir="$tmp_dir/$label"
-  local cage_pid genkan_pid expected_render expected_card egl_vendor fd motion_option target
+  local cage_pid genkan_pid expected_render expected_card egl_vendor fd process target unexpected_dri
+  local found_nvidia found_radeon process_expected
 
   if [[ $vendor == 1002 ]]; then
     egl_vendor="$egl_vendor_root/50_mesa.json"
-    motion_option=--reduce-motion
   else
     egl_vendor="$egl_vendor_root/10_nvidia.json"
-    motion_option=
   fi
 
   mkdir -p "$run_dir"
   cat > "$run_dir/run-genkan" <<EOF
 #!/usr/bin/env bash
 echo \$\$ > "$run_dir/genkan.pid"
-exec "$GENKAN_BIN" login --username smoke $motion_option
+exec "$GENKAN_BIN" login --username smoke --reduce-motion
 EOF
   chmod +x "$run_dir/run-genkan"
 
@@ -203,29 +201,39 @@ EOF
 
   expected_render="$dri_root/$render_node"
   expected_card="$dri_root/$card"
-  found_expected=0
   found_nvidia=0
-  for fd in /proc/"$genkan_pid"/fd/*; do
-    target=$(readlink "$fd" 2>/dev/null || true)
-    [[ $target == "$expected_render" || $target == "$expected_card" ]] && found_expected=1
-    [[ $target == /dev/nvidia* ]] && found_nvidia=1
+  found_radeon=0
+  unexpected_dri=""
+  for process in "$cage_pid" "$genkan_pid"; do
+    process_expected=0
+    grep -Fiq nvidia /proc/"$process"/maps && found_nvidia=1
+    grep -Eiq 'libvulkan_radeon|radeonsi' /proc/"$process"/maps && found_radeon=1
+    for fd in /proc/"$process"/fd/*; do
+      target=$(readlink "$fd" 2>/dev/null || true)
+      [[ $target == "$expected_render" || $target == "$expected_card" ]] && process_expected=1
+      [[ $target == /dev/nvidia* ]] && found_nvidia=1
+      if [[ $target == "$dri_root"/* && $target != "$expected_render" && $target != "$expected_card" ]]; then
+        unexpected_dri+="process $process: $fd -> $target"$'\n'
+      fi
+    done
+    if ((process_expected == 0)); then
+      cat "$run_dir/cage.log"
+      echo "Process $process did not retain the selected DRM node on $label" >&2
+      exit 1
+    fi
   done
-  if ((found_expected == 0)) && ! grep -Fq "$driver_library" /proc/"$genkan_pid"/maps; then
-    cat "$run_dir/cage.log"
-    echo "Genkan neither opened its DRM node nor retained $driver_library on $label" >&2
+  if [[ -n $unexpected_dri ]]; then
+    printf '%s' "$unexpected_dri" >&2
+    echo "$label opened a DRM node belonging to another adapter" >&2
     exit 1
   fi
-  if [[ $vendor == 1002 ]] && { ((found_nvidia != 0)) || grep -Fiq nvidia /proc/"$genkan_pid"/maps; }; then
-    grep -Fi nvidia /proc/"$genkan_pid"/maps >&2 || true
-    for fd in /proc/"$genkan_pid"/fd/*; do
-      target=$(readlink "$fd" 2>/dev/null || true)
-      [[ $target == /dev/nvidia* ]] && printf '%s -> %s\n' "$fd" "$target" >&2
-    done
+  if [[ $vendor == 1002 ]] && ((found_nvidia != 0)); then
     echo "The AMD-only run unexpectedly loaded or opened an NVIDIA driver" >&2
     exit 1
   fi
-  if ((found_expected == 0)); then
-    echo "$label loaded $driver_library without retaining a DRM device descriptor"
+  if [[ $vendor == 10de ]] && ((found_radeon != 0)); then
+    echo "The NVIDIA-only run unexpectedly loaded an AMD driver" >&2
+    exit 1
   fi
 
   stop_group
@@ -284,11 +292,9 @@ for vendor in 1002 10de; do
   if [[ $vendor == 1002 ]]; then
     driver=radeon
     icd=$icd_root/radeon_icd.${arch}.json
-    driver_library=libvulkan_radeon
   else
     driver=nvidia
     icd=$icd_root/nvidia_icd.json
-    driver_library=libGLX_nvidia
   fi
   if [[ ! -f $icd ]]; then
     echo "Missing Vulkan ICD for $driver: $icd" >&2
@@ -300,7 +306,6 @@ for vendor in 1002 10de; do
     "${vendor_card[$vendor]}" \
     "${vendor_render[$vendor]}" \
     "$icd" \
-    "$driver_library" \
     "${vendor_connected[$vendor]}" \
     "$driver-${vendor_card[$vendor]}"
   tested_vendors="$tested_vendors $vendor"
