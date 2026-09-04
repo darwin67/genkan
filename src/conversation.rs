@@ -1,6 +1,7 @@
 use zeroize::Zeroize;
 
 const MAX_TEXT_CHARS: usize = 512;
+const MAX_INPUT_BYTES: usize = MAX_TEXT_CHARS * 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Attempt(u64);
@@ -57,7 +58,7 @@ impl std::fmt::Debug for Conversation {
 impl Conversation {
     pub(crate) fn new() -> Self {
         Self {
-            input: String::new(),
+            input: response_buffer(),
             prompt: "Password".into(),
             message: None,
             message_is_error: false,
@@ -120,8 +121,10 @@ impl Conversation {
         secret: bool,
         status: Status,
     ) -> Self {
+        let mut bounded_input = response_buffer();
+        append_bounded(&mut bounded_input, &input);
         Self {
-            input,
+            input: bounded_input,
             prompt: clean_prompt(&prompt),
             message: message.map(|message| bounded_text(&message)),
             message_is_error,
@@ -135,8 +138,8 @@ impl Conversation {
         if self.status != Status::Waiting {
             return false;
         }
-        self.input.zeroize();
-        value.clone_into(&mut self.input);
+        self.clear_response();
+        append_bounded(&mut self.input, value);
         true
     }
 
@@ -144,13 +147,23 @@ impl Conversation {
         if self.status != Status::Waiting {
             return false;
         }
-        let remaining = MAX_TEXT_CHARS.saturating_sub(self.input.chars().count());
-        self.input.extend(value.chars().take(remaining));
-        true
+        let previous = self.input.len();
+        append_bounded(&mut self.input, value);
+        self.input.len() != previous
     }
 
     pub(crate) fn pop_input(&mut self) -> bool {
-        self.status == Status::Waiting && self.input.pop().is_some()
+        if self.status != Status::Waiting {
+            return false;
+        }
+        let Some((new_length, _)) = self.input.char_indices().next_back() else {
+            return false;
+        };
+        // SAFETY: the selected suffix starts on a character boundary and is
+        // zeroized before truncation makes it inaccessible.
+        unsafe { self.input.as_bytes_mut()[new_length..].zeroize() };
+        self.input.truncate(new_length);
+        true
     }
 
     pub(crate) fn submit(&mut self) -> Option<(Attempt, String)> {
@@ -158,7 +171,8 @@ impl Conversation {
             return None;
         }
         self.status = Status::Submitting;
-        Some((self.attempt, std::mem::take(&mut self.input)))
+        let response = std::mem::replace(&mut self.input, response_buffer());
+        Some((self.attempt, response))
     }
 
     pub(crate) fn receive(&mut self, attempt: Attempt, response: Response) -> Option<Effect> {
@@ -213,6 +227,10 @@ impl Conversation {
     pub(crate) fn clear_response(&mut self) {
         self.input.zeroize();
         self.input.clear();
+        if self.input.capacity() < MAX_INPUT_BYTES {
+            self.input
+                .reserve_exact(MAX_INPUT_BYTES - self.input.capacity());
+        }
     }
 }
 
@@ -225,6 +243,21 @@ impl Drop for Conversation {
 impl Attempt {
     fn next(self) -> Self {
         Self(self.0.wrapping_add(1))
+    }
+}
+
+fn response_buffer() -> String {
+    String::with_capacity(MAX_INPUT_BYTES)
+}
+
+fn append_bounded(target: &mut String, value: &str) {
+    let mut characters = target.chars().count();
+    for character in value.chars() {
+        if characters == MAX_TEXT_CHARS || target.len() + character.len_utf8() > MAX_INPUT_BYTES {
+            break;
+        }
+        target.push(character);
+        characters += 1;
     }
 }
 
@@ -457,5 +490,28 @@ mod tests {
             clean_prompt(&format!("{}:", "x".repeat(600))),
             bounded_text(&"x".repeat(600))
         );
+    }
+
+    #[test]
+    fn response_storage_never_reallocates_while_editing_or_submitting() {
+        let mut conversation = Conversation::new();
+        let attempt = conversation.attempt();
+        conversation.receive(
+            attempt,
+            Response::Prompt {
+                secret: true,
+                message: "Password".into(),
+            },
+        );
+        let capacity = conversation.input.capacity();
+
+        assert!(conversation.push_input(&"界".repeat(MAX_TEXT_CHARS)));
+        assert_eq!(conversation.input.capacity(), capacity);
+        assert!(conversation.input.len() <= MAX_INPUT_BYTES);
+        assert!(conversation.pop_input());
+        assert_eq!(conversation.input.capacity(), capacity);
+        let (_, response) = conversation.submit().unwrap();
+        assert_eq!(response.capacity(), capacity);
+        assert_eq!(conversation.input.capacity(), capacity);
     }
 }

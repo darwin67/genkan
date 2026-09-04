@@ -1,12 +1,14 @@
 use std::fmt;
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::time::Instant;
 
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
 const MAGIC: [u8; 4] = *b"GNKA";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const HEADER_BYTES: usize = 10;
 const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024;
@@ -22,17 +24,18 @@ const FAILURE: u8 = 6;
 const RESPONSE: u8 = 7;
 const CANCEL: u8 = 8;
 const RETRY: u8 = 9;
+const BEGIN: u8 = 10;
 
 #[derive(PartialEq, Eq)]
 pub struct Secret(Zeroizing<Vec<u8>>);
 
 impl Secret {
     pub fn new(value: impl Into<Vec<u8>>) -> Result<Self, ProtocolError> {
-        let value = value.into();
+        let value = Zeroizing::new(value.into());
         if value.len() > MAX_RESPONSE_BYTES || value.contains(&0) {
             return Err(ProtocolError::InvalidPayload);
         }
-        Ok(Self(Zeroizing::new(value)))
+        Ok(Self(value))
     }
 
     pub fn expose(&self) -> &[u8] {
@@ -63,6 +66,7 @@ pub enum Message {
     Response { id: u64, value: Secret },
     Cancel,
     Retry,
+    Begin,
 }
 
 #[derive(Debug, Error)]
@@ -85,9 +89,9 @@ impl Connection {
     }
 
     pub fn send(&mut self, message: &Message) -> Result<(), ProtocolError> {
-        let (kind, mut payload) = encode(message)?;
+        let (kind, payload) = encode(message)?;
+        let payload = Zeroizing::new(payload);
         if payload.len() > MAX_PAYLOAD_BYTES {
-            payload.zeroize();
             return Err(ProtocolError::InvalidPayload);
         }
         let mut header = [0_u8; HEADER_BYTES];
@@ -96,14 +100,24 @@ impl Connection {
         header[5] = kind;
         header[6..].copy_from_slice(&(payload.len() as u32).to_be_bytes());
         self.stream.write_all(&header)?;
-        let result = self.stream.write_all(&payload);
-        payload.zeroize();
-        result.map_err(Into::into)
+        self.stream.write_all(&payload).map_err(Into::into)
+    }
+
+    pub fn shutdown(&self) -> Result<(), ProtocolError> {
+        self.stream.shutdown(Shutdown::Both).map_err(Into::into)
     }
 
     pub fn receive(&mut self) -> Result<Message, ProtocolError> {
+        self.receive_before(None)
+    }
+
+    pub fn receive_with_deadline(&mut self, deadline: Instant) -> Result<Message, ProtocolError> {
+        self.receive_before(Some(deadline))
+    }
+
+    fn receive_before(&mut self, deadline: Option<Instant>) -> Result<Message, ProtocolError> {
         let mut header = [0_u8; HEADER_BYTES];
-        read_exact_or_closed(&mut self.stream, &mut header)?;
+        read_exact_or_closed(&mut self.stream, &mut header, deadline)?;
         if header[..4] != MAGIC || header[4] != VERSION {
             return Err(ProtocolError::InvalidPayload);
         }
@@ -112,17 +126,34 @@ impl Connection {
             return Err(ProtocolError::InvalidPayload);
         }
         let mut payload = Zeroizing::new(vec![0_u8; length]);
-        read_exact_or_closed(&mut self.stream, &mut payload)?;
+        read_exact_or_closed(&mut self.stream, &mut payload, deadline)?;
         decode(header[5], &payload)
     }
 }
 
-fn read_exact_or_closed(stream: &mut UnixStream, bytes: &mut [u8]) -> Result<(), ProtocolError> {
-    match stream.read_exact(bytes) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Err(ProtocolError::Closed),
-        Err(error) => Err(error.into()),
+fn read_exact_or_closed(
+    stream: &mut UnixStream,
+    mut bytes: &mut [u8],
+    deadline: Option<Instant>,
+) -> Result<(), ProtocolError> {
+    while !bytes.is_empty() {
+        if let Some(deadline) = deadline {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::TimedOut, "protocol deadline elapsed")
+                })?;
+            stream.set_read_timeout(Some(remaining))?;
+        }
+        match stream.read(bytes) {
+            Ok(0) => return Err(ProtocolError::Closed),
+            Ok(count) => bytes = &mut bytes[count..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
     }
+    Ok(())
 }
 
 fn encode(message: &Message) -> Result<(u8, Vec<u8>), ProtocolError> {
@@ -149,6 +180,7 @@ fn encode(message: &Message) -> Result<(u8, Vec<u8>), ProtocolError> {
         }
         Message::Cancel => (CANCEL, Vec::new()),
         Message::Retry => (RETRY, Vec::new()),
+        Message::Begin => (BEGIN, Vec::new()),
     };
     Ok(encoded)
 }
@@ -179,6 +211,7 @@ fn decode(kind: u8, payload: &[u8]) -> Result<Message, ProtocolError> {
         }
         CANCEL if payload.is_empty() => Ok(Message::Cancel),
         RETRY if payload.is_empty() => Ok(Message::Retry),
+        BEGIN if payload.is_empty() => Ok(Message::Begin),
         _ => Err(ProtocolError::InvalidPayload),
     }
 }
@@ -240,6 +273,7 @@ mod tests {
             },
             Message::Cancel,
             Message::Retry,
+            Message::Begin,
         ];
         for message in messages {
             let received = round_trip(message);
@@ -253,7 +287,7 @@ mod tests {
         assert!(Secret::new(b"nul\0byte".to_vec()).is_err());
 
         let (mut sender, receiver) = UnixStream::pair().unwrap();
-        sender.write_all(b"GNKA\x01\x02\0\0\x40\x01").unwrap();
+        sender.write_all(b"GNKA\x02\x02\0\0\x40\x01").unwrap();
         assert!(matches!(
             Connection::new(receiver).receive(),
             Err(ProtocolError::InvalidPayload)
@@ -264,7 +298,7 @@ mod tests {
     fn handles_fragmented_header_and_payload_reads() {
         let (mut sender, receiver) = UnixStream::pair().unwrap();
         let thread = std::thread::spawn(move || {
-            for byte in b"GNKA\x01\x03\0\0\0\x05hello" {
+            for byte in b"GNKA\x02\x03\0\0\0\x05hello" {
                 sender.write_all(&[*byte]).unwrap();
             }
         });
@@ -278,8 +312,8 @@ mod tests {
     #[test]
     fn rejects_truncated_unknown_and_directionally_invalid_frames() {
         for bytes in [
-            b"GNKA\x01\x03\0\0\0\x05hi".as_slice(),
-            b"GNKA\x01\xff\0\0\0\0".as_slice(),
+            b"GNKA\x02\x03\0\0\0\x05hi".as_slice(),
+            b"GNKA\x02\xff\0\0\0\0".as_slice(),
             b"NOPE\x01\x05\0\0\0\0".as_slice(),
         ] {
             let (mut sender, receiver) = UnixStream::pair().unwrap();

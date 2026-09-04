@@ -120,8 +120,22 @@ the hidden one-shot authorization only after compositor confirmation.
 Keyboard handling adds SCTK's `xkbcommon` feature and the exact `xkbcommon`
 crate version recorded by `Cargo.lock`. PAM runs only in the separately
 installed, unprivileged `genkan-lock-auth` worker. Its bounded versioned
-socketpair protocol is implemented in `crates/lock-auth`; responses neither
+socketpair protocol is implemented in `crates/lock-auth`. Protocol version 2
+requires the compositor-gated `Begin` exchange; version 1 peers are rejected
+before Wayland startup. Responses neither
 implement revealing diagnostics nor cross a public socket.
+The parent validates the worker's bounded `Ready` identity before requesting
+the compositor lock, and sends `Begin` only after the compositor confirms that
+lock. Worker processes are launched with `posix_spawn`, inherit only their
+protocol descriptor, and verify the parent while installing a parent-death
+signal. The parent owns each process through a pidfd and synchronously kills
+and reaps it on cancellation, so a cancelled PAM transaction cannot outlive
+its attempt or be confused with a reused process ID.
+
+Every editable response has fixed 2048-byte capacity and is cleared in place
+when edited, submitted, cancelled, or replaced. Both echo-off and echo-on PAM
+responses remain masked in the rendered presentation; the worker bounds PAM
+message and username scans before copying them.
 The worker's local PAM trampoline clears every application-owned Rust response
 and every C response allocated on an error path. After a successful callback,
 Linux-PAM owns the response array and its disposal; the PAM ABI provides no

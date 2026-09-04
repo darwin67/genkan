@@ -12,6 +12,10 @@ use zeroize::Zeroize;
 use crate::conversation::{Conversation, Effect, Response, Status};
 use crate::wallpaper;
 
+const MAX_AUTH_EVENTS_PER_REFRESH: usize = 32;
+#[cfg(test)]
+static PROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
     pub(crate) wallpaper: wallpaper::Settings,
@@ -40,8 +44,6 @@ struct LockerPresentation {
     prompt_id: Option<u64>,
     confirmed: bool,
     authorized: bool,
-    retry_pending: bool,
-    pending_attempt: Option<crate::conversation::Attempt>,
     frame: Option<RgbaFrame>,
     fonts: FontSystem,
     glyphs: SwashCache,
@@ -63,8 +65,6 @@ impl LockerPresentation {
             prompt_id: None,
             confirmed: false,
             authorized: false,
-            retry_pending: false,
-            pending_attempt: None,
             frame: None,
             fonts: FontSystem::new(),
             glyphs: SwashCache::new(),
@@ -78,7 +78,7 @@ impl LockerPresentation {
             return false;
         }
         let mut changed = false;
-        loop {
+        for _ in 0..MAX_AUTH_EVENTS_PER_REFRESH {
             let event = self
                 .auth
                 .as_ref()
@@ -90,22 +90,6 @@ impl LockerPresentation {
                 .as_ref()
                 .map(|(attempt, _)| *attempt)
                 .expect("active client");
-            if matches!(event, auth::Event::Failure) && self.retry_pending {
-                self.retry_pending = false;
-                if self
-                    .auth
-                    .as_mut()
-                    .is_none_or(|(_, client)| client.retry().is_err())
-                {
-                    self.conversation
-                        .fail("Authentication worker unavailable".into());
-                } else if let (Some(next), Some((attempt, _))) =
-                    (self.pending_attempt.take(), self.auth.as_mut())
-                {
-                    *attempt = next;
-                }
-                continue;
-            }
             if !self.conversation.accepts(attempt) {
                 continue;
             }
@@ -149,34 +133,47 @@ impl LockerPresentation {
     }
 
     fn retry(&mut self) -> bool {
-        let Some((attempt, client)) = self.auth.as_mut() else {
-            return false;
-        };
         let next = self.conversation.begin_attempt();
-        if client.retry().is_err() {
-            self.conversation
-                .fail("Authentication worker unavailable".into());
+        if let Some((attempt, client)) = self.auth.as_mut() {
+            if client.retry().is_ok() {
+                *attempt = next;
+                self.prompt_id = None;
+                return true;
+            }
         }
-        *attempt = next;
-        self.pending_attempt = None;
+        self.replace_worker(next);
         self.prompt_id = None;
         true
     }
 
     fn cancel_attempt(&mut self) -> bool {
-        let Some((_, client)) = self.auth.as_mut() else {
+        let Some((_, mut client)) = self.auth.take() else {
             return false;
         };
         let next = self.conversation.begin_attempt();
-        if client.cancel_attempt().is_err() {
-            self.conversation
-                .fail("Authentication worker unavailable".into());
-        } else {
-            self.retry_pending = true;
-        }
-        self.pending_attempt = Some(next);
+        client.cancel();
+        self.replace_worker(next);
         self.prompt_id = None;
         true
+    }
+
+    fn replace_worker(&mut self, attempt: crate::conversation::Attempt) {
+        if let Some((_, mut client)) = self.auth.take() {
+            client.cancel();
+        }
+        match auth::Client::start(&self.identity) {
+            Ok(mut replacement) => match replacement.begin() {
+                Ok(()) => self.auth = Some((attempt, replacement)),
+                Err(_) => {
+                    replacement.cancel();
+                    self.conversation
+                        .fail("Authentication worker unavailable".into());
+                }
+            },
+            Err(_) => self
+                .conversation
+                .fail("Authentication worker unavailable".into()),
+        }
     }
 
     fn rebuild(&mut self) {
@@ -231,10 +228,21 @@ impl Presentation for LockerPresentation {
 
     fn lock_confirmed(&mut self) {
         self.confirmed = true;
+        if self
+            .auth
+            .as_mut()
+            .is_none_or(|(_, client)| client.begin().is_err())
+        {
+            self.conversation
+                .fail("Authentication worker unavailable".into());
+        }
         self.rebuild();
     }
 
     fn input(&mut self, input: Input) -> bool {
+        if !authentication_input_enabled(self.confirmed) {
+            return false;
+        }
         let changed = match input {
             Input::Text(mut text) => {
                 let changed = self.conversation.push_input(&text);
@@ -272,11 +280,15 @@ impl Presentation for LockerPresentation {
     }
 }
 
+fn authentication_input_enabled(confirmed: bool) -> bool {
+    confirmed
+}
+
 pub(crate) fn run(config: Config) -> Result<(), Error> {
     let identity = identity::Identity::current()?;
+    let ready_fd = config.ready_fd.map(adopt_ready_fd).transpose()?;
     // Start the worker before wallpaper decoding or Wayland can create threads.
     let authentication = auth::Client::start(&identity)?;
-    let ready_fd = config.ready_fd.map(adopt_ready_fd).transpose()?;
     let runtime_identity = genkan_session_lock::Identity::new(
         identity.uid,
         identity.username.clone(),
@@ -353,17 +365,17 @@ fn render_authentication(
         [255, 255, 255, 255],
     );
     if confirmed {
-        let input = if conversation.is_secret() {
-            "•".repeat(conversation.input().chars().count())
-        } else {
-            conversation.input().to_owned()
-        };
+        // Treat visible PAM responses as credentials too. Keeping all mutable
+        // responses out of the text renderer guarantees its internal scratch
+        // buffers never retain application-owned response text.
+        let input = "•".repeat(conversation.input().chars().count());
+        let (input_margin, input_width) = input_layout(panel_width);
         blend_rect(
             pixels,
             width,
-            left + 70,
+            left + input_margin,
             top + 172,
-            panel_width - 140,
+            input_width,
             52,
             [7, 10, 24, 220],
         );
@@ -396,6 +408,11 @@ fn render_authentication(
             );
         }
     }
+}
+
+fn input_layout(panel_width: u32) -> (u32, u32) {
+    let margin = (panel_width / 9).min(70);
+    (margin, panel_width.saturating_sub(margin.saturating_mul(2)))
 }
 
 fn blend_rect(
@@ -532,6 +549,7 @@ mod tests {
 
     #[test]
     fn inherited_readiness_descriptor_is_transferred_to_typed_ownership() {
+        let _guard = PROCESS_TEST_LOCK.lock().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();
         let original = writer.into_raw_fd();
 
@@ -550,6 +568,7 @@ mod tests {
 
     #[test]
     fn read_only_readiness_descriptors_are_rejected_and_closed() {
+        let _guard = PROCESS_TEST_LOCK.lock().unwrap();
         let original = File::open("/dev/null").unwrap().into_raw_fd();
 
         assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
@@ -581,5 +600,18 @@ mod tests {
         assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
         // SAFETY: F_GETFD only inspects the descriptor integer.
         assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+    }
+
+    #[test]
+    fn authentication_layout_handles_tiny_frames_without_underflow() {
+        assert_eq!(input_layout(1), (0, 1));
+        assert_eq!(input_layout(139), (15, 109));
+        assert_eq!(input_layout(620), (68, 484));
+    }
+
+    #[test]
+    fn authentication_input_is_disabled_before_compositor_confirmation() {
+        assert!(!authentication_input_enabled(false));
+        assert!(authentication_input_enabled(true));
     }
 }

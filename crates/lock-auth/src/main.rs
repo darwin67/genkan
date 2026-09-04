@@ -11,6 +11,9 @@ use pam_sys2::{
 use zeroize::Zeroize;
 
 const SERVICE: &str = "genkan-lock";
+const INITIAL_NSS_BUFFER: usize = 1024;
+const MAX_NSS_BUFFER: usize = 1024 * 1024;
+const MAX_USERNAME_BYTES: usize = 256 * 4;
 
 fn main() {
     if run().is_err() {
@@ -19,10 +22,13 @@ fn main() {
 }
 
 fn run() -> Result<(), ()> {
-    let fd = parse_fd()?;
+    let (fd, parent_pid) = parse_arguments()?;
+    bind_to_parent(parent_pid)?;
     // SAFETY: this private binary is spawned with exclusive ownership of the
     // inherited descriptor, which is converted exactly once.
     let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    set_close_on_exec(fd)?;
+    close_extra_descriptors()?;
     let uid = unsafe { libc::getuid() };
     if unsafe { libc::geteuid() } != uid || unsafe { libc::getegid() } != unsafe { libc::getgid() }
     {
@@ -36,6 +42,7 @@ fn run() -> Result<(), ()> {
             username: username.clone(),
         })
         .map_err(|_| ())?;
+    await_begin(&mut connection)?;
 
     loop {
         let mut conversation = PamConversation {
@@ -56,16 +63,65 @@ fn run() -> Result<(), ()> {
     }
 }
 
-fn parse_fd() -> Result<RawFd, ()> {
+fn await_begin(connection: &mut Connection) -> Result<(), ()> {
+    (connection.receive().map_err(|_| ())? == Message::Begin)
+        .then_some(())
+        .ok_or(())
+}
+
+fn parse_arguments() -> Result<(RawFd, libc::pid_t), ()> {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
-    let flag = arguments.next().ok_or(())?;
-    let value = arguments.next().ok_or(())?;
-    if flag != "--fd" || arguments.next().is_some() {
+    if arguments.next().ok_or(())? != "--fd" {
         return Err(());
     }
-    let value = value.to_str().ok_or(())?.parse::<RawFd>().map_err(|_| ())?;
-    (value > 2).then_some(value).ok_or(())
+    let fd = arguments
+        .next()
+        .and_then(|value| value.to_str().and_then(|value| value.parse().ok()))
+        .filter(|fd: &RawFd| *fd == 3)
+        .ok_or(())?;
+    if arguments.next().ok_or(())? != "--parent-pid" {
+        return Err(());
+    }
+    let parent_pid = arguments
+        .next()
+        .and_then(|value| value.to_str().and_then(|value| value.parse().ok()))
+        .filter(|pid: &libc::pid_t| *pid > 1)
+        .ok_or(())?;
+    if arguments.next().is_some() {
+        return Err(());
+    }
+    Ok((fd, parent_pid))
+}
+
+fn bind_to_parent(parent_pid: libc::pid_t) -> Result<(), ()> {
+    // SAFETY: PR_SET_PDEATHSIG changes only this process. Checking getppid
+    // afterward closes the race where the parent exits before prctl.
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0
+        || unsafe { libc::getppid() } != parent_pid
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn close_extra_descriptors() -> Result<(), ()> {
+    // The protocol socket is descriptor 3. No PAM module should observe any
+    // other descriptor inherited from the locker, especially its readiness
+    // pipe. Fail closed on kernels too old to provide close_range.
+    // SAFETY: close_range closes only descriptors owned by this process.
+    let status = unsafe { libc::syscall(libc::SYS_close_range, 4_u32, u32::MAX, 0_u32) };
+    (status == 0).then_some(()).ok_or(())
+}
+
+fn set_close_on_exec(fd: RawFd) -> Result<(), ()> {
+    // Keep the private conversation out of helpers exec'd by PAM modules.
+    // SAFETY: fd is the live protocol descriptor adopted above.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } != 0 {
+        return Err(());
+    }
+    Ok(())
 }
 
 struct PamConversation<'a> {
@@ -75,13 +131,12 @@ struct PamConversation<'a> {
 }
 
 impl PamConversation<'_> {
-    fn prompt(&mut self, prompt: &CStr, secret: bool) -> Result<Secret, ()> {
+    fn prompt(&mut self, text: String, secret: bool) -> Result<Secret, ()> {
         if self.next_id > MAX_MESSAGES {
             return Err(());
         }
         let id = self.next_id;
         self.next_id += 1;
-        let text = bounded_message(prompt);
         self.connection
             .send(&Message::Prompt { id, secret, text })
             .map_err(|_| ())?;
@@ -98,11 +153,11 @@ impl PamConversation<'_> {
         }
     }
 
-    fn notice(&mut self, message: &CStr, error: bool) {
+    fn notice(&mut self, text: String, error: bool) {
         let message = if error {
-            Message::Error(bounded_message(message))
+            Message::Error(text)
         } else {
-            Message::Info(bounded_message(message))
+            Message::Info(text)
         };
         let _ = self.connection.send(&message);
     }
@@ -192,8 +247,11 @@ unsafe fn pam_conversation_inner(
         if message.is_null() || unsafe { (**message).msg }.is_null() {
             return PAM_CONV_ERR;
         }
-        // SAFETY: PAM message text is NUL-terminated for the callback.
-        let text = unsafe { CStr::from_ptr((**message).msg) };
+        // SAFETY: PAM message text is readable and NUL-terminated. The helper
+        // scans and copies no more than the protocol message bound.
+        let Some(text) = (unsafe { bounded_message((**message).msg) }) else {
+            return PAM_CONV_ERR;
+        };
         let style = unsafe { (**message).msg_style };
         match style {
             PAM_PROMPT_ECHO_ON | PAM_PROMPT_ECHO_OFF => {
@@ -266,7 +324,7 @@ unsafe fn clear_responses(responses: &mut [pam_response]) {
             let length = unsafe { libc::strlen(response.resp) };
             // SAFETY: overwrite the allocation before releasing it.
             unsafe {
-                std::ptr::write_bytes(response.resp.cast::<u8>(), 0, length);
+                std::slice::from_raw_parts_mut(response.resp.cast::<u8>(), length).zeroize();
                 libc::free(response.resp.cast())
             };
             response.resp = std::ptr::null_mut();
@@ -283,69 +341,107 @@ fn pam_uid(handle: *mut pam_handle_t) -> Option<u32> {
         return None;
     }
     // SAFETY: PAM returned a NUL-terminated user name for this live handle.
-    username_uid(unsafe { CStr::from_ptr(username) }.to_bytes())
+    username_uid(&unsafe { bounded_username(username) }?)
 }
 
-fn bounded_message(message: &CStr) -> String {
-    let message = String::from_utf8_lossy(message.to_bytes());
-    let mut result = message.chars().take(MAX_MESSAGE_BYTES).collect::<String>();
+unsafe fn bounded_username(username: *const libc::c_char) -> Option<Vec<u8>> {
+    // Scan one byte beyond the accepted bound so an unterminated or oversized
+    // PAM_USER is rejected without unbounded preprocessing.
+    let length = unsafe { libc::strnlen(username, MAX_USERNAME_BYTES + 1) };
+    if length > MAX_USERNAME_BYTES {
+        return None;
+    }
+    // SAFETY: strnlen found the terminator within the readable PAM string.
+    Some(unsafe { std::slice::from_raw_parts(username.cast::<u8>(), length) }.to_vec())
+}
+
+unsafe fn bounded_message(message: *const libc::c_char) -> Option<String> {
+    // Scan one byte beyond the accepted bound so an unterminated or oversized
+    // PAM message fails the whole conversation instead of being truncated.
+    let length = unsafe { libc::strnlen(message, MAX_MESSAGE_BYTES + 1) };
+    if length > MAX_MESSAGE_BYTES {
+        return None;
+    }
+    // SAFETY: strnlen established that these bytes precede either the bound or
+    // the first NUL in the valid PAM message.
+    let bytes = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length) };
+    let message = String::from_utf8_lossy(bytes);
+    let mut result = message.into_owned();
     while result.len() > MAX_MESSAGE_BYTES {
         result.pop();
     }
-    result
+    Some(result)
 }
 
 fn username_for_uid(uid: u32) -> Option<String> {
-    let mut buffer = vec![0_u8; 16 * 1024];
-    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut result = std::ptr::null_mut();
-    // SAFETY: all output storage remains live for this call.
-    let status = unsafe {
-        libc::getpwuid_r(
-            uid,
-            entry.as_mut_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            &mut result,
-        )
-    };
-    if status != 0 || result.is_null() {
-        return None;
+    let mut size = INITIAL_NSS_BUFFER;
+    loop {
+        let mut buffer = vec![0_u8; size];
+        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result = std::ptr::null_mut();
+        // SAFETY: all output storage remains live for this call.
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if let Some(next) = next_nss_buffer(status, size) {
+            size = next;
+            continue;
+        }
+        if status != 0 || result.is_null() {
+            return None;
+        }
+        // SAFETY: successful NSS lookup initialized the entry and its
+        // NUL-terminated name points into the live buffer.
+        return unsafe { CStr::from_ptr(entry.assume_init().pw_name) }
+            .to_str()
+            .ok()
+            .map(str::to_owned);
     }
-    // SAFETY: successful NSS lookup initialized the entry and its NUL-terminated fields.
-    let entry = unsafe { entry.assume_init() };
-    // SAFETY: pw_name points into the live NSS buffer.
-    unsafe { CStr::from_ptr(entry.pw_name) }
-        .to_str()
-        .ok()
-        .map(str::to_owned)
 }
 
 fn username_uid(username: &[u8]) -> Option<u32> {
     let username = CString::new(username).ok()?;
-    let mut buffer = vec![0_u8; 16 * 1024];
-    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut result = std::ptr::null_mut();
-    // SAFETY: all input and output storage remains live for this call.
-    let status = unsafe {
-        libc::getpwnam_r(
-            username.as_ptr(),
-            entry.as_mut_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            &mut result,
-        )
-    };
-    if status != 0 || result.is_null() {
-        return None;
+    let mut size = INITIAL_NSS_BUFFER;
+    loop {
+        let mut buffer = vec![0_u8; size];
+        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result = std::ptr::null_mut();
+        // SAFETY: all input and output storage remains live for this call.
+        let status = unsafe {
+            libc::getpwnam_r(
+                username.as_ptr(),
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if let Some(next) = next_nss_buffer(status, size) {
+            size = next;
+            continue;
+        }
+        if status != 0 || result.is_null() {
+            return None;
+        }
+        // SAFETY: successful NSS lookup initialized the entry.
+        return Some(unsafe { entry.assume_init() }.pw_uid);
     }
-    // SAFETY: successful NSS lookup initialized the entry.
-    Some(unsafe { entry.assume_init() }.pw_uid)
+}
+
+fn next_nss_buffer(status: libc::c_int, size: usize) -> Option<usize> {
+    (status == libc::ERANGE && size < MAX_NSS_BUFFER).then(|| (size * 2).min(MAX_NSS_BUFFER))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::AsRawFd;
 
     #[test]
     fn requests_a_distinct_response_for_each_pam_prompt() {
@@ -387,11 +483,14 @@ mod tests {
         });
 
         assert_eq!(
-            conversation.prompt(c"Login", false).unwrap().expose(),
+            conversation.prompt("Login".into(), false).unwrap().expose(),
             b"alice"
         );
         assert_eq!(
-            conversation.prompt(c"Password", true).unwrap().expose(),
+            conversation
+                .prompt("Password".into(), true)
+                .unwrap()
+                .expose(),
             b"correct horse"
         );
         responder.join().unwrap();
@@ -415,17 +514,25 @@ mod tests {
             ui.send(&Message::Cancel).unwrap();
         });
 
-        assert!(conversation.prompt(c"Password", true).is_err());
+        assert!(conversation.prompt("Password".into(), true).is_err());
         assert!(conversation.cancelled);
         responder.join().unwrap();
     }
 
     #[test]
-    fn bounds_lossy_pam_messages_without_splitting_utf8() {
-        let message = CString::new("界".repeat(MAX_MESSAGE_BYTES)).unwrap();
-        let bounded = bounded_message(&message);
+    fn bounds_lossy_pam_messages_without_truncating_oversized_input() {
+        let message = CString::new("界".repeat(MAX_MESSAGE_BYTES / 3)).unwrap();
+        let bounded = unsafe { bounded_message(message.as_ptr()) }.unwrap();
         assert!(bounded.len() <= MAX_MESSAGE_BYTES);
         assert!(bounded.is_char_boundary(bounded.len()));
+
+        let accepted = CString::new(vec![b'a'; MAX_MESSAGE_BYTES]).unwrap();
+        assert_eq!(
+            unsafe { bounded_message(accepted.as_ptr()) }.unwrap().len(),
+            MAX_MESSAGE_BYTES
+        );
+        let rejected = CString::new(vec![b'a'; MAX_MESSAGE_BYTES + 1]).unwrap();
+        assert!(unsafe { bounded_message(rejected.as_ptr()) }.is_none());
     }
 
     #[test]
@@ -552,5 +659,54 @@ mod tests {
 
         assert_eq!(status, PAM_CONV_ERR);
         assert!(responses.is_null());
+    }
+
+    #[test]
+    fn authentication_requires_an_explicit_begin_message() {
+        for (message, expected) in [(Message::Begin, true), (Message::Retry, false)] {
+            let (worker, ui) = UnixStream::pair().unwrap();
+            let mut worker = Connection::new(worker);
+            let mut ui = Connection::new(ui);
+            ui.send(&message).unwrap();
+
+            assert_eq!(await_begin(&mut worker).is_ok(), expected);
+        }
+    }
+
+    #[test]
+    fn bounds_post_authentication_pam_username() {
+        let accepted = CString::new(vec![b'a'; MAX_USERNAME_BYTES]).unwrap();
+        let rejected = CString::new(vec![b'a'; MAX_USERNAME_BYTES + 1]).unwrap();
+
+        assert_eq!(
+            unsafe { bounded_username(accepted.as_ptr()) }
+                .unwrap()
+                .len(),
+            MAX_USERNAME_BYTES
+        );
+        assert!(unsafe { bounded_username(rejected.as_ptr()) }.is_none());
+    }
+
+    #[test]
+    fn nss_buffer_growth_stops_at_the_fixed_cap() {
+        assert_eq!(
+            next_nss_buffer(libc::ERANGE, INITIAL_NSS_BUFFER),
+            Some(INITIAL_NSS_BUFFER * 2)
+        );
+        assert_eq!(
+            next_nss_buffer(libc::ERANGE, MAX_NSS_BUFFER / 2 + 1),
+            Some(MAX_NSS_BUFFER)
+        );
+        assert_eq!(next_nss_buffer(libc::ERANGE, MAX_NSS_BUFFER), None);
+        assert_eq!(next_nss_buffer(0, INITIAL_NSS_BUFFER), None);
+    }
+
+    #[test]
+    fn protocol_descriptor_is_closed_across_exec() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        set_close_on_exec(stream.as_raw_fd()).unwrap();
+
+        let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
     }
 }

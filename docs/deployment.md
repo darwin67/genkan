@@ -69,6 +69,11 @@ The module does not configure an idle manager or replace a desktop
 environment's own locker. Its private authentication worker is unprivileged
 and is not installed setuid.
 
+The supported production lock runtime requires Linux 5.9 or newer and glibc
+2.34 or newer for pidfd, `close_range`, and descriptor-safe `posix_spawn`
+worker management. The pinned Nix package satisfies the userspace requirement;
+source builds on older systems fail closed before PAM authentication begins.
+
 greetd supplies `GREETD_SOCK`. Genkan handles each PAM prompt in sequence and
 then asks greetd to start the selected session with the Wayland XDG environment.
 If AccountsService, a valid session, or the greetd socket is unavailable,

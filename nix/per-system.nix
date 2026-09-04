@@ -189,6 +189,36 @@ let
     genkan = package;
     checkBaseline = false;
   };
+  moduleSystem = nixpkgs.lib.nixosSystem {
+    inherit system;
+    modules = [
+      ./module.nix
+      (
+        { pkgs, ... }:
+        {
+          programs.genkan = {
+            enable = true;
+            package = package;
+          };
+          # Avoid forcing nixpkgs' removed unversioned alias while evaluating
+          # the generated PAM rules; Genkan does not enable Kanidm.
+          services.kanidm.package = pkgs.kanidm_1_8;
+          system.stateVersion = "26.05";
+        }
+      )
+    ];
+  };
+  modulePamPolicy = pkgs.writeText "genkan-lock-pam-policy" (
+    moduleSystem.config.security.pam.services.genkan-lock.text
+  );
+  moduleCheck =
+    assert builtins.elem package moduleSystem.config.environment.systemPackages;
+    pkgs.runCommand "genkan-module-check" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
+      grep -F 'pam_unix.so' ${modulePamPolicy}
+      grep -F 'pam_deny.so' ${modulePamPolicy}
+      ! grep -F 'pam_permit.so' ${modulePamPolicy}
+      touch $out
+    '';
 in
 {
   inherit package devShell previewEvidenceCapture;
@@ -200,6 +230,7 @@ in
 
   checks = {
     inherit package;
+    module = moduleCheck;
     graphics-smoke = import ./tests/graphics-smoke.nix {
       inherit pkgs;
       genkan = package;
