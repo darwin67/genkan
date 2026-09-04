@@ -83,9 +83,13 @@ The packaged greeter animates Tahoe Beach by default. Operators can select
 
 `genkan lock` establishes and maintains an opaque compositor-owned lock on
 every output and reauthenticates the invoking real-UID account through the
-host's `genkan-lock` PAM service. Import `nixosModules.default` and enable
-`programs.genkan` to install the package and PAM policy. Idle and suspend
-integration remains Phase 6 of [RFD 3](rfd/0003/README.adoc).
+host's `genkan-lock` PAM service. `genkan lock --daemonize` starts a fresh
+foreground child and returns only after compositor confirmation, allowing a
+delay-inhibiting idle manager to lock safely before suspend. Import
+`nixosModules.default` and enable `programs.genkan` to install the package and
+PAM policy; Genkan does not replace the desktop's locker automatically. See
+the [deployment guide](docs/deployment.md#session-locking-and-suspend) for
+supported compositors, swayidle setup, and fail-closed recovery.
 
 ## Documentation
 
