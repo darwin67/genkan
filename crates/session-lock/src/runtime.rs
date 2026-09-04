@@ -11,6 +11,10 @@ use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::registry_handlers;
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+};
+use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::session_lock::{
     SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
     SessionLockSurfaceConfigure,
@@ -21,10 +25,12 @@ use smithay_client_toolkit::shm::{
 };
 use thiserror::Error;
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_output, wl_region, wl_shm, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_region, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 
-use super::{Action, Config, Event, Presentation, Refresh, RgbaFrame, State};
+use super::{
+    Action, Config, Event, Input, Presentation, Refresh, RgbaFrame, State, UnlockAuthorization,
+};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const FALLBACK_RGB: [u8; 3] = [5, 9, 24];
@@ -108,11 +114,12 @@ impl RedrawState {
 }
 
 struct Runtime {
-    #[cfg(feature = "lock-test")]
     conn: Connection,
     compositor: CompositorState,
     output_state: OutputState,
     registry_state: RegistryState,
+    seat_state: SeatState,
+    keyboards: Vec<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
     shm: Shm,
     session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
@@ -139,11 +146,12 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
     let shm = Shm::bind(&globals, &qh)
         .map_err(|error| Error::MissingProtocol(format!("wl_shm ({error})")))?;
     let mut runtime = Runtime {
-        #[cfg(feature = "lock-test")]
         conn: conn.clone(),
         compositor,
         output_state: OutputState::new(&globals, &qh),
         registry_state: RegistryState::new(&globals),
+        seat_state: SeatState::new(&globals, &qh),
+        keyboards: Vec::new(),
         shm,
         session_lock_state: SessionLockState::new(&globals, &qh),
         session_lock: None,
@@ -201,6 +209,24 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
             runtime.fail(error);
             break;
         }
+        let refresh = refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state);
+        if runtime.presentation.take_authorization() {
+            let action = runtime
+                .state
+                .authorize_unlock(UnlockAuthorization::authenticated());
+            runtime.apply(action);
+        }
+        if runtime.terminate {
+            break;
+        }
+        match refresh {
+            Refresh::Unchanged => {}
+            Refresh::Frame => runtime.redraw_all(&qh),
+            Refresh::Failed => {
+                eprintln!("genkan lock: presentation failed; retaining opaque fallback");
+                runtime.redraw_all(&qh);
+            }
+        }
         if let Err(error) = runtime.maintain_surfaces(&qh) {
             runtime.fail(error);
             break;
@@ -209,14 +235,6 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         runtime.advance_test_unlock();
         if runtime.terminate {
             break;
-        }
-        match refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state) {
-            Refresh::Unchanged => {}
-            Refresh::Frame => runtime.redraw_all(&qh),
-            Refresh::Failed => {
-                eprintln!("genkan lock: presentation failed; retaining opaque fallback");
-                runtime.redraw_all(&qh);
-            }
         }
     }
 
@@ -423,6 +441,10 @@ impl Runtime {
                         "could not report lock readiness: {error}"
                     )));
                 }
+                if !self.terminate {
+                    self.presentation.lock_confirmed();
+                    self.redraw_all_surfaces();
+                }
                 #[cfg(feature = "lock-test")]
                 if self.test_unlock_after_ready && !self.terminate {
                     self.test_unlock_at = Some(Instant::now() + TEST_UNLOCK_DELAY);
@@ -431,21 +453,17 @@ impl Runtime {
             Action::Abort => {
                 self.fail(Error::LockFinished);
             }
-            #[cfg(any(test, feature = "lock-test"))]
             Action::UnlockAndSynchronize => {
-                #[cfg(feature = "lock-test")]
-                {
-                    eprintln!("genkan lock: test authorization accepted; unlocking");
-                    if let Some(lock) = self.session_lock.take() {
-                        lock.unlock();
-                        if let Err(error) = self.conn.roundtrip() {
-                            self.fail(Error::Runtime(format!(
-                                "could not synchronize authorized unlock: {error}"
-                            )));
-                        }
+                eprintln!("genkan lock: authentication accepted; unlocking");
+                if let Some(lock) = self.session_lock.take() {
+                    lock.unlock();
+                    if let Err(error) = self.conn.roundtrip() {
+                        self.fail(Error::Runtime(format!(
+                            "could not synchronize authorized unlock: {error}"
+                        )));
                     }
-                    self.terminate = true;
                 }
+                self.terminate = true;
             }
         }
     }
@@ -454,6 +472,29 @@ impl Runtime {
         let _ = self.state.update(Event::RuntimeFailed);
         self.failure.get_or_insert(error);
         self.terminate = true;
+    }
+
+    fn redraw_all_surfaces(&mut self) {
+        for surface in &mut self.surfaces {
+            if surface.size.is_some() {
+                surface.redraw.request();
+            }
+        }
+    }
+
+    fn handle_key(&mut self, event: KeyEvent) {
+        let input = match event.keysym {
+            Keysym::BackSpace => Some(Input::Backspace),
+            Keysym::Return | Keysym::KP_Enter => Some(Input::Submit),
+            Keysym::Escape => Some(Input::Cancel),
+            _ => event
+                .utf8
+                .filter(|text| !text.chars().any(char::is_control))
+                .map(Input::Text),
+        };
+        if input.is_some_and(|input| self.presentation.input(input)) {
+            self.redraw_all_surfaces();
+        }
     }
 
     #[cfg(feature = "lock-test")]
@@ -634,7 +675,120 @@ impl ProvidesRegistryState for Runtime {
         &mut self.registry_state
     }
 
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
+}
+
+impl SeatHandler for Runtime {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Keyboard
+            && !self.keyboards.iter().any(|(known, _)| known == &seat)
+        {
+            match self.seat_state.get_keyboard(qh, &seat, None) {
+                Ok(keyboard) => self.keyboards.push((seat, keyboard)),
+                Err(error) => self.fail(Error::Runtime(format!(
+                    "could not acquire lock keyboard: {error}"
+                ))),
+            }
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Keyboard {
+            let mut retained = Vec::new();
+            for (known, keyboard) in self.keyboards.drain(..) {
+                if known != seat {
+                    retained.push((known, keyboard));
+                    continue;
+                }
+                keyboard.release();
+            }
+            self.keyboards = retained;
+        }
+    }
+
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
+    }
+}
+
+impl KeyboardHandler for Runtime {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: &wl_surface::WlSurface,
+        _: u32,
+        _: &[u32],
+        _: &[Keysym],
+    ) {
+    }
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+    }
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        self.handle_key(event);
+    }
+    fn repeat_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        self.handle_key(event);
+    }
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _: KeyEvent,
+    ) {
+    }
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _: Modifiers,
+        _: RawModifiers,
+        _: u32,
+    ) {
+    }
 }
 
 impl ShmHandler for Runtime {
@@ -646,6 +800,8 @@ impl ShmHandler for Runtime {
 smithay_client_toolkit::delegate_compositor!(Runtime);
 smithay_client_toolkit::delegate_output!(Runtime);
 smithay_client_toolkit::delegate_registry!(Runtime);
+smithay_client_toolkit::delegate_seat!(Runtime);
+smithay_client_toolkit::delegate_keyboard!(Runtime);
 smithay_client_toolkit::delegate_session_lock!(Runtime);
 smithay_client_toolkit::delegate_shm!(Runtime);
 wayland_client::delegate_noop!(Runtime: ignore wl_region::WlRegion);

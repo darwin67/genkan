@@ -1,3 +1,5 @@
+use zeroize::Zeroize;
+
 const MAX_TEXT_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +29,6 @@ pub(crate) enum Effect {
     Failed,
 }
 
-#[derive(Debug)]
 pub(crate) struct Conversation {
     input: String,
     prompt: String,
@@ -36,6 +37,21 @@ pub(crate) struct Conversation {
     secret: bool,
     status: Status,
     attempt: Attempt,
+}
+
+impl std::fmt::Debug for Conversation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Conversation")
+            .field("input", &"[REDACTED]")
+            .field("prompt", &self.prompt)
+            .field("message", &self.message)
+            .field("message_is_error", &self.message_is_error)
+            .field("secret", &self.secret)
+            .field("status", &self.status)
+            .field("attempt", &self.attempt)
+            .finish()
+    }
 }
 
 impl Conversation {
@@ -119,8 +135,22 @@ impl Conversation {
         if self.status != Status::Waiting {
             return false;
         }
+        self.input.zeroize();
         value.clone_into(&mut self.input);
         true
+    }
+
+    pub(crate) fn push_input(&mut self, value: &str) -> bool {
+        if self.status != Status::Waiting {
+            return false;
+        }
+        let remaining = MAX_TEXT_CHARS.saturating_sub(self.input.chars().count());
+        self.input.extend(value.chars().take(remaining));
+        true
+    }
+
+    pub(crate) fn pop_input(&mut self) -> bool {
+        self.status == Status::Waiting && self.input.pop().is_some()
     }
 
     pub(crate) fn submit(&mut self) -> Option<(Attempt, String)> {
@@ -181,7 +211,14 @@ impl Conversation {
     }
 
     pub(crate) fn clear_response(&mut self) {
+        self.input.zeroize();
         self.input.clear();
+    }
+}
+
+impl Drop for Conversation {
+    fn drop(&mut self) {
+        self.input.zeroize();
     }
 }
 
@@ -366,6 +403,24 @@ mod tests {
         assert!(conversation.input.is_empty());
         assert_eq!(conversation.status, Status::Submitting);
         assert_eq!(conversation.submit(), None);
+    }
+
+    #[test]
+    fn diagnostics_redact_the_mutable_response() {
+        let mut conversation = Conversation::new();
+        let attempt = conversation.attempt();
+        conversation.receive(
+            attempt,
+            Response::Prompt {
+                secret: true,
+                message: "Password".into(),
+            },
+        );
+        conversation.update_input("credential-sentinel");
+
+        let debug = format!("{conversation:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("credential-sentinel"));
     }
 
     #[test]
