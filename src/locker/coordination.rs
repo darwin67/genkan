@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -16,8 +17,8 @@ const MAX_WAITERS: usize = 64;
 pub(crate) enum Error {
     #[error("XDG_RUNTIME_DIR must name an absolute private directory owned by the invoking user")]
     RuntimeDirectory,
-    #[error("WAYLAND_DISPLAY must name a compositor socket")]
-    WaylandDisplay,
+    #[error("WAYLAND_SOCKET or WAYLAND_DISPLAY must identify a compositor connection")]
+    WaylandConnection,
     #[error("could not coordinate the compositor lock lifecycle: {0}")]
     Io(#[from] io::Error),
     #[error("the existing locker exited before compositor confirmation")]
@@ -52,16 +53,8 @@ pub(super) struct Active {
 
 pub(super) fn enter() -> Result<Entry, Error> {
     let runtime = runtime_directory()?;
-    let (wayland, metadata) = wayland_connection(&runtime)?;
-    let (peer_pid, peer_start_time) = peer_identity(&wayland)?;
-    let stem = coordination_stem(
-        metadata.dev(),
-        metadata.ino(),
-        metadata.ctime(),
-        metadata.ctime_nsec(),
-        peer_pid,
-        peer_start_time,
-    );
+    let (wayland, _) = wayland_connection(&runtime)?;
+    let stem = coordination_stem_for(&wayland)?;
     match enter_paths(
         runtime.join(format!("{stem}.lease")),
         runtime.join(format!("{stem}.sock")),
@@ -76,34 +69,44 @@ pub(super) fn enter() -> Result<Entry, Error> {
 
 fn wayland_connection(runtime: &Path) -> Result<(UnixStream, fs::Metadata), Error> {
     if let Some(raw_fd) = std::env::var_os("WAYLAND_SOCKET") {
-        let raw_fd = raw_fd
-            .to_str()
-            .and_then(|value| value.parse::<RawFd>().ok())
-            .filter(|fd| *fd >= 0)
-            .ok_or(Error::WaylandDisplay)?;
+        let raw_fd = wayland_socket_fd(&raw_fd)?;
         std::env::remove_var("WAYLAND_SOCKET");
-        // SAFETY: WAYLAND_SOCKET transfers ownership of this inherited descriptor
-        // to the Wayland client, matching wayland-client's connect_to_env contract.
-        let wayland = UnixStream::from(unsafe { OwnedFd::from_raw_fd(raw_fd) });
-        set_close_on_exec(&wayland).map_err(|_| Error::WaylandDisplay)?;
-        let metadata =
-            fs::metadata(format!("/proc/self/fd/{raw_fd}")).map_err(|_| Error::WaylandDisplay)?;
-        if !metadata.file_type().is_socket() {
-            return Err(Error::WaylandDisplay);
-        }
-        return Ok((wayland, metadata));
+        return adopt_wayland_socket(raw_fd);
     }
 
     let display = wayland_socket(runtime)?;
     connect_wayland(&display)
 }
 
-fn set_close_on_exec(wayland: &UnixStream) -> io::Result<()> {
-    // SAFETY: fcntl only inspects or updates descriptor flags without taking ownership.
-    let flags = unsafe { libc::fcntl(wayland.as_raw_fd(), libc::F_GETFD) };
+fn wayland_socket_fd(value: &OsStr) -> Result<RawFd, Error> {
+    value
+        .to_str()
+        .and_then(|value| value.parse::<RawFd>().ok())
+        .filter(|fd| *fd >= 0)
+        .ok_or(Error::WaylandConnection)
+}
+
+fn adopt_wayland_socket(raw_fd: RawFd) -> Result<(UnixStream, fs::Metadata), Error> {
+    // Validate before constructing an owned descriptor so malformed inherited
+    // values never reach FromRawFd's valid-descriptor precondition.
+    let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
     if flags < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(Error::WaylandConnection);
     }
+    // SAFETY: WAYLAND_SOCKET transfers ownership of this inherited descriptor
+    // to the Wayland client, matching wayland-client's connect_to_env contract.
+    let wayland = UnixStream::from(unsafe { OwnedFd::from_raw_fd(raw_fd) });
+    set_close_on_exec(&wayland, flags).map_err(|_| Error::WaylandConnection)?;
+    let metadata =
+        fs::metadata(format!("/proc/self/fd/{raw_fd}")).map_err(|_| Error::WaylandConnection)?;
+    if !metadata.file_type().is_socket() {
+        return Err(Error::WaylandConnection);
+    }
+    Ok((wayland, metadata))
+}
+
+fn set_close_on_exec(wayland: &UnixStream, flags: libc::c_int) -> io::Result<()> {
+    // SAFETY: fcntl only updates descriptor flags without taking ownership.
     if unsafe { libc::fcntl(wayland.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -111,14 +114,14 @@ fn set_close_on_exec(wayland: &UnixStream) -> io::Result<()> {
 }
 
 fn connect_wayland(display: &Path) -> Result<(UnixStream, fs::Metadata), Error> {
-    let before = display.metadata().map_err(|_| Error::WaylandDisplay)?;
+    let before = display.metadata().map_err(|_| Error::WaylandConnection)?;
     if !before.file_type().is_socket() {
-        return Err(Error::WaylandDisplay);
+        return Err(Error::WaylandConnection);
     }
-    let wayland = UnixStream::connect(display).map_err(|_| Error::WaylandDisplay)?;
-    let after = display.metadata().map_err(|_| Error::WaylandDisplay)?;
+    let wayland = UnixStream::connect(display).map_err(|_| Error::WaylandConnection)?;
+    let after = display.metadata().map_err(|_| Error::WaylandConnection)?;
     if socket_metadata(&before) != socket_metadata(&after) {
-        return Err(Error::WaylandDisplay);
+        return Err(Error::WaylandConnection);
     }
     Ok((wayland, after))
 }
@@ -170,17 +173,13 @@ fn peer_identity(wayland: &UnixStream) -> io::Result<(i32, u64)> {
     Ok((credentials.pid, start_time))
 }
 
-fn coordination_stem(
-    device: u64,
-    inode: u64,
-    ctime: i64,
-    ctime_nsec: i64,
-    peer_pid: i32,
-    peer_start_time: u64,
-) -> String {
-    format!(
-        "genkan-lock-{device:x}-{inode:x}-{ctime:x}-{ctime_nsec:x}-{peer_pid:x}-{peer_start_time:x}"
-    )
+fn coordination_stem(peer_pid: i32, peer_start_time: u64) -> String {
+    format!("genkan-lock-{peer_pid:x}-{peer_start_time:x}")
+}
+
+fn coordination_stem_for(wayland: &UnixStream) -> io::Result<String> {
+    let (peer_pid, peer_start_time) = peer_identity(wayland)?;
+    Ok(coordination_stem(peer_pid, peer_start_time))
 }
 
 fn runtime_directory() -> Result<PathBuf, Error> {
@@ -199,14 +198,14 @@ fn runtime_directory() -> Result<PathBuf, Error> {
 }
 
 fn wayland_socket(runtime: &Path) -> Result<PathBuf, Error> {
-    let display = std::env::var_os("WAYLAND_DISPLAY").ok_or(Error::WaylandDisplay)?;
+    let display = std::env::var_os("WAYLAND_DISPLAY").ok_or(Error::WaylandConnection)?;
     let display = PathBuf::from(display);
     if display.is_absolute() {
         Ok(display)
     } else if display.components().count() == 1 {
         Ok(runtime.join(display))
     } else {
-        Err(Error::WaylandDisplay)
+        Err(Error::WaylandConnection)
     }
 }
 
@@ -373,6 +372,7 @@ impl Drop for Active {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::IntoRawFd;
     use std::process::Command;
     use std::sync::mpsc;
 
@@ -387,12 +387,52 @@ mod tests {
 
     #[test]
     fn compositor_generation_changes_the_coordination_identity() {
-        let original = coordination_stem(1, 2, 3, 4, 5, 6);
+        let original = coordination_stem(1, 2);
 
-        assert_ne!(original, coordination_stem(1, 2, 7, 4, 5, 6));
-        assert_ne!(original, coordination_stem(1, 2, 3, 7, 5, 6));
-        assert_ne!(original, coordination_stem(1, 2, 3, 4, 7, 6));
-        assert_ne!(original, coordination_stem(1, 2, 3, 4, 5, 7));
+        assert_ne!(original, coordination_stem(3, 2));
+        assert_ne!(original, coordination_stem(1, 3));
+    }
+
+    #[test]
+    fn pathname_and_inherited_connections_share_a_compositor_identity() {
+        let (_, display, root) = paths("shared-compositor");
+        let listener = UnixListener::bind(&display).unwrap();
+        let (pathname, _) = connect_wayland(&display).unwrap();
+        let inherited = UnixStream::connect(&display).unwrap().into_raw_fd();
+        let (inherited, _) = adopt_wayland_socket(inherited).unwrap();
+
+        assert_eq!(
+            coordination_stem_for(&pathname).unwrap(),
+            coordination_stem_for(&inherited).unwrap()
+        );
+
+        drop(listener);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inherited_wayland_errors_name_both_environment_sources() {
+        assert!(matches!(
+            wayland_socket_fd(OsStr::new("not-a-descriptor")),
+            Err(Error::WaylandConnection)
+        ));
+        let file = File::open("/dev/null").unwrap().into_raw_fd();
+        assert!(matches!(
+            adopt_wayland_socket(file),
+            Err(Error::WaylandConnection)
+        ));
+        let (closed, _peer) = UnixStream::pair().unwrap();
+        let closed = closed.into_raw_fd();
+        // SAFETY: ownership is intentionally transferred to the closed-descriptor case.
+        unsafe { libc::close(closed) };
+        assert!(matches!(
+            adopt_wayland_socket(closed),
+            Err(Error::WaylandConnection)
+        ));
+        assert_eq!(
+            Error::WaylandConnection.to_string(),
+            "WAYLAND_SOCKET or WAYLAND_DISPLAY must identify a compositor connection"
+        );
     }
 
     #[test]
