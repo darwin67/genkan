@@ -14,12 +14,16 @@ pkgs.runCommand "genkan-session-lock-smoke"
     ];
   }
   ''
+    trap 'echo "session-lock smoke failed at line $LINENO" >&2' ERR
     runtime=$(mktemp -d)
     config=$(mktemp)
     log=$(mktemp)
     lock_log=$(mktemp)
     production_log=$(mktemp)
     ready=$(mktemp)
+    daemon_one=
+    daemon_two=
+    before_sleep=
     cleanup() {
       if [[ -n "''${lock_pid:-}" ]]; then
         kill "$lock_pid" 2>/dev/null || true
@@ -30,6 +34,9 @@ pkgs.runCommand "genkan-session-lock-smoke"
         wait "$sway_pid" 2>/dev/null || true
       fi
       rm -rf "$runtime" "$config" "$log" "$lock_log" "$production_log" "$ready"
+      [[ -z "$daemon_one" ]] || rm -f "$daemon_one"
+      [[ -z "$daemon_two" ]] || rm -f "$daemon_two"
+      [[ -z "$before_sleep" ]] || rm -f "$before_sleep"
     }
     trap cleanup EXIT
     chmod 700 "$runtime"
@@ -166,33 +173,62 @@ pkgs.runCommand "genkan-session-lock-smoke"
         3>"$ready" 2>"$lock_log" &
     lock_pid=$!
 
-    for _ in $(seq 1 100); do
+    for _ in $(seq 1 300); do
       grep -Fxq READY "$ready" && break
       ! kill -0 "$lock_pid" 2>/dev/null && break
       sleep 0.01
     done
     if ! grep -Fxq READY "$ready"; then
+      echo "foreground lock did not report readiness" >&2
       cat "$log" "$lock_log" >&2
       exit 1
     fi
 
-    XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" create_output >/dev/null
-    for _ in $(seq 1 100); do
+    if ! XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" create_output >/dev/null; then
+      echo "could not create headless output" >&2
+      cat "$log" "$lock_log" >&2
+      exit 1
+    fi
+    for _ in $(seq 1 300); do
       [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -ge 3 ]] && break
       sleep 0.01
     done
-    XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-3 disable >/dev/null
-    for _ in $(seq 1 100); do
+    if [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -lt 3 ]]; then
+      echo "added output did not receive an opaque frame" >&2
+      cat "$log" "$lock_log" >&2
+      exit 1
+    fi
+    if ! XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-3 disable >/dev/null; then
+      XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" -t get_outputs >&2 || true
+      cat "$log" "$lock_log" >&2
+      exit 1
+    fi
+    for _ in $(seq 1 300); do
       [[ $(grep -Fc 'removed surface for output' "$lock_log") -ge 1 ]] && break
       sleep 0.01
     done
-    XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-3 enable >/dev/null
-    for _ in $(seq 1 100); do
+    if [[ $(grep -Fc 'removed surface for output' "$lock_log") -lt 1 ]]; then
+      echo "removed output retained its lock surface" >&2
+      cat "$log" "$lock_log" >&2
+      exit 1
+    fi
+    if ! XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-3 enable >/dev/null; then
+      echo "could not re-enable headless output" >&2
+      cat "$log" "$lock_log" >&2
+      exit 1
+    fi
+    for _ in $(seq 1 300); do
       [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -ge 4 ]] && break
       sleep 0.01
     done
+    if [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -lt 4 ]]; then
+      echo "re-enabled output did not receive an opaque frame" >&2
+      cat "$log" "$lock_log" >&2
+      exit 1
+    fi
 
     if ! wait "$lock_pid"; then
+      echo "foreground lock did not complete its test unlock" >&2
       cat "$log" "$lock_log" >&2
       exit 1
     fi
@@ -200,8 +236,65 @@ pkgs.runCommand "genkan-session-lock-smoke"
     if [[ $(grep -Fc 'created lock surface for output' "$lock_log") -lt 4 ]] ||
        [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -lt 4 ]] ||
        [[ $(grep -Fc 'removed surface for output' "$lock_log") -lt 1 ]]; then
+      echo "foreground output lifecycle counts were incomplete" >&2
       cat "$log" "$lock_log" >&2
       exit 1
     fi
+
+    daemon_one=$(mktemp)
+    daemon_two=$(mktemp)
+    before_sleep=$(mktemp)
+    rm -f "$before_sleep"
+    env WAYLAND_DISPLAY=$(basename "$socket") XDG_RUNTIME_DIR="$runtime" \
+      ${genkan}/bin/genkan lock --daemonize --reduce-motion --test-unlock-after-ready \
+      2>"$daemon_one" &
+    daemon_one_pid=$!
+    for _ in $(seq 1 100); do
+      find "$runtime" -maxdepth 1 -type s -name 'genkan-lock-*.sock' | grep -q . && break
+      sleep 0.01
+    done
+    if ! find "$runtime" -maxdepth 1 -type s -name 'genkan-lock-*.sock' | grep -q .; then
+      echo "daemonized foreground child did not publish its coordination socket" >&2
+      cat "$daemon_one" >&2
+      exit 1
+    fi
+    env WAYLAND_DISPLAY=$(basename "$socket") XDG_RUNTIME_DIR="$runtime" \
+      ${genkan}/bin/genkan lock --daemonize --reduce-motion --test-unlock-after-ready \
+      2>"$daemon_two" &
+    daemon_two_pid=$!
+    if ! wait "$daemon_one_pid"; then
+      echo "first readiness launcher failed" >&2
+      cat "$daemon_one" "$daemon_two" >&2
+      exit 1
+    fi
+    if ! wait "$daemon_two_pid"; then
+      echo "duplicate readiness launcher failed" >&2
+      cat "$daemon_one" "$daemon_two" >&2
+      exit 1
+    fi
+    touch "$before_sleep"
+    test -e "$before_sleep"
+    if [[ $(cat "$daemon_one" "$daemon_two" | grep -Fc 'compositor confirmed lock') -ne 1 ]]; then
+      echo "duplicate launchers did not join exactly one protocol lock" >&2
+      cat "$log" "$daemon_one" "$daemon_two" >&2
+      exit 1
+    fi
+    for _ in $(seq 1 700); do
+      ! find "$runtime" -maxdepth 1 -type s -name 'genkan-lock-*.sock' | grep -q . && break
+      sleep 0.01
+    done
+    if find "$runtime" -maxdepth 1 -type s -name 'genkan-lock-*.sock' | grep -q .; then
+      echo "daemonized foreground child did not clean up after test unlock" >&2
+      cat "$daemon_one" "$daemon_two" >&2
+      exit 1
+    fi
+
+    if env WAYLAND_DISPLAY=missing XDG_RUNTIME_DIR="$runtime" \
+      timeout 5s ${genkan}/bin/genkan lock --daemonize --reduce-motion \
+      > /dev/null 2>&1; then
+      echo "daemon launcher accepted a missing compositor before readiness" >&2
+      exit 1
+    fi
+    rm -f "$daemon_one" "$daemon_two" "$before_sleep"
     touch "$out"
   ''

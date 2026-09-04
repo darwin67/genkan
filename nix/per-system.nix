@@ -208,11 +208,27 @@ let
       )
     ];
   };
+  disabledModuleSystem = nixpkgs.lib.nixosSystem {
+    inherit system;
+    modules = [
+      ./module.nix
+      (
+        { pkgs, ... }:
+        {
+          programs.genkan.package = package;
+          services.kanidm.package = pkgs.kanidm_1_8;
+          system.stateVersion = "26.05";
+        }
+      )
+    ];
+  };
   modulePamPolicy = pkgs.writeText "genkan-lock-pam-policy" (
     moduleSystem.config.security.pam.services.genkan-lock.text
   );
   moduleCheck =
     assert builtins.elem package moduleSystem.config.environment.systemPackages;
+    assert !(builtins.elem package disabledModuleSystem.config.environment.systemPackages);
+    assert !(builtins.hasAttr "genkan-lock" disabledModuleSystem.config.security.pam.services);
     pkgs.runCommand "genkan-module-check" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
       grep -F 'pam_unix.so' ${modulePamPolicy}
       grep -F 'pam_deny.so' ${modulePamPolicy}

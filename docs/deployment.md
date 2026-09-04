@@ -74,6 +74,58 @@ The supported production lock runtime requires Linux 5.9 or newer and glibc
 worker management. The pinned Nix package satisfies the userspace requirement;
 source builds on older systems fail closed before PAM authentication begins.
 
+## Session locking and suspend
+
+Run `genkan lock` in the foreground for direct use. For an idle or suspend
+hook, `genkan lock --daemonize` starts a fresh foreground child and returns only
+after the compositor confirms that the session lock is active. It does not
+`fork` after Wayland, PAM, graphics, or wallpaper initialization. Concurrent
+manual and suspend hooks join the same per-compositor lifecycle and all wait
+for that confirmation; lock denial or child loss before confirmation is an
+error.
+
+The confirmed foreground child remains the lock owner while the system sleeps
+and after it resumes. Resume does not start a second authentication attempt or
+unlock the session; the existing PAM conversation continues only when the user
+interacts with the lock screen.
+
+For Sway and other sessions using swayidle, use its wait mode so the
+before-sleep command participates in swayidle's logind delay inhibitor:
+
+```sh
+swayidle -w \
+  lock 'genkan lock --daemonize' \
+  before-sleep 'genkan lock --daemonize'
+```
+
+This is bounded, best-effort suspend integration rather than a suspend veto.
+Swayidle does not inspect the command's exit status, and logind proceeds when
+`InhibitDelayMaxSec` expires even if the command is still running. Configure
+that timeout above the host's worst-case locker startup time and monitor
+launcher failures. A startup failure can still let the machine suspend without
+a confirmed Genkan lock; deployments that require fail-closed suspension must
+route suspend requests through a component that locks first and requests
+suspend only after confirmation.
+
+Starting Genkan from an after-resume hook is not safe: session content may
+already have been exposed before the locker starts.
+
+Genkan detects support from the connected Wayland compositor at runtime. It
+requires `ext_session_lock_manager_v1` and the rendering globals used by its
+session-lock runtime; it does not guess from the compositor name and has no
+fullscreen or layer-shell fallback. The intended niri target and current
+ext-session-lock-capable releases of Sway, River, Hyprland, and other wlroots
+compositors are expected to work. GNOME Shell, KWin releases without the
+protocol, and desktop environments that reserve locking for an internal shell
+must continue using their own locker.
+
+If Genkan, its renderer, or the compositor connection fails after lock
+confirmation, Genkan never requests unlock. The compositor therefore remains
+responsible for fail-closed recovery and may leave a blank or fallback lock
+screen. Switch to another VT (for example with Ctrl+Alt+F2), sign in there, and
+restart the trusted locker/compositor or terminate the affected graphical
+session. Do not kill the locker expecting that to reveal the session.
+
 greetd supplies `GREETD_SOCK`. Genkan handles each PAM prompt in sequence and
 then asks greetd to start the selected session with the Wayland XDG environment.
 If AccountsService, a valid session, or the greetd socket is unavailable,

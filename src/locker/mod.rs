@@ -1,7 +1,11 @@
 mod auth;
+mod coordination;
 mod identity;
+mod launcher;
 
+use std::ffi::CString;
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::path::Path;
 
 use bytes::Bytes;
 use cosmic_text::{Align, Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache};
@@ -30,6 +34,10 @@ pub(crate) enum Error {
     Identity(#[from] identity::Error),
     #[error("could not adopt readiness descriptor: {0}")]
     ReadyFd(#[source] std::io::Error),
+    #[error(transparent)]
+    Coordination(#[from] coordination::Error),
+    #[error(transparent)]
+    Launcher(#[from] launcher::Error),
     #[error(transparent)]
     Authentication(#[from] auth::Error),
     #[error(transparent)]
@@ -285,20 +293,47 @@ fn authentication_input_enabled(confirmed: bool) -> bool {
 }
 
 pub(crate) fn run(config: Config) -> Result<(), Error> {
-    let identity = identity::Identity::current()?;
     let ready_fd = config.ready_fd.map(adopt_ready_fd).transpose()?;
+    let coordination = coordination::enter()?;
+    let coordination::Entry::Owner {
+        coordination: owner,
+        wayland,
+    } = coordination
+    else {
+        report_joined_ready(ready_fd)?;
+        return Ok(());
+    };
+    let identity = identity::Identity::current()?;
     // Start the worker before wallpaper decoding or Wayland can create threads.
     let authentication = auth::Client::start(&identity)?;
+    let (coordination_ready, _coordination) = owner.activate()?;
     let runtime_identity = genkan_session_lock::Identity::new(
         identity.uid,
         identity.username.clone(),
         identity.display_name.clone(),
     );
     let presentation = LockerPresentation::new(identity, authentication, config.wallpaper);
-    let runtime = genkan_session_lock::Config::new(runtime_identity, presentation, ready_fd);
+    let runtime =
+        genkan_session_lock::Config::new(wayland, runtime_identity, presentation, ready_fd)
+            .with_additional_ready_fd(coordination_ready);
     #[cfg(feature = "lock-test")]
     let runtime = runtime.with_test_unlock_after_ready(config.test_unlock_after_ready);
     genkan_session_lock::run(runtime)?;
+    Ok(())
+}
+
+pub(crate) fn daemonize(executable: &Path, arguments: &[CString]) -> Result<(), Error> {
+    launcher::launch(executable, arguments)?;
+    Ok(())
+}
+
+fn report_joined_ready(ready_fd: Option<OwnedFd>) -> Result<(), Error> {
+    if let Some(ready_fd) = ready_fd {
+        let mut ready = std::fs::File::from(ready_fd);
+        use std::io::Write;
+        ready.write_all(b"READY\n").map_err(Error::ReadyFd)?;
+        ready.flush().map_err(Error::ReadyFd)?;
+    }
     Ok(())
 }
 

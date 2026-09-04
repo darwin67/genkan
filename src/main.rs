@@ -8,6 +8,8 @@ mod sessions;
 mod theme;
 mod wallpaper;
 
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use app::{App, Config, PreviewFixture};
@@ -77,6 +79,9 @@ struct LoginArguments {
     after_help = "The lock is ready only after the compositor confirms ext-session-lock-v1 ownership. Unlock authentication uses the host's genkan-lock PAM service for the invoking real-UID account."
 )]
 struct LockArguments {
+    /// Spawn a foreground locker and return after compositor confirmation.
+    #[arg(long, conflicts_with = "ready_fd")]
+    daemonize: bool,
     /// Descriptor that receives `READY` after compositor lock confirmation.
     #[arg(long, value_parser = parse_ready_fd)]
     ready_fd: Option<std::os::fd::RawFd>,
@@ -224,8 +229,48 @@ fn lock_config(arguments: LockArguments) -> locker::Config {
 }
 
 fn run_lock(arguments: LockArguments) -> Result<(), Box<dyn std::error::Error>> {
+    if arguments.daemonize {
+        let executable = std::env::current_exe()?;
+        let child_arguments = daemon_child_arguments(&arguments)?;
+        locker::daemonize(&executable, &child_arguments)?;
+        return Ok(());
+    }
     locker::run(lock_config(arguments))?;
     Ok(())
+}
+
+fn daemon_child_arguments(arguments: &LockArguments) -> Result<Vec<CString>, std::io::Error> {
+    let mut child = vec![
+        CString::new("lock").expect("static argument"),
+        CString::new("--ready-fd").expect("static argument"),
+        CString::new("3").expect("static argument"),
+        CString::new("--wallpaper").expect("static argument"),
+        CString::new(
+            arguments
+                .wallpaper
+                .to_possible_value()
+                .expect("catalog value has a CLI name")
+                .get_name(),
+        )
+        .expect("catalog names contain no NUL"),
+    ];
+    if let Some(path) = &arguments.wallpaper_file {
+        child.push(CString::new("--wallpaper-file").expect("static argument"));
+        child.push(CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "wallpaper path contains a NUL byte",
+            )
+        })?);
+    }
+    if arguments.reduce_motion {
+        child.push(CString::new("--reduce-motion").expect("static argument"));
+    }
+    #[cfg(feature = "lock-test")]
+    if arguments.test_unlock_after_ready {
+        child.push(CString::new("--test-unlock-after-ready").expect("static argument"));
+    }
+    Ok(child)
 }
 
 #[cfg(test)]
@@ -287,6 +332,22 @@ mod tests {
     }
 
     #[test]
+    fn suspend_documentation_exposes_external_delay_limits() {
+        let deployment = include_str!("../docs/deployment.md");
+        let readme = include_str!("../README.md");
+        let rfd = include_str!("../rfd/0003/README.adoc");
+
+        for document in [deployment, rfd] {
+            assert!(document.contains("InhibitDelayMaxSec"));
+            assert!(document.contains("fail-closed"));
+        }
+        assert!(deployment.contains("Swayidle does not inspect the command's exit status"));
+        assert!(readme.contains("This is not a suspend veto"));
+        assert!(rfd.contains("Fail-closed"));
+        assert!(rfd.contains("suspension requires owning the later suspend request"));
+    }
+
+    #[test]
     fn lock_options_are_typed_and_scoped_to_the_lock_command() {
         let arguments = try_parse_lock(["genkan", "--ready-fd", "7", "--reduce-motion"])
             .expect("valid lock configuration");
@@ -294,11 +355,43 @@ mod tests {
         assert!(arguments.reduce_motion);
         assert!(try_parse_lock(["genkan", "--ready-fd", "1"]).is_err());
         assert!(try_parse_lock(["genkan", "--ready-fd", "not-an-fd"]).is_err());
+        assert!(try_parse_lock(["genkan", "--daemonize"]).unwrap().daemonize);
+        assert!(try_parse_lock(["genkan", "--daemonize", "--ready-fd", "7"]).is_err());
         assert!(Arguments::try_parse_from(["genkan", "login", "--ready-fd", "7"]).is_err());
         #[cfg(not(feature = "lock-test"))]
         assert!(
             Arguments::try_parse_from(["genkan", "lock", "--test-unlock-after-ready"]).is_err()
         );
+    }
+
+    #[test]
+    fn daemon_child_is_foreground_and_preserves_lock_presentation_options() {
+        let arguments = try_parse_lock([
+            "genkan",
+            "--daemonize",
+            "--wallpaper",
+            "sequoia-night",
+            "--reduce-motion",
+        ])
+        .unwrap();
+        let child = daemon_child_arguments(&arguments)
+            .unwrap()
+            .into_iter()
+            .map(|argument| argument.into_string().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            child,
+            [
+                "lock",
+                "--ready-fd",
+                "3",
+                "--wallpaper",
+                "sequoia-night",
+                "--reduce-motion"
+            ]
+        );
+        assert!(!child.iter().any(|argument| argument == "--daemonize"));
     }
 
     #[test]

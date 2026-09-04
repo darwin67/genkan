@@ -88,16 +88,16 @@ each new boundary, and do not ship a production path that unlocks without PAM.
 
 * Phase 6: Integrate suspend and deployment
 
-- [ ] Implement foreground execution and a `--daemonize` launcher that spawns a
+- [X] Implement foreground execution and a `--daemonize` launcher that spawns a
   fresh child and waits on a private readiness pipe without post-initialization
   `fork`.
-- [ ] Make concurrent manual-lock and before-sleep invocations join the same
+- [X] Make concurrent manual-lock and before-sleep invocations join the same
   confirmed lock lifecycle without treating protocol denial as success.
-- [ ] Document swayidle or equivalent delay-inhibitor integration that cannot
-  allow suspend before compositor confirmation.
-- [ ] Export an opt-in NixOS module for package and PAM setup without silently
+- [X] Document swayidle delay-inhibitor integration and its external failure
+  and =InhibitDelayMaxSec= limits; it cannot veto suspend.
+- [X] Export an opt-in NixOS module for package and PAM setup without silently
   replacing a desktop environment's own locker.
-- [ ] Document runtime protocol detection, supported-compositor requirements,
+- [X] Document runtime protocol detection, supported-compositor requirements,
   unsupported desktop environments, and fail-closed recovery from another VT.
 
 * Phase 7: Security and system verification
