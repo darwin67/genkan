@@ -25,6 +25,14 @@ pub(crate) enum Error {
 }
 
 pub(super) enum Entry {
+    Owner {
+        coordination: Owner,
+        wayland: UnixStream,
+    },
+    Joined,
+}
+
+enum LeaseEntry {
     Owner(Owner),
     Joined,
 }
@@ -45,24 +53,99 @@ pub(super) struct Active {
 pub(super) fn enter() -> Result<Entry, Error> {
     let runtime = runtime_directory()?;
     let display = wayland_socket(&runtime)?;
-    let metadata = display.metadata().map_err(|_| Error::WaylandDisplay)?;
-    if !metadata.file_type().is_socket() {
-        return Err(Error::WaylandDisplay);
-    }
+    let (wayland, metadata) = connect_wayland(&display)?;
+    let (peer_pid, peer_start_time) = peer_identity(&wayland)?;
     let stem = coordination_stem(
         metadata.dev(),
         metadata.ino(),
         metadata.ctime(),
         metadata.ctime_nsec(),
+        peer_pid,
+        peer_start_time,
     );
-    enter_paths(
+    match enter_paths(
         runtime.join(format!("{stem}.lease")),
         runtime.join(format!("{stem}.sock")),
+    )? {
+        LeaseEntry::Owner(coordination) => Ok(Entry::Owner {
+            coordination,
+            wayland,
+        }),
+        LeaseEntry::Joined => Ok(Entry::Joined),
+    }
+}
+
+fn connect_wayland(display: &Path) -> Result<(UnixStream, fs::Metadata), Error> {
+    let before = display.metadata().map_err(|_| Error::WaylandDisplay)?;
+    if !before.file_type().is_socket() {
+        return Err(Error::WaylandDisplay);
+    }
+    let wayland = UnixStream::connect(display).map_err(|_| Error::WaylandDisplay)?;
+    let after = display.metadata().map_err(|_| Error::WaylandDisplay)?;
+    if socket_metadata(&before) != socket_metadata(&after) {
+        return Err(Error::WaylandDisplay);
+    }
+    Ok((wayland, after))
+}
+
+fn socket_metadata(metadata: &fs::Metadata) -> (u64, u64, i64, i64) {
+    (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
     )
 }
 
-fn coordination_stem(device: u64, inode: u64, ctime: i64, ctime_nsec: i64) -> String {
-    format!("genkan-lock-{device:x}-{inode:x}-{ctime:x}-{ctime_nsec:x}")
+fn peer_identity(wayland: &UnixStream) -> io::Result<(i32, u64)> {
+    let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: credentials and length point to writable storage of the declared size.
+    let result = unsafe {
+        libc::getsockopt(
+            wayland.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            credentials.as_mut_ptr().cast(),
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize != std::mem::size_of::<libc::ucred>() {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    // SAFETY: getsockopt initialized the full ucred value after returning success.
+    let credentials = unsafe { credentials.assume_init() };
+    if credentials.pid <= 0 {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    let stat = fs::read_to_string(format!("/proc/{}/stat", credentials.pid))?;
+    let fields = stat
+        .rsplit_once(") ")
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?
+        .1;
+    let start_time = fields
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?
+        .parse()
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+    Ok((credentials.pid, start_time))
+}
+
+fn coordination_stem(
+    device: u64,
+    inode: u64,
+    ctime: i64,
+    ctime_nsec: i64,
+    peer_pid: i32,
+    peer_start_time: u64,
+) -> String {
+    format!(
+        "genkan-lock-{device:x}-{inode:x}-{ctime:x}-{ctime_nsec:x}-{peer_pid:x}-{peer_start_time:x}"
+    )
 }
 
 fn runtime_directory() -> Result<PathBuf, Error> {
@@ -92,7 +175,7 @@ fn wayland_socket(runtime: &Path) -> Result<PathBuf, Error> {
     }
 }
 
-fn enter_paths(lease_path: PathBuf, socket_path: PathBuf) -> Result<Entry, Error> {
+fn enter_paths(lease_path: PathBuf, socket_path: PathBuf) -> Result<LeaseEntry, Error> {
     let lease = OpenOptions::new()
         .read(true)
         .write(true)
@@ -115,7 +198,7 @@ fn enter_paths(lease_path: PathBuf, socket_path: PathBuf) -> Result<Entry, Error
         let listener = UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
-        return Ok(Entry::Owner(Owner {
+        return Ok(LeaseEntry::Owner(Owner {
             _lease: lease,
             listener,
             socket_path,
@@ -128,7 +211,7 @@ fn enter_paths(lease_path: PathBuf, socket_path: PathBuf) -> Result<Entry, Error
                 let mut message = Vec::with_capacity(READY.len());
                 stream.read_to_end(&mut message)?;
                 return if message == READY {
-                    Ok(Entry::Joined)
+                    Ok(LeaseEntry::Joined)
                 } else {
                     Err(Error::ExistingLockerFailed)
                 };
@@ -268,16 +351,51 @@ mod tests {
 
     #[test]
     fn compositor_generation_changes_the_coordination_identity() {
-        let original = coordination_stem(1, 2, 3, 4);
+        let original = coordination_stem(1, 2, 3, 4, 5, 6);
 
-        assert_ne!(original, coordination_stem(1, 2, 5, 4));
-        assert_ne!(original, coordination_stem(1, 2, 3, 5));
+        assert_ne!(original, coordination_stem(1, 2, 7, 4, 5, 6));
+        assert_ne!(original, coordination_stem(1, 2, 3, 7, 5, 6));
+        assert_ne!(original, coordination_stem(1, 2, 3, 4, 7, 6));
+        assert_ne!(original, coordination_stem(1, 2, 3, 4, 5, 7));
+    }
+
+    #[test]
+    fn connected_wayland_socket_survives_path_replacement() {
+        let (_, display, root) = paths("display-replacement");
+        let first_listener = UnixListener::bind(&display).unwrap();
+        let (mut first_connection, first_metadata) = connect_wayland(&display).unwrap();
+
+        fs::remove_file(&display).unwrap();
+        let second_listener = UnixListener::bind(&display).unwrap();
+        let (mut second_connection, second_metadata) = connect_wayland(&display).unwrap();
+
+        let first_peer = peer_identity(&first_connection).unwrap();
+        let second_peer = peer_identity(&second_connection).unwrap();
+        assert_eq!(first_peer.0, std::process::id() as i32);
+        assert_eq!(first_peer, second_peer);
+        assert!(first_peer.1 > 0);
+        assert_ne!(
+            socket_metadata(&first_metadata),
+            socket_metadata(&second_metadata)
+        );
+        let (mut first_server, _) = first_listener.accept().unwrap();
+        let (mut second_server, _) = second_listener.accept().unwrap();
+        first_server.write_all(b"first").unwrap();
+        second_server.write_all(b"second").unwrap();
+        let mut first = [0; 5];
+        let mut second = [0; 6];
+        first_connection.read_exact(&mut first).unwrap();
+        second_connection.read_exact(&mut second).unwrap();
+        assert_eq!(&first, b"first");
+        assert_eq!(&second, b"second");
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn duplicate_waits_for_the_owner_confirmation() {
         let (lease, socket, root) = paths("pending");
-        let Entry::Owner(owner) = enter_paths(lease.clone(), socket.clone()).unwrap() else {
+        let LeaseEntry::Owner(owner) = enter_paths(lease.clone(), socket.clone()).unwrap() else {
             panic!("first entrant must own the lifecycle");
         };
         let (ready, active) = owner.activate().unwrap();
@@ -289,7 +407,7 @@ mod tests {
         ready.write_all(READY).unwrap();
         assert!(matches!(
             receive.recv_timeout(Duration::from_secs(1)).unwrap(),
-            Ok(Entry::Joined)
+            Ok(LeaseEntry::Joined)
         ));
 
         duplicate.join().unwrap();
@@ -300,7 +418,7 @@ mod tests {
     #[test]
     fn duplicate_fails_when_owner_exits_before_confirmation() {
         let (lease, socket, root) = paths("failure");
-        let Entry::Owner(owner) = enter_paths(lease.clone(), socket.clone()).unwrap() else {
+        let LeaseEntry::Owner(owner) = enter_paths(lease.clone(), socket.clone()).unwrap() else {
             panic!("first entrant must own the lifecycle");
         };
         let (_ready, active) = owner.activate().unwrap();
@@ -320,7 +438,7 @@ mod tests {
         let (lease, socket, root) = paths("stale");
         UnixListener::bind(&socket).unwrap();
 
-        let Entry::Owner(owner) = enter_paths(lease, socket).unwrap() else {
+        let LeaseEntry::Owner(owner) = enter_paths(lease, socket).unwrap() else {
             panic!("stale endpoint must not be joined");
         };
         drop(owner);

@@ -137,7 +137,8 @@ struct Runtime {
 
 pub(super) fn run(config: Config) -> Result<(), Error> {
     let ready = ReadySignal::new(config.ready_fds);
-    let conn = Connection::connect_to_env().map_err(|error| Error::Connect(error.to_string()))?;
+    let conn = Connection::from_socket(config.wayland)
+        .map_err(|error| Error::Connect(error.to_string()))?;
     let (globals, mut event_queue) =
         registry_queue_init(&conn).map_err(|error| Error::Runtime(error.to_string()))?;
     let qh = event_queue.handle();

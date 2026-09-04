@@ -168,9 +168,10 @@ for another protocol lock and mistake denial for readiness.
 
 The first implementation delegates idle policy and logind inhibition to the
 session's idle manager. Genkan may later provide a user service that listens for
-logind session `Lock` and `PrepareForSleep` signals, but only if it can retain a
-delay inhibitor until compositor confirmation. Resume itself does not trigger
-unlock or a fresh authentication attempt.
+logind session `Lock` and `PrepareForSleep` signals, but such a service can only
+participate in the delay window bounded by `InhibitDelayMaxSec`. Fail-closed
+suspension requires owning the later suspend request. Resume itself does not
+trigger unlock or a fresh authentication attempt.
 
 == Authentication boundary
 

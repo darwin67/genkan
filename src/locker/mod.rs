@@ -295,7 +295,11 @@ fn authentication_input_enabled(confirmed: bool) -> bool {
 pub(crate) fn run(config: Config) -> Result<(), Error> {
     let ready_fd = config.ready_fd.map(adopt_ready_fd).transpose()?;
     let coordination = coordination::enter()?;
-    let coordination::Entry::Owner(owner) = coordination else {
+    let coordination::Entry::Owner {
+        coordination: owner,
+        wayland,
+    } = coordination
+    else {
         report_joined_ready(ready_fd)?;
         return Ok(());
     };
@@ -309,8 +313,9 @@ pub(crate) fn run(config: Config) -> Result<(), Error> {
         identity.display_name.clone(),
     );
     let presentation = LockerPresentation::new(identity, authentication, config.wallpaper);
-    let runtime = genkan_session_lock::Config::new(runtime_identity, presentation, ready_fd)
-        .with_additional_ready_fd(coordination_ready);
+    let runtime =
+        genkan_session_lock::Config::new(wayland, runtime_identity, presentation, ready_fd)
+            .with_additional_ready_fd(coordination_ready);
     #[cfg(feature = "lock-test")]
     let runtime = runtime.with_test_unlock_after_ready(config.test_unlock_after_ready);
     genkan_session_lock::run(runtime)?;

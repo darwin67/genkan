@@ -343,6 +343,8 @@ mod tests {
         }
         assert!(deployment.contains("Swayidle does not inspect the command's exit status"));
         assert!(readme.contains("This is not a suspend veto"));
+        assert!(rfd.contains("Fail-closed"));
+        assert!(rfd.contains("suspension requires owning the later suspend request"));
     }
 
     #[test]

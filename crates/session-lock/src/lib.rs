@@ -1,6 +1,7 @@
 mod runtime;
 
 use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 
 use bytes::Bytes;
 
@@ -77,6 +78,7 @@ pub trait Presentation {
 }
 
 pub struct Config {
+    wayland: UnixStream,
     identity: Identity,
     presentation: Box<dyn Presentation>,
     ready_fds: Vec<OwnedFd>,
@@ -86,11 +88,13 @@ pub struct Config {
 
 impl Config {
     pub fn new(
+        wayland: UnixStream,
         identity: Identity,
         presentation: impl Presentation + 'static,
         ready_fd: Option<OwnedFd>,
     ) -> Self {
         Self {
+            wayland,
             identity,
             presentation: Box::new(presentation),
             ready_fds: ready_fd.into_iter().collect(),
