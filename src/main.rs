@@ -31,7 +31,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Wallpaper playback failures restore the selected static poster. If the poster is unavailable, Genkan uses its generated background."
+    after_help = "Before the first video frame, wallpaper playback failures keep the selected static poster or generated background. After playback begins, Genkan retains the last displayed frame."
 )]
 struct LoginArguments {
     #[arg(long, exclusive = true)]
@@ -436,9 +436,10 @@ mod tests {
             .expect("login subcommand")
             .render_long_help()
             .to_string();
-        assert!(help.contains("playback failures restore the selected static poster"));
-        assert!(help.contains("poster is unavailable"));
+        assert!(help.contains("Before the first video frame"));
+        assert!(help.contains("keep the selected static poster"));
         assert!(help.contains("generated background"));
+        assert!(help.contains("retains the last displayed frame"));
     }
 
     #[test]

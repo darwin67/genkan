@@ -24,10 +24,18 @@ pkgs.runCommand "genkan-graphics-smoke"
     output_width=640
     output_height=360
     wallpaper_crop_size=96
-    wallpaper_crop_x=$((output_width - wallpaper_crop_size))
-    wallpaper_crop_y=$((output_height - wallpaper_crop_size))
+    wallpaper_crop_inset=32
+    wallpaper_crop_x=$((output_width - wallpaper_crop_size - wallpaper_crop_inset))
+    wallpaper_crop_y=$((output_height - wallpaper_crop_size - wallpaper_crop_inset))
     mkdir -p "$HOME/.cache/fontconfig" "$XDG_RUNTIME_DIR" "$XDG_DATA_DIRS/wayland-sessions"
     chmod 700 "$XDG_RUNTIME_DIR"
+
+    magick -size "$wallpaper_crop_size"x"$wallpaper_crop_size" xc:'#050918' \
+      "$TMPDIR/blank-wallpaper-control.png"
+    if [ "$(identify -format '%k' "$TMPDIR/blank-wallpaper-control.png")" -ge 16 ]; then
+      echo "Blank wallpaper control unexpectedly passed the animated-region predicate" >&2
+      exit 1
+    fi
 
     cat > "$XDG_DATA_DIRS/wayland-sessions/smoke.desktop" <<EOF
     [Desktop Entry]
