@@ -980,7 +980,7 @@ fn wallpaper_path_for_executable(executable: &Path, install_name: &str) -> Optio
 }
 
 fn pipeline_error(reason: &str) -> String {
-    format!("{reason}; using static wallpaper fallback")
+    format!("{reason}; wallpaper playback stopped; retaining current background")
 }
 
 fn diagnostic(message: &str) {
@@ -1370,10 +1370,10 @@ mod tests {
     }
 
     #[test]
-    fn playback_diagnostics_name_the_static_fallback() {
+    fn playback_diagnostics_describe_the_retained_background() {
         assert_eq!(
             pipeline_error("wallpaper stream failed"),
-            "wallpaper stream failed; using static wallpaper fallback"
+            "wallpaper stream failed; wallpaper playback stopped; retaining current background"
         );
     }
 
