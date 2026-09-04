@@ -256,8 +256,7 @@ pkgs.runCommand "genkan-graphics-smoke"
       exit 1
     fi
 
-    distinct_frames=""
-    frame_count=0
+    animated_frame=""
     for _ in $(seq 1 30); do
       if ! kill -0 "$genkan_pid" 2>/dev/null; then
         cat "$TMPDIR/animated.log"
@@ -280,19 +279,48 @@ pkgs.runCommand "genkan-graphics-smoke"
       if [ "$colors" -ge 16 ]; then
         frame=$(magick "$screenshot" rgba:- | sha256sum | cut -d' ' -f1)
         if [ "$frame" != "$poster_frame" ]; then
-          case " $distinct_frames " in
-            *" $frame "*) ;;
-            *)
-              distinct_frames="$distinct_frames $frame"
-              frame_count=$((frame_count + 1))
-              ;;
-          esac
+          animated_frame=$frame
+          break
         fi
       fi
-      if [ "$frame_count" -ge 2 ]; then
-        break
-      fi
       sleep 0.5
+    done
+    if [ -z "$animated_frame" ]; then
+      cat "$TMPDIR/animated.log"
+      echo "Animated wallpaper never advanced beyond its poster" >&2
+      exit 1
+    fi
+
+    distinct_frames=" $animated_frame"
+    frame_count=1
+    for _ in $(seq 1 10); do
+      sleep 0.5
+      if ! kill -0 "$genkan_pid" 2>/dev/null; then
+        cat "$TMPDIR/animated.log"
+        echo "Genkan exited during animated frame capture" >&2
+        exit 1
+      fi
+      rm -f "$TMPDIR/captures"/wayland-screenshot-*.png
+      (
+        cd "$TMPDIR/captures"
+        WAYLAND_DISPLAY=wayland-genkan timeout 5s weston-screenshooter
+      )
+      screenshot=$(find "$TMPDIR/captures" -name 'wayland-screenshot-*.png' -print -quit)
+      test -n "$screenshot"
+      colors=$(identify -format '%k' "$screenshot")
+      if [ "$colors" -lt 16 ]; then
+        cat "$TMPDIR/animated.log"
+        echo "Animated wallpaper flashed a blank frame after playback started" >&2
+        exit 1
+      fi
+      frame=$(magick "$screenshot" rgba:- | sha256sum | cut -d' ' -f1)
+      case " $distinct_frames " in
+        *" $frame "*) ;;
+        *)
+          distinct_frames="$distinct_frames $frame"
+          frame_count=$((frame_count + 1))
+          ;;
+      esac
     done
     if [ "$frame_count" -lt 2 ]; then
       cat "$TMPDIR/animated.log"

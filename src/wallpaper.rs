@@ -18,6 +18,7 @@ use gstreamer_video as gst_video;
 use iced::futures::stream;
 use iced::widget::{image, Image};
 use iced::{ContentFit, Element, Fill, Subscription};
+use iced_runtime::image::{Allocation, Error as AllocationError};
 use rustix::fs::{open, Mode, OFlags};
 use tokio::sync::watch;
 
@@ -102,6 +103,8 @@ pub(crate) struct State {
     player: Option<Player>,
     poster: Option<image::Handle>,
     frame: Option<image::Handle>,
+    allocation: Option<Allocation>,
+    allocation_pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +125,8 @@ impl State {
                 player: None,
                 frame: poster.clone(),
                 poster,
+                allocation: None,
+                allocation_pending: false,
             };
         }
 
@@ -134,6 +139,8 @@ impl State {
                 player: Some(player),
                 frame: poster.clone(),
                 poster,
+                allocation: None,
+                allocation_pending: false,
             },
             Err(error) => {
                 diagnostic(&error);
@@ -141,6 +148,8 @@ impl State {
                     player: None,
                     frame: poster.clone(),
                     poster,
+                    allocation: None,
+                    allocation_pending: false,
                 }
             }
         }
@@ -152,6 +161,8 @@ impl State {
             player: None,
             poster: None,
             frame: None,
+            allocation: None,
+            allocation_pending: false,
         }
     }
 
@@ -168,6 +179,7 @@ impl State {
 
         match update {
             Update::Frame(frame) => {
+                self.allocation = None;
                 self.frame = Some(image::Handle::from_rgba(
                     frame.width,
                     frame.height,
@@ -176,11 +188,64 @@ impl State {
                 Refresh::Frame
             }
             Update::Failed => {
-                self.frame.clone_from(&self.poster);
-                self.player.take();
+                self.use_poster_fallback();
                 Refresh::Failed
             }
         }
+    }
+
+    pub(crate) fn prepare_latest(&mut self) -> Option<image::Handle> {
+        if self.allocation_pending {
+            return None;
+        }
+        let update = self.player.as_ref().and_then(Player::take_latest)?;
+
+        match update {
+            Update::Frame(frame) => {
+                self.allocation_pending = true;
+                Some(image::Handle::from_rgba(
+                    frame.width,
+                    frame.height,
+                    frame.pixels,
+                ))
+            }
+            Update::Failed => {
+                self.use_poster_fallback();
+                None
+            }
+        }
+    }
+
+    pub(crate) fn finish_allocation(
+        &mut self,
+        result: Result<Allocation, AllocationError>,
+    ) -> Refresh {
+        if !self.allocation_pending {
+            return Refresh::Unchanged;
+        }
+        self.allocation_pending = false;
+
+        match result {
+            Ok(allocation) => {
+                self.frame = Some(allocation.handle().clone());
+                self.allocation = Some(allocation);
+                Refresh::Frame
+            }
+            Err(error) => {
+                diagnostic(&pipeline_error(&format!(
+                    "wallpaper frame could not be allocated: {error}"
+                )));
+                self.use_poster_fallback();
+                Refresh::Failed
+            }
+        }
+    }
+
+    fn use_poster_fallback(&mut self) {
+        self.allocation = None;
+        self.allocation_pending = false;
+        self.frame.clone_from(&self.poster);
+        self.player.take();
     }
 
     pub(crate) fn rgba_frame(&self) -> Option<genkan_session_lock::RgbaFrame> {
@@ -1124,6 +1189,41 @@ mod tests {
     }
 
     #[test]
+    fn iced_keeps_displaying_the_previous_frame_until_allocation_finishes() {
+        let shared = Arc::new(Shared::default());
+        let (signal_sender, signal) = watch::channel(0);
+        let poster = image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]);
+        let poster_id = poster.id();
+        let mut state = State {
+            player: Some(Player {
+                shared: Arc::clone(&shared),
+                signal,
+                stopping: Arc::new(AtomicBool::new(false)),
+                worker: None,
+            }),
+            poster: Some(poster.clone()),
+            frame: Some(poster),
+            allocation: None,
+            allocation_pending: false,
+        };
+        publish_frame(&shared, &signal_sender, frame(1, Duration::ZERO));
+
+        let pending = state
+            .prepare_latest()
+            .expect("the first decoded frame must begin allocation");
+        assert_ne!(pending.id(), poster_id);
+        assert_eq!(state.frame.as_ref().unwrap().id(), poster_id);
+
+        publish_frame(&shared, &signal_sender, frame(2, Duration::from_millis(33)));
+        assert!(state.prepare_latest().is_none());
+        let shared_state = lock(&shared.state);
+        let Some(Update::Frame(latest)) = shared_state.pending.as_ref() else {
+            panic!("the latest frame must remain queued during allocation");
+        };
+        assert_eq!(latest.pixels[0], 2);
+    }
+
+    #[test]
     fn late_terminal_frames_do_not_cancel_loop_transition() {
         let shared = Shared::default();
         let duration = Duration::from_secs(10);
@@ -1190,6 +1290,8 @@ mod tests {
             }),
             poster: Some(poster),
             frame: None,
+            allocation: None,
+            allocation_pending: false,
         };
 
         state.receive_latest();

@@ -966,6 +966,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-video",
  "iced",
+ "iced_runtime",
  "image 0.24.9",
  "libc",
  "rclip-desktop-entry",
