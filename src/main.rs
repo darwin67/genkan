@@ -74,7 +74,7 @@ struct LoginArguments {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "The lock is ready only after the compositor confirms ext-session-lock-v1 ownership. This phase does not yet include production authentication; terminate it from another VT if necessary."
+    after_help = "The lock is ready only after the compositor confirms ext-session-lock-v1 ownership. This phase does not yet include production authentication; recover or terminate the graphical session or compositor from another VT if necessary."
 )]
 struct LockArguments {
     /// Descriptor that receives `READY` after compositor lock confirmation.
@@ -267,6 +267,22 @@ mod tests {
         assert!(Arguments::try_parse_from(["genkan", "login", "--windowed"]).is_ok());
         assert!(Arguments::try_parse_from(["genkan", "lock"]).is_ok());
         assert!(Arguments::try_parse_from(["genkan", "lock", "--username", "alice"]).is_err());
+    }
+
+    #[test]
+    fn lock_help_describes_recovery_without_implying_genkan_can_unlock() {
+        use clap::CommandFactory;
+
+        let mut command = Arguments::command();
+        let lock = command
+            .find_subcommand_mut("lock")
+            .expect("lock subcommand");
+        let mut help = Vec::new();
+        lock.write_long_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+
+        assert!(help.contains("recover or terminate the graphical session or compositor"));
+        assert!(!help.contains("terminate it from another VT"));
     }
 
     #[test]

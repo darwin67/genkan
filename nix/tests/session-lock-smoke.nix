@@ -20,6 +20,10 @@ pkgs.runCommand "genkan-session-lock-smoke"
     production_log=$(mktemp)
     ready=$(mktemp)
     cleanup() {
+      if [[ -n "''${lock_pid:-}" ]]; then
+        kill "$lock_pid" 2>/dev/null || true
+        wait "$lock_pid" 2>/dev/null || true
+      fi
       if [[ -n "''${sway_pid:-}" ]]; then
         kill "$sway_pid" 2>/dev/null || true
         wait "$sway_pid" 2>/dev/null || true
@@ -57,19 +61,61 @@ pkgs.runCommand "genkan-session-lock-smoke"
       exit 1
     fi
 
-    if ! env \
+    ipc=
+    for _ in $(seq 1 100); do
+      ipc=$(find "$runtime" -maxdepth 1 -type s -name 'sway-ipc.*.sock' -print -quit)
+      [[ -n "$ipc" ]] && break
+      sleep 0.05
+    done
+    if [[ -z "$ipc" ]]; then
+      cat "$log" >&2
+      exit 1
+    fi
+
+    env \
       WAYLAND_DISPLAY=$(basename "$socket") \
       XDG_RUNTIME_DIR="$runtime" \
       timeout 30s ${genkan}/bin/genkan lock \
         --reduce-motion \
         --test-unlock-after-ready \
         --ready-fd 3 \
-        3>"$ready" 2>"$lock_log"; then
+        3>"$ready" 2>"$lock_log" &
+    lock_pid=$!
+
+    for _ in $(seq 1 100); do
+      grep -Fxq READY "$ready" && break
+      ! kill -0 "$lock_pid" 2>/dev/null && break
+      sleep 0.01
+    done
+    if ! grep -Fxq READY "$ready"; then
       cat "$log" "$lock_log" >&2
       exit 1
     fi
-    grep -Fx READY "$ready"
-    if [[ $(grep -Fc 'created opaque surface for output' "$lock_log") -ne 2 ]]; then
+
+    XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" create_output >/dev/null
+    for _ in $(seq 1 100); do
+      [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -ge 3 ]] && break
+      sleep 0.01
+    done
+    XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-3 disable >/dev/null
+    for _ in $(seq 1 100); do
+      [[ $(grep -Fc 'removed surface for output' "$lock_log") -ge 1 ]] && break
+      sleep 0.01
+    done
+    XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-3 enable >/dev/null
+    for _ in $(seq 1 100); do
+      [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -ge 4 ]] && break
+      sleep 0.01
+    done
+
+    if ! wait "$lock_pid"; then
+      cat "$log" "$lock_log" >&2
+      exit 1
+    fi
+    lock_pid=
+    if [[ $(grep -Fc 'created lock surface for output' "$lock_log") -lt 4 ]] ||
+       [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -lt 4 ]] ||
+       [[ $(grep -Fc 'removed surface for output' "$lock_log") -lt 1 ]]; then
       cat "$log" "$lock_log" >&2
       exit 1
     fi

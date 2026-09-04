@@ -61,6 +61,30 @@ fn adopt_ready_fd(fd: RawFd) -> Result<OwnedFd, Error> {
     if duplicate < 0 {
         return Err(Error::ReadyFd(std::io::Error::last_os_error()));
     }
+    // SAFETY: `duplicate` is open and F_GETFL only inspects its status flags.
+    let flags = unsafe { libc::fcntl(duplicate, libc::F_GETFL) };
+    let access_mode = flags & libc::O_ACCMODE;
+    if flags < 0
+        || flags & libc::O_PATH != 0
+        || !matches!(access_mode, libc::O_WRONLY | libc::O_RDWR)
+    {
+        let error = if flags < 0 {
+            std::io::Error::last_os_error()
+        } else {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "readiness descriptor is not writable",
+            )
+        };
+        // The inherited descriptor was transferred to this function once its
+        // successful duplication proved it was open. Close both copies.
+        // SAFETY: both descriptors are open and uniquely owned here.
+        unsafe {
+            libc::close(fd);
+            libc::close(duplicate);
+        }
+        return Err(Error::ReadyFd(error));
+    }
     // The CLI's inherited descriptor is explicitly transferred to Genkan.
     // Close it after successful duplication so only the typed owner remains.
     // SAFETY: successful duplication proves `fd` was open at this boundary.
@@ -77,6 +101,7 @@ fn adopt_ready_fd(fd: RawFd) -> Result<OwnedFd, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
     use std::fs::File;
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, IntoRawFd};
@@ -103,5 +128,40 @@ mod tests {
         let mut message = String::new();
         reader.read_to_string(&mut message).unwrap();
         assert_eq!(message, "READY\n");
+    }
+
+    #[test]
+    fn read_only_readiness_descriptors_are_rejected_and_closed() {
+        let original = File::open("/dev/null").unwrap().into_raw_fd();
+
+        assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
+        // SAFETY: F_GETFD only inspects the descriptor integer.
+        assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+
+        let mut pipe = [0; 2];
+        // SAFETY: `pipe` points to storage for both returned descriptors.
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        // SAFETY: the write end is not transferred to the function under test.
+        unsafe { libc::close(pipe[1]) };
+        assert!(matches!(adopt_ready_fd(pipe[0]), Err(Error::ReadyFd(_))));
+        // SAFETY: F_GETFD only inspects the descriptor integer.
+        assert_eq!(unsafe { libc::fcntl(pipe[0], libc::F_GETFD) }, -1);
+
+        let path = CString::new("/dev/null").unwrap();
+        // SAFETY: `path` is a valid, NUL-terminated path and open returns a
+        // descriptor owned by this test on success.
+        let original = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        assert!(original >= 0);
+        assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
+        // SAFETY: F_GETFD only inspects the descriptor integer.
+        assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+
+        // Linux accepts access mode 3, but it permits neither reads nor writes.
+        // SAFETY: `path` remains a valid NUL-terminated path.
+        let original = unsafe { libc::open(path.as_ptr(), libc::O_ACCMODE | libc::O_CLOEXEC) };
+        assert!(original >= 0);
+        assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
+        // SAFETY: F_GETFD only inspects the descriptor integer.
+        assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
     }
 }
