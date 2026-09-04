@@ -83,9 +83,11 @@ beyond that bound. A size change or output removal drops stale client mappings
 immediately; Wayland keeps an already committed protocol buffer valid until
 the compositor releases it. Post-dispatch maintenance resumes a coalesced
 redraw after a current-size buffer release, so temporary double-buffer pressure
-waits without allocating or failing. Animated and compositor-driven redraws
-are coalesced behind compositor frame callbacks. Every committed buffer has
-alpha 255 and an explicit opaque region. Wallpaper frames use precomputed
+waits without allocating or failing. Animated content redraws are coalesced
+behind compositor frame callbacks. Geometry changes commit after the current
+event batch even when an older callback is outstanding, without requesting a
+duplicate callback. Every committed buffer has alpha 255 and an explicit opaque
+region. Wallpaper frames use precomputed
 cover-cropping coordinates and the same darkening treatment as login; decoder
 failure redraws the packaged poster or opaque generated fallback without
 changing lock lifecycle state.

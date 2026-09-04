@@ -55,6 +55,7 @@ struct Surface {
     size: Option<(u32, u32)>,
     scale: i32,
     transform: wl_output::Transform,
+    geometry_generation: u64,
     buffers: Vec<SurfaceBuffer>,
     redraw: RedrawState,
     first_presented: bool,
@@ -62,6 +63,7 @@ struct Surface {
 
 struct SurfaceBuffer {
     size: (u32, u32),
+    geometry_generation: u64,
     buffer: Buffer,
     pool: SlotPool,
 }
@@ -70,6 +72,7 @@ struct SurfaceBuffer {
 struct RedrawState {
     frame_pending: bool,
     redraw_pending: bool,
+    geometry_pending: bool,
 }
 
 impl RedrawState {
@@ -78,9 +81,24 @@ impl RedrawState {
         !self.frame_pending
     }
 
-    fn committed(&mut self) {
+    fn request_geometry(&mut self) {
+        self.redraw_pending = true;
+        self.geometry_pending = true;
+    }
+
+    fn should_render(&self, current_buffer_count: usize, reusable: bool) -> bool {
+        self.geometry_pending
+            || (!self.frame_pending && redraw_can_progress(current_buffer_count, reusable))
+    }
+
+    fn request_frame_callback(&self) -> bool {
+        !self.frame_pending
+    }
+
+    fn committed(&mut self, requested_frame_callback: bool) {
         self.redraw_pending = false;
-        self.frame_pending = true;
+        self.geometry_pending = false;
+        self.frame_pending |= requested_frame_callback;
     }
 
     fn frame_done(&mut self) -> bool {
@@ -241,6 +259,7 @@ impl Runtime {
             size: None,
             scale: 1,
             transform: wl_output::Transform::Normal,
+            geometry_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
             redraw: RedrawState {
                 redraw_pending: true,
@@ -283,32 +302,22 @@ impl Runtime {
                 surface.scale.max(1) as u32,
                 surface.transform,
             )?;
-            surface.buffers.retain(|item| item.size == configured_size);
+            surface.buffers.retain(|item| {
+                item.size == configured_size
+                    && item.geometry_generation == surface.geometry_generation
+            });
             let reusable = surface.buffers.iter_mut().any(|item| {
                 item.size == configured_size && item.pool.canvas(&item.buffer).is_some()
             });
             if surface.redraw.redraw_pending
-                && !surface.redraw.frame_pending
-                && redraw_can_progress(surface.buffers.len(), reusable)
+                && surface
+                    .redraw
+                    .should_render(surface.buffers.len(), reusable)
             {
                 ready_to_redraw.push(index);
             }
         }
         for index in ready_to_redraw {
-            self.render(index, qh)?;
-        }
-        Ok(())
-    }
-
-    fn request_surface_redraw(
-        &mut self,
-        index: usize,
-        qh: &QueueHandle<Self>,
-    ) -> Result<(), Error> {
-        if self.terminate {
-            return Ok(());
-        }
-        if self.surfaces[index].size.is_some() && self.surfaces[index].redraw.request() {
             self.render(index, qh)?;
         }
         Ok(())
@@ -335,13 +344,15 @@ impl Runtime {
             ));
         }
         let transform = surface.transform;
+        let geometry_generation = surface.geometry_generation;
         let wl_surface = surface.lock_surface.wl_surface().clone();
         let output_id = surface.output.id().protocol_id();
         let frame = self.presentation.frame();
         let surface = &mut self.surfaces[index];
-        surface
-            .buffers
-            .retain(|item| item.size == (buffer_width, buffer_height));
+        surface.buffers.retain(|item| {
+            item.size == (buffer_width, buffer_height)
+                && item.geometry_generation == geometry_generation
+        });
         let reusable = surface.buffers.iter_mut().position(|item| {
             item.size == (buffer_width, buffer_height) && item.pool.canvas(&item.buffer).is_some()
         });
@@ -373,6 +384,7 @@ impl Runtime {
             draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
             surface.buffers.push(SurfaceBuffer {
                 size: (buffer_width, buffer_height),
+                geometry_generation,
                 buffer,
                 pool,
             });
@@ -389,9 +401,12 @@ impl Runtime {
         wl_surface.set_buffer_scale(scale as i32);
         wl_surface.set_buffer_transform(transform);
         wl_surface.damage_buffer(0, 0, buffer_width as i32, buffer_height as i32);
-        wl_surface.frame(qh, wl_surface.clone());
+        let request_frame_callback = surface.redraw.request_frame_callback();
+        if request_frame_callback {
+            wl_surface.frame(qh, wl_surface.clone());
+        }
         wl_surface.commit();
-        surface.redraw.committed();
+        surface.redraw.committed(request_frame_callback);
         if !surface.first_presented {
             eprintln!("genkan lock: committed first opaque buffer for output {output_id}");
             surface.first_presented = true;
@@ -470,7 +485,7 @@ impl SessionLockHandler for Runtime {
     fn configure(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         lock_surface: SessionLockSurface,
         configure: SessionLockSurfaceConfigure,
         _serial: u32,
@@ -483,9 +498,11 @@ impl SessionLockHandler for Runtime {
             self.fail(Error::Runtime("configured an unknown lock surface".into()));
             return;
         };
-        self.surfaces[index].size = Some(configure.new_size);
-        if let Err(error) = self.request_surface_redraw(index, qh) {
-            self.fail(error);
+        let surface = &mut self.surfaces[index];
+        if surface.size != Some(configure.new_size) {
+            surface.size = Some(configure.new_size);
+            surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
+            surface.redraw.request_geometry();
         }
     }
 }
@@ -494,7 +511,7 @@ impl CompositorHandler for Runtime {
     fn scale_factor_changed(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         surface: &wl_surface::WlSurface,
         scale: i32,
     ) {
@@ -503,9 +520,12 @@ impl CompositorHandler for Runtime {
             .iter()
             .position(|item| item.lock_surface.wl_surface() == surface)
         {
-            self.surfaces[index].scale = scale.max(1);
-            if let Err(error) = self.request_surface_redraw(index, qh) {
-                self.fail(error);
+            let surface = &mut self.surfaces[index];
+            let scale = scale.max(1);
+            if surface.scale != scale {
+                surface.scale = scale;
+                surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
+                surface.redraw.request_geometry();
             }
         }
     }
@@ -513,7 +533,7 @@ impl CompositorHandler for Runtime {
     fn transform_changed(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         surface: &wl_surface::WlSurface,
         transform: wl_output::Transform,
     ) {
@@ -522,9 +542,11 @@ impl CompositorHandler for Runtime {
             .iter()
             .position(|item| item.lock_surface.wl_surface() == surface)
         {
-            self.surfaces[index].transform = transform;
-            if let Err(error) = self.request_surface_redraw(index, qh) {
-                self.fail(error);
+            let surface = &mut self.surfaces[index];
+            if surface.transform != transform {
+                surface.transform = transform;
+                surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
+                surface.redraw.request_geometry();
             }
         }
     }
@@ -838,12 +860,28 @@ mod tests {
         let mut redraw = RedrawState::default();
 
         assert!(redraw.request());
-        redraw.committed();
+        redraw.committed(true);
         assert!(!redraw.request());
         assert!(!redraw.request());
         assert!(redraw.frame_done());
-        redraw.committed();
+        redraw.committed(true);
         assert!(!redraw.frame_done());
+    }
+
+    #[test]
+    fn geometry_redraw_bypasses_an_obsolete_frame_callback_without_adding_one() {
+        let mut redraw = RedrawState::default();
+        redraw.request();
+        redraw.committed(true);
+
+        redraw.request_geometry();
+
+        assert!(redraw.should_render(0, false));
+        assert!(!redraw.request_frame_callback());
+        redraw.committed(false);
+        assert!(redraw.frame_pending);
+        assert!(!redraw.geometry_pending);
+        assert!(!redraw.redraw_pending);
     }
 
     #[test]

@@ -63,7 +63,11 @@ fn adopt_ready_fd(fd: RawFd) -> Result<OwnedFd, Error> {
     }
     // SAFETY: `duplicate` is open and F_GETFL only inspects its status flags.
     let flags = unsafe { libc::fcntl(duplicate, libc::F_GETFL) };
-    if flags < 0 || flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_RDONLY {
+    let access_mode = flags & libc::O_ACCMODE;
+    if flags < 0
+        || flags & libc::O_PATH != 0
+        || !matches!(access_mode, libc::O_WRONLY | libc::O_RDWR)
+    {
         let error = if flags < 0 {
             std::io::Error::last_os_error()
         } else {
@@ -147,6 +151,14 @@ mod tests {
         // SAFETY: `path` is a valid, NUL-terminated path and open returns a
         // descriptor owned by this test on success.
         let original = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        assert!(original >= 0);
+        assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
+        // SAFETY: F_GETFD only inspects the descriptor integer.
+        assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+
+        // Linux accepts access mode 3, but it permits neither reads nor writes.
+        // SAFETY: `path` remains a valid NUL-terminated path.
+        let original = unsafe { libc::open(path.as_ptr(), libc::O_ACCMODE | libc::O_CLOEXEC) };
         assert!(original >= 0);
         assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
         // SAFETY: F_GETFD only inspects the descriptor integer.
