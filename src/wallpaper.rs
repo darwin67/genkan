@@ -188,7 +188,7 @@ impl State {
                 Refresh::Frame
             }
             Update::Failed => {
-                self.use_poster_fallback();
+                self.stop_playback();
                 Refresh::Failed
             }
         }
@@ -210,7 +210,7 @@ impl State {
                 ))
             }
             Update::Failed => {
-                self.use_poster_fallback();
+                self.stop_playback();
                 None
             }
         }
@@ -235,16 +235,17 @@ impl State {
                 diagnostic(&pipeline_error(&format!(
                     "wallpaper frame could not be allocated: {error}"
                 )));
-                self.use_poster_fallback();
+                self.stop_playback();
                 Refresh::Failed
             }
         }
     }
 
-    fn use_poster_fallback(&mut self) {
-        self.allocation = None;
+    fn stop_playback(&mut self) {
         self.allocation_pending = false;
-        self.frame.clone_from(&self.poster);
+        if self.frame.is_none() {
+            self.frame.clone_from(&self.poster);
+        }
         self.player.take();
     }
 
@@ -1298,6 +1299,33 @@ mod tests {
 
         assert!(state.decoder_is_stopped());
         assert!(state.has_frame());
+    }
+
+    #[test]
+    fn receiving_failure_preserves_the_last_displayed_frame() {
+        let shared = Arc::new(Shared::default());
+        lock(&shared.state).pending = Some(Update::Failed);
+        let (_, signal) = watch::channel(0);
+        let poster = image::Handle::from_rgba(1, 1, vec![1, 2, 3, 255]);
+        let current = image::Handle::from_rgba(1, 1, vec![4, 5, 6, 255]);
+        let current_id = current.id();
+        let mut state = State {
+            player: Some(Player {
+                shared,
+                signal,
+                stopping: Arc::new(AtomicBool::new(false)),
+                worker: None,
+            }),
+            poster: Some(poster),
+            frame: Some(current),
+            allocation: None,
+            allocation_pending: false,
+        };
+
+        state.receive_latest();
+
+        assert!(state.decoder_is_stopped());
+        assert_eq!(state.frame.as_ref().unwrap().id(), current_id);
     }
 
     #[test]
