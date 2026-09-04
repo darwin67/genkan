@@ -154,6 +154,13 @@ swayidle -w \
   before-sleep 'genkan lock --daemonize'
 ----
 
+This integration is bounded and best effort. Swayidle does not use the hook's
+exit status to veto suspension, and logind continues once
+`InhibitDelayMaxSec` expires. Hosts should size that timeout for worst-case
+locker startup and monitor failures. A deployment that requires fail-closed
+suspension must instead route suspend requests through a component that first
+obtains lock confirmation and only then requests suspend.
+
 The same instance must tolerate both hooks racing or running while a lock is
 already active. A second invocation detects the existing live locker and
 returns success only when that locker is confirmed locked; it must not compete
@@ -290,7 +297,8 @@ The implementation must preserve all of these invariants:
 
 * No normal client content is considered protected until the compositor emits
   `locked`.
-* Suspend integration does not release its delay until confirmed lock readiness.
+* Genkan reports launcher success only after confirmed lock readiness; the
+  external idle manager and logind own delay timeout and suspend policy.
 * Authentication failure, worker failure, renderer failure, signal termination,
   panic, and compositor disconnection never request unlock.
 * Only successful PAM authentication for the invoking real-UID account can
@@ -341,7 +349,7 @@ session with deterministic PAM. The VM verifies:
 * successful authentication performs explicit unlock and restores input;
 * killing the locker after confirmation leaves the compositor fail-closed;
 * duplicate lock and before-sleep requests cannot race readiness;
-* the suspend marker cannot occur before readiness.
+* the simulated before-sleep hook cannot reach its marker before readiness.
 
 Diagnostics used by tests contain only lifecycle events, output identifiers,
 dimensions, and authentication success or failure. They never include input

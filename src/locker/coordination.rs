@@ -49,11 +49,20 @@ pub(super) fn enter() -> Result<Entry, Error> {
     if !metadata.file_type().is_socket() {
         return Err(Error::WaylandDisplay);
     }
-    let stem = format!("genkan-lock-{:x}-{:x}", metadata.dev(), metadata.ino());
+    let stem = coordination_stem(
+        metadata.dev(),
+        metadata.ino(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    );
     enter_paths(
         runtime.join(format!("{stem}.lease")),
         runtime.join(format!("{stem}.sock")),
     )
+}
+
+fn coordination_stem(device: u64, inode: u64, ctime: i64, ctime_nsec: i64) -> String {
+    format!("genkan-lock-{device:x}-{inode:x}-{ctime:x}-{ctime_nsec:x}")
 }
 
 fn runtime_directory() -> Result<PathBuf, Error> {
@@ -255,6 +264,14 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         (root.join("lease"), root.join("socket"), root)
+    }
+
+    #[test]
+    fn compositor_generation_changes_the_coordination_identity() {
+        let original = coordination_stem(1, 2, 3, 4);
+
+        assert_ne!(original, coordination_stem(1, 2, 5, 4));
+        assert_ne!(original, coordination_stem(1, 2, 3, 5));
     }
 
     #[test]

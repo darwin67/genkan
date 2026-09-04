@@ -89,8 +89,8 @@ and after it resumes. Resume does not start a second authentication attempt or
 unlock the session; the existing PAM conversation continues only when the user
 interacts with the lock screen.
 
-For Sway and other sessions using swayidle, use its wait mode so its logind
-delay inhibitor remains held until Genkan reports readiness:
+For Sway and other sessions using swayidle, use its wait mode so the
+before-sleep command participates in swayidle's logind delay inhibitor:
 
 ```sh
 swayidle -w \
@@ -98,10 +98,17 @@ swayidle -w \
   before-sleep 'genkan lock --daemonize'
 ```
 
-An equivalent idle manager is safe only if its before-sleep command holds a
-logind delay inhibitor and does not allow suspend to continue until the command
-exits successfully. Starting Genkan from an after-resume hook is not safe:
-session content may already have been exposed before the locker starts.
+This is bounded, best-effort suspend integration rather than a suspend veto.
+Swayidle does not inspect the command's exit status, and logind proceeds when
+`InhibitDelayMaxSec` expires even if the command is still running. Configure
+that timeout above the host's worst-case locker startup time and monitor
+launcher failures. A startup failure can still let the machine suspend without
+a confirmed Genkan lock; deployments that require fail-closed suspension must
+route suspend requests through a component that locks first and requests
+suspend only after confirmation.
+
+Starting Genkan from an after-resume hook is not safe: session content may
+already have been exposed before the locker starts.
 
 Genkan detects support from the connected Wayland compositor at runtime. It
 requires `ext_session_lock_manager_v1` and the rendering globals used by its

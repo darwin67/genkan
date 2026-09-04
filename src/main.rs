@@ -332,6 +332,20 @@ mod tests {
     }
 
     #[test]
+    fn suspend_documentation_exposes_external_delay_limits() {
+        let deployment = include_str!("../docs/deployment.md");
+        let readme = include_str!("../README.md");
+        let rfd = include_str!("../rfd/0003/README.adoc");
+
+        for document in [deployment, rfd] {
+            assert!(document.contains("InhibitDelayMaxSec"));
+            assert!(document.contains("fail-closed"));
+        }
+        assert!(deployment.contains("Swayidle does not inspect the command's exit status"));
+        assert!(readme.contains("This is not a suspend veto"));
+    }
+
+    #[test]
     fn lock_options_are_typed_and_scoped_to_the_lock_command() {
         let arguments = try_parse_lock(["genkan", "--ready-fd", "7", "--reduce-motion"])
             .expect("valid lock configuration");

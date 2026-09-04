@@ -93,8 +93,8 @@ each new boundary, and do not ship a production path that unlocks without PAM.
   `fork`.
 - [X] Make concurrent manual-lock and before-sleep invocations join the same
   confirmed lock lifecycle without treating protocol denial as success.
-- [X] Document swayidle or equivalent delay-inhibitor integration that cannot
-  allow suspend before compositor confirmation.
+- [X] Document swayidle delay-inhibitor integration and its external failure
+  and =InhibitDelayMaxSec= limits; it cannot veto suspend.
 - [X] Export an opt-in NixOS module for package and PAM setup without silently
   replacing a desktop environment's own locker.
 - [X] Document runtime protocol detection, supported-compositor requirements,
