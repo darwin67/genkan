@@ -23,6 +23,9 @@ pkgs.runCommand "genkan-graphics-smoke"
     export XDG_DATA_DIRS="$TMPDIR/data/share"
     output_width=640
     output_height=360
+    wallpaper_crop_size=96
+    wallpaper_crop_x=$((output_width - wallpaper_crop_size))
+    wallpaper_crop_y=$((output_height - wallpaper_crop_size))
     mkdir -p "$HOME/.cache/fontconfig" "$XDG_RUNTIME_DIR" "$XDG_DATA_DIRS/wayland-sessions"
     chmod 700 "$XDG_RUNTIME_DIR"
 
@@ -200,7 +203,15 @@ pkgs.runCommand "genkan-graphics-smoke"
       fi
       colors=$(identify -format '%k' "$screenshot")
       if [ "$colors" -ge 16 ]; then
-        frame=$(magick "$screenshot" rgba:- | sha256sum | cut -d' ' -f1)
+        magick "$screenshot" \
+          -crop "$wallpaper_crop_size"x"$wallpaper_crop_size"+"$wallpaper_crop_x"+"$wallpaper_crop_y" \
+          +repage "$TMPDIR/wallpaper-crop.png"
+        crop_colors=$(identify -format '%k' "$TMPDIR/wallpaper-crop.png")
+        if [ "$crop_colors" -lt 16 ]; then
+          sleep 0.1
+          continue
+        fi
+        frame=$(magick "$TMPDIR/wallpaper-crop.png" rgba:- | sha256sum | cut -d' ' -f1)
         if [ -n "$previous_frame" ] && [ "$frame" = "$previous_frame" ]; then
           poster_frame=$frame
           break
@@ -275,9 +286,12 @@ pkgs.runCommand "genkan-graphics-smoke"
         echo "Genkan exited during animated frame capture" >&2
         exit 1
       fi
-      colors=$(identify -format '%k' "$screenshot")
-      if [ "$colors" -ge 16 ]; then
-        frame=$(magick "$screenshot" rgba:- | sha256sum | cut -d' ' -f1)
+      magick "$screenshot" \
+        -crop "$wallpaper_crop_size"x"$wallpaper_crop_size"+"$wallpaper_crop_x"+"$wallpaper_crop_y" \
+        +repage "$TMPDIR/wallpaper-crop.png"
+      crop_colors=$(identify -format '%k' "$TMPDIR/wallpaper-crop.png")
+      if [ "$crop_colors" -ge 16 ]; then
+        frame=$(magick "$TMPDIR/wallpaper-crop.png" rgba:- | sha256sum | cut -d' ' -f1)
         if [ "$frame" != "$poster_frame" ]; then
           animated_frame=$frame
           break
@@ -293,8 +307,8 @@ pkgs.runCommand "genkan-graphics-smoke"
 
     distinct_frames=" $animated_frame"
     frame_count=1
-    for _ in $(seq 1 10); do
-      sleep 0.5
+    for _ in $(seq 1 30); do
+      sleep 0.04
       if ! kill -0 "$genkan_pid" 2>/dev/null; then
         cat "$TMPDIR/animated.log"
         echo "Genkan exited during animated frame capture" >&2
@@ -307,13 +321,16 @@ pkgs.runCommand "genkan-graphics-smoke"
       )
       screenshot=$(find "$TMPDIR/captures" -name 'wayland-screenshot-*.png' -print -quit)
       test -n "$screenshot"
-      colors=$(identify -format '%k' "$screenshot")
-      if [ "$colors" -lt 16 ]; then
+      magick "$screenshot" \
+        -crop "$wallpaper_crop_size"x"$wallpaper_crop_size"+"$wallpaper_crop_x"+"$wallpaper_crop_y" \
+        +repage "$TMPDIR/wallpaper-crop.png"
+      crop_colors=$(identify -format '%k' "$TMPDIR/wallpaper-crop.png")
+      if [ "$crop_colors" -lt 16 ]; then
         cat "$TMPDIR/animated.log"
-        echo "Animated wallpaper flashed a blank frame after playback started" >&2
+        echo "Animated wallpaper region flashed blank after playback started" >&2
         exit 1
       fi
-      frame=$(magick "$screenshot" rgba:- | sha256sum | cut -d' ' -f1)
+      frame=$(magick "$TMPDIR/wallpaper-crop.png" rgba:- | sha256sum | cut -d' ' -f1)
       case " $distinct_frames " in
         *" $frame "*) ;;
         *)
