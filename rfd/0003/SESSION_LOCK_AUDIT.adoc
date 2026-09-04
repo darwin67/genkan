@@ -76,12 +76,14 @@ fallback.
 One lock surface is created for every initial output and for each output added
 later. Output removal drops only its corresponding local surface. Configure,
 integer scale, and buffer transform changes redraw a correctly sized buffer.
-Each output keeps a double buffer for its configured size and reuses buffers
-after compositor release; animated redraws are coalesced behind compositor
-frame callbacks. Every committed buffer has alpha 255 and an explicit opaque
-region. Wallpaper frames use precomputed cover-cropping coordinates and the
-same darkening treatment as login; decoder failure redraws the packaged poster
-or opaque generated fallback without changing lock lifecycle state.
+Each output keeps at most two reusable buffers for its configured size, plus
+retired in-flight buffers within an explicit four-buffer and 256 MiB retained
+allocation budget. Buffers are reused after compositor release; animated and
+compositor-driven redraws are coalesced behind compositor frame callbacks.
+Every committed buffer has alpha 255 and an explicit opaque region. Wallpaper
+frames use precomputed cover-cropping coordinates and the same darkening
+treatment as login; decoder failure redraws the packaged poster or opaque
+generated fallback without changing lock lifecycle state.
 
 Only the protocol's `locked` event transitions the state to locked and writes
 `READY` to `--ready-fd`. `finished` before confirmation is denial. `finished`

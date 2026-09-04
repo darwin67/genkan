@@ -94,7 +94,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
 
     XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" create_output >/dev/null
     for _ in $(seq 1 100); do
-      [[ $(grep -Fc 'presented opaque buffer for output' "$lock_log") -ge 3 ]] && break
+      [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -ge 3 ]] && break
       sleep 0.01
     done
     XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-3 disable >/dev/null
@@ -104,7 +104,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
     done
     XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-3 enable >/dev/null
     for _ in $(seq 1 100); do
-      [[ $(grep -Fc 'presented opaque buffer for output' "$lock_log") -ge 4 ]] && break
+      [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -ge 4 ]] && break
       sleep 0.01
     done
 
@@ -114,7 +114,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
     fi
     lock_pid=
     if [[ $(grep -Fc 'created lock surface for output' "$lock_log") -lt 4 ]] ||
-       [[ $(grep -Fc 'presented opaque buffer for output' "$lock_log") -lt 4 ]] ||
+       [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -lt 4 ]] ||
        [[ $(grep -Fc 'removed surface for output' "$lock_log") -lt 1 ]]; then
       cat "$log" "$lock_log" >&2
       exit 1

@@ -33,6 +33,8 @@ const DIM_DENOMINATOR: u16 = 5;
 const MAX_SURFACE_PIXELS: usize = 16_384 * 16_384;
 const MAX_SURFACE_DIMENSION: u32 = 16_384;
 const BUFFER_COUNT: usize = 2;
+const MAX_RETAINED_BUFFERS: usize = 4;
+const MAX_RETAINED_BUFFER_BYTES: usize = 256 * 1024 * 1024;
 #[cfg(feature = "lock-test")]
 const TEST_UNLOCK_DELAY: Duration = Duration::from_secs(5);
 
@@ -61,6 +63,7 @@ struct Surface {
 
 struct SurfaceBuffer {
     size: (u32, u32),
+    bytes: usize,
     buffer: Buffer,
 }
 
@@ -183,12 +186,18 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
             runtime.fail(Error::Runtime(error.to_string()));
             break;
         }
+        if runtime.terminate {
+            break;
+        }
         if let Err(error) = runtime.reconcile_outputs(&qh) {
             runtime.fail(error);
             break;
         }
         #[cfg(feature = "lock-test")]
         runtime.advance_test_unlock();
+        if runtime.terminate {
+            break;
+        }
         match refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state) {
             Refresh::Unchanged => {}
             Refresh::Frame => runtime.redraw_all(&qh),
@@ -204,6 +213,9 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
 
 impl Runtime {
     fn reconcile_outputs(&mut self, qh: &QueueHandle<Self>) -> Result<(), Error> {
+        if self.terminate {
+            return Ok(());
+        }
         let outputs = self.output_state.outputs().collect::<Vec<_>>();
         for output in outputs {
             self.add_surface(output, qh)?;
@@ -246,6 +258,9 @@ impl Runtime {
     }
 
     fn redraw_all(&mut self, qh: &QueueHandle<Self>) {
+        if self.terminate {
+            return;
+        }
         let configured = self
             .surfaces
             .iter_mut()
@@ -262,6 +277,20 @@ impl Runtime {
         }
     }
 
+    fn request_surface_redraw(
+        &mut self,
+        index: usize,
+        qh: &QueueHandle<Self>,
+    ) -> Result<(), Error> {
+        if self.terminate {
+            return Ok(());
+        }
+        if self.surfaces[index].size.is_some() && self.surfaces[index].redraw.request() {
+            self.render(index, qh)?;
+        }
+        Ok(())
+    }
+
     fn render(&mut self, index: usize, qh: &QueueHandle<Self>) -> Result<(), Error> {
         let surface = &self.surfaces[index];
         let (width, height) = surface
@@ -269,7 +298,7 @@ impl Runtime {
             .ok_or_else(|| Error::Runtime("attempted to render an unconfigured surface".into()))?;
         let scale = surface.scale.max(1) as u32;
         let (buffer_width, buffer_height) = buffer_size(width, height, scale, surface.transform)?;
-        let _bytes = buffer_width
+        let bytes = buffer_width
             .checked_mul(buffer_height)
             .and_then(|pixels| usize::try_from(pixels).ok())
             .filter(|pixels| *pixels <= MAX_SURFACE_PIXELS)
@@ -277,15 +306,21 @@ impl Runtime {
             .ok_or_else(|| {
                 Error::Runtime("compositor requested an unsafe lock-surface size".into())
             })?;
+        if bytes > MAX_RETAINED_BUFFER_BYTES {
+            return Err(Error::Runtime(
+                "compositor requested a lock buffer larger than the resource budget".into(),
+            ));
+        }
         let transform = surface.transform;
         let wl_surface = surface.lock_surface.wl_surface().clone();
         let output_id = surface.output.id().protocol_id();
         let frame = self.presentation.frame();
         let (pool, surfaces) = (&mut self.pool, &mut self.surfaces);
         let surface = &mut surfaces[index];
-        surface
-            .buffers
-            .retain(|item| item.size == (buffer_width, buffer_height));
+        surface.buffers.retain(|item| {
+            let active = pool.canvas(&item.buffer).is_none();
+            keep_buffer(item.size, (buffer_width, buffer_height), active)
+        });
         let reusable = surface.buffers.iter().position(|item| {
             item.size == (buffer_width, buffer_height) && pool.canvas(&item.buffer).is_some()
         });
@@ -296,7 +331,11 @@ impl Runtime {
             draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
             buffer_index
         } else {
-            if surface.buffers.len() >= BUFFER_COUNT {
+            if !can_allocate_buffer(
+                surface.buffers.iter().map(|item| (item.size, item.bytes)),
+                (buffer_width, buffer_height),
+                bytes,
+            ) {
                 wl_surface.frame(qh, wl_surface.clone());
                 wl_surface.commit();
                 surface.redraw.retry_scheduled();
@@ -315,6 +354,7 @@ impl Runtime {
             draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
             surface.buffers.push(SurfaceBuffer {
                 size: (buffer_width, buffer_height),
+                bytes,
                 buffer,
             });
             surface.buffers.len() - 1
@@ -334,7 +374,7 @@ impl Runtime {
         wl_surface.commit();
         surface.redraw.committed();
         if !surface.first_presented {
-            eprintln!("genkan lock: presented opaque buffer for output {output_id}");
+            eprintln!("genkan lock: committed first opaque buffer for output {output_id}");
             surface.first_presented = true;
         }
         Ok(())
@@ -425,8 +465,7 @@ impl SessionLockHandler for Runtime {
             return;
         };
         self.surfaces[index].size = Some(configure.new_size);
-        self.surfaces[index].redraw.request();
-        if let Err(error) = self.render(index, qh) {
+        if let Err(error) = self.request_surface_redraw(index, qh) {
             self.fail(error);
         }
     }
@@ -446,11 +485,8 @@ impl CompositorHandler for Runtime {
             .position(|item| item.lock_surface.wl_surface() == surface)
         {
             self.surfaces[index].scale = scale.max(1);
-            self.surfaces[index].redraw.request();
-            if self.surfaces[index].size.is_some() {
-                if let Err(error) = self.render(index, qh) {
-                    self.fail(error);
-                }
+            if let Err(error) = self.request_surface_redraw(index, qh) {
+                self.fail(error);
             }
         }
     }
@@ -468,11 +504,8 @@ impl CompositorHandler for Runtime {
             .position(|item| item.lock_surface.wl_surface() == surface)
         {
             self.surfaces[index].transform = transform;
-            self.surfaces[index].redraw.request();
-            if self.surfaces[index].size.is_some() {
-                if let Err(error) = self.render(index, qh) {
-                    self.fail(error);
-                }
+            if let Err(error) = self.request_surface_redraw(index, qh) {
+                self.fail(error);
             }
         }
     }
@@ -484,6 +517,9 @@ impl CompositorHandler for Runtime {
         surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
+        if self.terminate {
+            return;
+        }
         let Some(index) = self
             .surfaces
             .iter()
@@ -528,7 +564,7 @@ impl OutputHandler for Runtime {
         qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
-        if self.session_lock.is_some() {
+        if self.session_lock.is_some() && !self.terminate {
             if let Err(error) = self.add_surface(output, qh) {
                 self.fail(error);
             }
@@ -577,6 +613,33 @@ smithay_client_toolkit::delegate_registry!(Runtime);
 smithay_client_toolkit::delegate_session_lock!(Runtime);
 smithay_client_toolkit::delegate_shm!(Runtime);
 wayland_client::delegate_noop!(Runtime: ignore wl_region::WlRegion);
+
+fn keep_buffer(size: (u32, u32), configured_size: (u32, u32), active: bool) -> bool {
+    size == configured_size || active
+}
+
+fn can_allocate_buffer(
+    existing: impl IntoIterator<Item = ((u32, u32), usize)>,
+    configured_size: (u32, u32),
+    bytes: usize,
+) -> bool {
+    let mut count = 0;
+    let mut current_size_count = 0;
+    let mut retained_bytes = 0usize;
+    for (size, item_bytes) in existing {
+        count += 1;
+        current_size_count += usize::from(size == configured_size);
+        let Some(total) = retained_bytes.checked_add(item_bytes) else {
+            return false;
+        };
+        retained_bytes = total;
+    }
+    count < MAX_RETAINED_BUFFERS
+        && current_size_count < BUFFER_COUNT
+        && retained_bytes
+            .checked_add(bytes)
+            .is_some_and(|total| total <= MAX_RETAINED_BUFFER_BYTES)
+}
 
 fn buffer_size(
     width: u32,
@@ -782,6 +845,32 @@ mod tests {
         redraw.request();
         redraw.retry_scheduled();
         assert!(redraw.frame_done());
+    }
+
+    #[test]
+    fn resize_buffer_retention_is_explicitly_bounded() {
+        let mib = 1024 * 1024;
+        let buffers = [
+            ((3840, 2160), 32 * mib),
+            ((3840, 2160), 32 * mib),
+            ((5120, 2880), 56 * mib),
+        ];
+
+        assert!(keep_buffer((3840, 2160), (5120, 2880), true));
+        assert!(!keep_buffer((3840, 2160), (5120, 2880), false));
+        assert!(can_allocate_buffer(buffers, (5120, 2880), 56 * mib));
+
+        let at_count_limit = buffers.into_iter().chain([((2560, 1440), 16 * mib)]);
+        assert!(!can_allocate_buffer(
+            at_count_limit,
+            (7680, 4320),
+            128 * mib
+        ));
+        assert!(!can_allocate_buffer(
+            [((7680, 4320), 128 * mib)],
+            (7680, 4320),
+            128 * mib + 1
+        ));
     }
 
     #[test]
