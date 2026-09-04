@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -52,8 +52,7 @@ pub(super) struct Active {
 
 pub(super) fn enter() -> Result<Entry, Error> {
     let runtime = runtime_directory()?;
-    let display = wayland_socket(&runtime)?;
-    let (wayland, metadata) = connect_wayland(&display)?;
+    let (wayland, metadata) = wayland_connection(&runtime)?;
     let (peer_pid, peer_start_time) = peer_identity(&wayland)?;
     let stem = coordination_stem(
         metadata.dev(),
@@ -73,6 +72,42 @@ pub(super) fn enter() -> Result<Entry, Error> {
         }),
         LeaseEntry::Joined => Ok(Entry::Joined),
     }
+}
+
+fn wayland_connection(runtime: &Path) -> Result<(UnixStream, fs::Metadata), Error> {
+    if let Some(raw_fd) = std::env::var_os("WAYLAND_SOCKET") {
+        let raw_fd = raw_fd
+            .to_str()
+            .and_then(|value| value.parse::<RawFd>().ok())
+            .filter(|fd| *fd >= 0)
+            .ok_or(Error::WaylandDisplay)?;
+        std::env::remove_var("WAYLAND_SOCKET");
+        // SAFETY: WAYLAND_SOCKET transfers ownership of this inherited descriptor
+        // to the Wayland client, matching wayland-client's connect_to_env contract.
+        let wayland = UnixStream::from(unsafe { OwnedFd::from_raw_fd(raw_fd) });
+        set_close_on_exec(&wayland).map_err(|_| Error::WaylandDisplay)?;
+        let metadata =
+            fs::metadata(format!("/proc/self/fd/{raw_fd}")).map_err(|_| Error::WaylandDisplay)?;
+        if !metadata.file_type().is_socket() {
+            return Err(Error::WaylandDisplay);
+        }
+        return Ok((wayland, metadata));
+    }
+
+    let display = wayland_socket(runtime)?;
+    connect_wayland(&display)
+}
+
+fn set_close_on_exec(wayland: &UnixStream) -> io::Result<()> {
+    // SAFETY: fcntl only inspects or updates descriptor flags without taking ownership.
+    let flags = unsafe { libc::fcntl(wayland.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(wayland.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn connect_wayland(display: &Path) -> Result<(UnixStream, fs::Metadata), Error> {
@@ -338,6 +373,7 @@ impl Drop for Active {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use std::sync::mpsc;
 
     fn paths(name: &str) -> (PathBuf, PathBuf, PathBuf) {
@@ -390,6 +426,39 @@ mod tests {
         assert_eq!(&second, b"second");
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inherited_wayland_socket_helper() {
+        if std::env::var_os("GENKAN_TEST_INHERITED_WAYLAND").is_none() {
+            return;
+        }
+        let (mut connection, metadata) = wayland_connection(Path::new("/unused")).unwrap();
+        assert!(std::env::var_os("WAYLAND_SOCKET").is_none());
+        assert!(metadata.file_type().is_socket());
+        let flags = unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        connection.write_all(b"wayland").unwrap();
+    }
+
+    #[test]
+    fn inherited_wayland_socket_is_adopted_without_a_display_path() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let inherited = unsafe { libc::fcntl(client.as_raw_fd(), libc::F_DUPFD, 64) };
+        assert!(inherited >= 0);
+        let status = Command::new(std::env::current_exe().unwrap())
+            .env("GENKAN_TEST_INHERITED_WAYLAND", "1")
+            .env("WAYLAND_SOCKET", inherited.to_string())
+            .arg("--exact")
+            .arg("locker::coordination::tests::inherited_wayland_socket_helper")
+            .status()
+            .unwrap();
+        // SAFETY: inherited remains owned by this parent after spawning the test child.
+        unsafe { libc::close(inherited) };
+        assert!(status.success());
+        let mut message = [0; 7];
+        server.read_exact(&mut message).unwrap();
+        assert_eq!(&message, b"wayland");
     }
 
     #[test]
