@@ -264,11 +264,12 @@ Those reachability tests include both pre-confirmation and post-confirmation
 `finished` events and prove that neither can reach generic iced exit or an
 unlock request.
 
-Wallpaper decoding and animation remain decorative. Their failure restores an
-opaque static or generated background without stopping the lock owner, the PAM
-worker, or input handling. A lock surface is always opaque from the
-application's perspective even though the compositor must independently blank
-uncovered outputs.
+Wallpaper decoding and animation remain decorative. Failure before the first
+frame keeps the opaque poster or generated background; a later failure retains
+the last displayed frame. Neither case stops the lock owner, the PAM worker, or
+input handling. A lock surface is always opaque from the application's
+perspective even though the compositor must independently blank uncovered
+outputs.
 
 == Compositor compatibility
 

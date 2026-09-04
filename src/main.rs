@@ -432,6 +432,8 @@ mod tests {
     #[test]
     fn command_help_describes_wallpaper_fallbacks() {
         let lock_audit = include_str!("../rfd/0003/SESSION_LOCK_AUDIT.adoc");
+        let lock_rfd = include_str!("../rfd/0003/README.adoc");
+        let wallpaper_implementation = include_str!("../rfd/0002/IMPLEMENTATION.org");
         let help = Arguments::command()
             .find_subcommand_mut("login")
             .expect("login subcommand")
@@ -443,6 +445,10 @@ mod tests {
         assert!(help.contains("retains the last displayed frame"));
         assert!(lock_audit.contains("failure before the first frame"));
         assert!(lock_audit.contains("later failure retains the last displayed frame"));
+        assert!(lock_rfd.contains("Failure before the first"));
+        assert!(lock_rfd.contains("later failure retains"));
+        assert!(wallpaper_implementation.contains("superseded by the flicker fix"));
+        assert!(wallpaper_implementation.contains("retains the last displayed frame"));
     }
 
     #[test]
