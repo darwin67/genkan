@@ -431,6 +431,7 @@ mod tests {
 
     #[test]
     fn command_help_describes_wallpaper_fallbacks() {
+        let lock_audit = include_str!("../rfd/0003/SESSION_LOCK_AUDIT.adoc");
         let help = Arguments::command()
             .find_subcommand_mut("login")
             .expect("login subcommand")
@@ -440,6 +441,8 @@ mod tests {
         assert!(help.contains("keep the selected static poster"));
         assert!(help.contains("generated background"));
         assert!(help.contains("retains the last displayed frame"));
+        assert!(lock_audit.contains("failure before the first frame"));
+        assert!(lock_audit.contains("later failure retains the last displayed frame"));
     }
 
     #[test]
