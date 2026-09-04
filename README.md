@@ -81,13 +81,11 @@ The packaged greeter animates Tahoe Beach by default. Operators can select
 
 ## Session-lock development status
 
-`genkan lock` now establishes and maintains an opaque compositor-owned lock on
-every output. Production unlock authentication is Phase 5 of
-[RFD 3](rfd/0003/README.adoc) and is not implemented yet. Until then, do not use
-the lock command as a daily locker: it intentionally has no production unlock
-path and may require recovery from another VT. The packaged test suite uses a
-separately compiled test-only authorization source against nested headless
-Sway; that source is absent from the production package.
+`genkan lock` establishes and maintains an opaque compositor-owned lock on
+every output and reauthenticates the invoking real-UID account through the
+host's `genkan-lock` PAM service. Import `nixosModules.default` and enable
+`programs.genkan` to install the package and PAM policy. Idle and suspend
+integration remains Phase 6 of [RFD 3](rfd/0003/README.adoc).
 
 ## Documentation
 

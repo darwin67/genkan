@@ -67,23 +67,23 @@ each new boundary, and do not ship a production path that unlocks without PAM.
 
 * Phase 5: Add unlock authentication
 
-- [ ] Define a bounded private socketpair protocol for visible prompts, secret
+- [X] Define a bounded private socketpair protocol for visible prompts, secret
   prompts, information, errors, responses, cancellation, success, and failure.
-- [ ] Add a small same-user PAM worker with no UI, setuid mode, session opening,
+- [X] Add a small same-user PAM worker with no UI, setuid mode, session opening,
   command launch, public socket, or password-validation implementation.
-- [ ] Resolve and bind authentication to the invoking process's real-UID account.
-- [ ] Preserve arbitrary PAM message arrays and request a distinct response for
+- [X] Resolve and bind authentication to the invoking process's real-UID account.
+- [X] Preserve arbitrary PAM message arrays and request a distinct response for
   every visible or secret prompt.
-- [ ] Clear mutable response buffers promptly on submission, prompt replacement,
+- [X] Clear mutable response buffers promptly on submission, prompt replacement,
   cancellation, failure, success, worker exit, and locker exit.
-- [ ] Ensure responses cannot enter logs, diagnostics, environment variables,
+- [X] Ensure responses cannot enter logs, diagnostics, environment variables,
   command arguments, clipboard operations, preview fixtures, or persistent
   files.
-- [ ] Map only terminal PAM success from the expected worker and active attempt
+- [X] Map only terminal PAM success from the expected worker and active attempt
   to `unlock_and_destroy`, followed by a Wayland synchronization before exit.
-- [ ] Keep the compositor lock active after PAM rejection, worker crash,
+- [X] Keep the compositor lock active after PAM rejection, worker crash,
   protocol error, cancellation, and stale success.
-- [ ] Add a NixOS PAM service using host policy and package no permissive
+- [X] Add a NixOS PAM service using host policy and package no permissive
   authentication fallback.
 
 * Phase 6: Integrate suspend and deployment

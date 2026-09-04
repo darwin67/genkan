@@ -74,7 +74,7 @@ struct LoginArguments {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "The lock is ready only after the compositor confirms ext-session-lock-v1 ownership. This phase does not yet include production authentication; recover or terminate the graphical session or compositor from another VT if necessary."
+    after_help = "The lock is ready only after the compositor confirms ext-session-lock-v1 ownership. Unlock authentication uses the host's genkan-lock PAM service for the invoking real-UID account."
 )]
 struct LockArguments {
     /// Descriptor that receives `READY` after compositor lock confirmation.
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn lock_help_describes_recovery_without_implying_genkan_can_unlock() {
+    fn lock_help_describes_real_uid_pam_authentication() {
         use clap::CommandFactory;
 
         let mut command = Arguments::command();
@@ -281,8 +281,9 @@ mod tests {
         lock.write_long_help(&mut help).unwrap();
         let help = String::from_utf8(help).unwrap();
 
-        assert!(help.contains("recover or terminate the graphical session or compositor"));
-        assert!(!help.contains("terminate it from another VT"));
+        assert!(help.contains("genkan-lock PAM service"));
+        assert!(help.contains("real-UID account"));
+        assert!(!help.contains("does not yet include production authentication"));
     }
 
     #[test]

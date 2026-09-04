@@ -42,5 +42,11 @@
       }) perSystem;
       checks = nixpkgs.lib.mapAttrs (_: config: config.checks) perSystem;
       devShells = nixpkgs.lib.mapAttrs (_: config: { default = config.devShell; }) perSystem;
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ ./nix/module.nix ];
+          programs.genkan.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        };
     };
 }

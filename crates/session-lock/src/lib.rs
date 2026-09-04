@@ -39,6 +39,14 @@ impl RgbaFrame {
             pixels,
         })
     }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,9 +56,24 @@ pub enum Refresh {
     Failed,
 }
 
+#[derive(PartialEq, Eq)]
+pub enum Input {
+    Text(String),
+    Backspace,
+    Submit,
+    Cancel,
+}
+
 pub trait Presentation {
     fn receive_latest(&mut self) -> Refresh;
     fn frame(&self) -> Option<RgbaFrame>;
+    fn lock_confirmed(&mut self) {}
+    fn input(&mut self, _input: Input) -> bool {
+        false
+    }
+    fn take_authorization(&mut self) -> bool {
+        false
+    }
 }
 
 pub struct Config {
@@ -89,7 +112,6 @@ enum Lifecycle {
     Locked,
     Denied,
     Aborted,
-    #[cfg(any(test, feature = "lock-test"))]
     Unlocking,
 }
 
@@ -110,7 +132,6 @@ enum Action {
     None,
     ReportReady,
     Abort,
-    #[cfg(any(test, feature = "lock-test"))]
     UnlockAndSynchronize,
 }
 
@@ -154,7 +175,6 @@ impl State {
         }
     }
 
-    #[cfg(any(test, feature = "lock-test"))]
     fn authorize_unlock(&mut self, _authorization: UnlockAuthorization) -> Action {
         if self.lifecycle != Lifecycle::Locked {
             return Action::None;
@@ -164,12 +184,15 @@ impl State {
     }
 }
 
-#[cfg(any(test, feature = "lock-test"))]
 #[derive(Debug, Clone, Copy)]
 struct UnlockAuthorization(());
 
-#[cfg(any(test, feature = "lock-test"))]
 impl UnlockAuthorization {
+    fn authenticated() -> Self {
+        Self(())
+    }
+
+    #[cfg(any(test, feature = "lock-test"))]
     fn test_source() -> Self {
         Self(())
     }
@@ -249,5 +272,19 @@ mod tests {
             Action::UnlockAndSynchronize
         );
         assert_eq!(state.lifecycle, Lifecycle::Unlocking);
+    }
+
+    #[test]
+    fn authenticated_authorization_cannot_unlock_before_confirmation() {
+        let mut state = state();
+        assert_eq!(
+            state.authorize_unlock(UnlockAuthorization::authenticated()),
+            Action::None
+        );
+        assert_eq!(state.update(Event::LockConfirmed), Action::ReportReady);
+        assert_eq!(
+            state.authorize_unlock(UnlockAuthorization::authenticated()),
+            Action::UnlockAndSynchronize
+        );
     }
 }

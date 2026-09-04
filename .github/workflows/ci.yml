@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "src/**"
+      - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "Makefile"
@@ -20,6 +21,7 @@ on:
     branches: [main]
     paths:
       - "src/**"
+      - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "Makefile"
@@ -133,8 +135,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
-      # Both checks use software rendering and must not compete for runner CPU.
+      - name: NixOS module and PAM policy
+        run: nix build .#checks.${{ matrix.system }}.module --print-build-logs
+      # Graphics checks use software rendering and must not compete for runner CPU.
       - name: Graphics smoke
         run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs
+      - name: Session-lock smoke
+        run: nix build .#checks.${{ matrix.system }}.session-lock-smoke --print-build-logs
       - name: Preview evidence
         run: nix build .#checks.${{ matrix.system }}.preview-evidence --print-build-logs

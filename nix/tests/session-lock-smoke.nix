@@ -9,6 +9,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
     nativeBuildInputs = with pkgs; [
       coreutils
       gnugrep
+      python3
       sway
     ];
   }
@@ -32,6 +33,89 @@ pkgs.runCommand "genkan-session-lock-smoke"
     }
     trap cleanup EXIT
     chmod 700 "$runtime"
+    test -x ${productionGenkan}/libexec/genkan-lock-auth
+    test ! -e ${productionGenkan}/bin/genkan-lock-auth
+    [[ $(stat -c '%a' ${productionGenkan}/libexec/genkan-lock-auth) == 555 ]]
+    python3 - ${productionGenkan}/libexec/genkan-lock-auth <<'PY'
+    import os
+    import pwd
+    import select
+    import signal
+    import socket
+    import struct
+    import subprocess
+    import sys
+
+    parent, child = socket.socketpair()
+    parent_pid = os.getpid()
+    parent_fd = os.dup(parent.fileno())
+    parent.close()
+    parent = socket.socket(fileno=parent_fd)
+    parent.settimeout(2)
+    os.dup2(child.fileno(), 3)
+
+    process = subprocess.Popen(
+        [sys.argv[1], "--fd", "3", "--parent-pid", str(parent_pid)],
+        pass_fds=(3,),
+    )
+    if child.fileno() != 3:
+        os.close(3)
+    child.close()
+
+    def receive(length):
+        result = b""
+        while len(result) < length:
+            part = parent.recv(length - len(result))
+            assert part
+            result += part
+        return result
+
+    header = receive(10)
+    assert header[:6] == b"GNKA\x02\x01"
+    payload = receive(struct.unpack(">I", header[6:])[0])
+    assert struct.unpack(">I", payload[:4])[0] == os.getuid()
+    assert payload[4:].decode() == pwd.getpwuid(os.getuid()).pw_name
+    parent.close()
+    assert process.wait(timeout=2) != 0
+
+    reported, report = os.pipe()
+    acknowledged, acknowledge = os.pipe()
+    supervisor = os.fork()
+    if supervisor == 0:
+        os.close(reported)
+        os.close(acknowledge)
+        parent, child = socket.socketpair()
+        parent_fd = os.dup(parent.fileno())
+        parent.close()
+        parent = socket.socket(fileno=parent_fd)
+        parent.settimeout(2)
+        os.dup2(child.fileno(), 3)
+        worker = subprocess.Popen(
+            [sys.argv[1], "--fd", "3", "--parent-pid", str(os.getpid())],
+            pass_fds=(3,),
+        )
+        if child.fileno() != 3:
+            os.close(3)
+        child.close()
+        header = receive(10)
+        receive(struct.unpack(">I", header[6:])[0])
+        os.kill(worker.pid, signal.SIGSTOP)
+        os.write(report, str(worker.pid).encode())
+        os.read(acknowledged, 1)
+        os._exit(0)
+
+    os.close(report)
+    os.close(acknowledged)
+    worker_pid = int(os.read(reported, 32))
+    worker_pidfd = os.pidfd_open(worker_pid)
+    os.write(acknowledge, b"1")
+    os.close(acknowledge)
+    os.waitpid(supervisor, 0)
+    poll = select.poll()
+    poll.register(worker_pidfd, select.POLLIN)
+    assert poll.poll(2000), "worker survived its verified parent"
+    os.close(worker_pidfd)
+    PY
     if ${productionGenkan}/bin/genkan lock --test-unlock-after-ready > "$production_log" 2>&1; then
       echo "production package accepted the test-only unlock option" >&2
       exit 1

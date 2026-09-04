@@ -1,0 +1,16 @@
+[package]
+name = "genkan-lock-auth"
+version = "0.1.0"
+edition = "2021"
+description = "Private PAM conversation protocol and worker for Genkan"
+license = "MIT"
+
+[[bin]]
+name = "genkan-lock-auth"
+path = "src/main.rs"
+
+[dependencies]
+libc = "=0.2.189"
+pam-sys2 = "=1.0.2"
+thiserror = "2.0.9"
+zeroize = "=1.9.0"
