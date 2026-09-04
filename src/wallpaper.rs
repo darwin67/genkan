@@ -224,6 +224,9 @@ impl State {
             return Refresh::Unchanged;
         }
         self.allocation_pending = false;
+        if self.stop_after_terminal_failure() {
+            return Refresh::Failed;
+        }
 
         match result {
             Ok(allocation) => {
@@ -239,6 +242,14 @@ impl State {
                 Refresh::Failed
             }
         }
+    }
+
+    fn stop_after_terminal_failure(&mut self) -> bool {
+        if !self.player.as_ref().is_some_and(Player::has_failed) {
+            return false;
+        }
+        self.stop_playback();
+        true
     }
 
     fn stop_playback(&mut self) {
@@ -345,6 +356,10 @@ impl Player {
 
     fn take_latest(&self) -> Option<Update> {
         lock(&self.shared.state).pending.take()
+    }
+
+    fn has_failed(&self) -> bool {
+        self.shared.failed.load(Ordering::Acquire)
     }
 }
 
@@ -1325,6 +1340,33 @@ mod tests {
         state.receive_latest();
 
         assert!(state.decoder_is_stopped());
+        assert_eq!(state.frame.as_ref().unwrap().id(), current_id);
+    }
+
+    #[test]
+    fn terminal_failure_during_allocation_preserves_the_displayed_frame() {
+        let shared = Arc::new(Shared::default());
+        let (signal_sender, signal) = watch::channel(0);
+        let current = image::Handle::from_rgba(1, 1, vec![4, 5, 6, 255]);
+        let current_id = current.id();
+        let mut state = State {
+            player: Some(Player {
+                shared: Arc::clone(&shared),
+                signal,
+                stopping: Arc::new(AtomicBool::new(false)),
+                worker: None,
+            }),
+            poster: None,
+            frame: Some(current),
+            allocation: None,
+            allocation_pending: true,
+        };
+        fail_once(&shared, &signal_sender, "expected allocation race failure");
+
+        assert!(state.stop_after_terminal_failure());
+
+        assert!(state.decoder_is_stopped());
+        assert!(!state.allocation_pending);
         assert_eq!(state.frame.as_ref().unwrap().id(), current_id);
     }
 
