@@ -11,6 +11,8 @@ pkgs.runCommand "genkan-session-lock-smoke"
       gnugrep
       python3
       sway
+      wlrctl
+      wtype
     ];
   }
   ''
@@ -21,6 +23,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
     lock_log=$(mktemp)
     production_log=$(mktemp)
     ready=$(mktemp)
+    observer=$(mktemp)
     daemon_one=
     daemon_two=
     before_sleep=
@@ -33,7 +36,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
         kill "$sway_pid" 2>/dev/null || true
         wait "$sway_pid" 2>/dev/null || true
       fi
-      rm -rf "$runtime" "$config" "$log" "$lock_log" "$production_log" "$ready"
+      rm -rf "$runtime" "$config" "$log" "$lock_log" "$production_log" "$ready" "$observer"
       [[ -z "$daemon_one" ]] || rm -f "$daemon_one"
       [[ -z "$daemon_two" ]] || rm -f "$daemon_two"
       [[ -z "$before_sleep" ]] || rm -f "$before_sleep"
@@ -169,8 +172,9 @@ pkgs.runCommand "genkan-session-lock-smoke"
       timeout 30s ${genkan}/bin/genkan lock \
         --reduce-motion \
         --test-unlock-after-ready \
+        --test-observer-fd 4 \
         --ready-fd 3 \
-        3>"$ready" 2>"$lock_log" &
+        3>"$ready" 4>"$observer" 2>"$lock_log" &
     lock_pid=$!
 
     for _ in $(seq 1 300); do
@@ -181,6 +185,31 @@ pkgs.runCommand "genkan-session-lock-smoke"
     if ! grep -Fxq READY "$ready"; then
       echo "foreground lock did not report readiness" >&2
       cat "$log" "$lock_log" >&2
+      exit 1
+    fi
+    grep -Fxq LOCKED "$observer"
+    initial_geometry=$(grep -Fc GEOMETRY "$observer")
+    XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") \
+      swaymsg -s "$ipc" output HEADLESS-2 scale 2 >/dev/null
+    for _ in $(seq 1 300); do
+      [[ $(grep -Fc GEOMETRY "$observer") -gt $initial_geometry ]] && break
+      sleep 0.01
+    done
+    if [[ $(grep -Fc GEOMETRY "$observer") -le $initial_geometry ]]; then
+      echo "mixed output scaling did not reach the lock runtime" >&2
+      cat "$log" "$lock_log" "$observer" >&2
+      exit 1
+    fi
+    XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") wtype -s 50 x
+    XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") wlrctl pointer move 1 1
+    XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") wlrctl pointer click
+    for _ in $(seq 1 300); do
+      grep -Fxq KEYBOARD "$observer" && grep -Fxq POINTER "$observer" && break
+      sleep 0.01
+    done
+    if ! grep -Fxq KEYBOARD "$observer" || ! grep -Fxq POINTER "$observer"; then
+      echo "input observer did not receive isolated keyboard and pointer input" >&2
+      cat "$log" "$lock_log" "$observer" >&2
       exit 1
     fi
 
@@ -238,6 +267,12 @@ pkgs.runCommand "genkan-session-lock-smoke"
        [[ $(grep -Fc 'removed surface for output' "$lock_log") -lt 1 ]]; then
       echo "foreground output lifecycle counts were incomplete" >&2
       cat "$log" "$lock_log" >&2
+      exit 1
+    fi
+    grep -Fxq OUTPUT_REMOVED "$observer"
+    if grep -Ev '^(LOCKED|FAILED|FINISHED|OUTPUT_ADDED|OUTPUT_REMOVED|GEOMETRY|KEYBOARD|POINTER|AUTH_PROMPT|AUTH_RETRY|AUTH_SUCCESS|AUTH_FAILURE)$' "$observer"; then
+      echo "observer emitted data outside its fixed non-secret vocabulary" >&2
+      cat "$observer" >&2
       exit 1
     fi
 

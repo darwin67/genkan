@@ -3,7 +3,7 @@ WIDTH ?= 1280
 HEIGHT ?= 800
 WALLPAPER ?= tahoe-beach
 
-.PHONY: dev animated-dev check fmt fmt-fix lint test scripts-test check-rfds smoke lock-smoke evidence update-reference-images hardware-smoke e2e build package verify changelog next-version clean
+.PHONY: dev animated-dev check fmt fmt-fix lint test scripts-test check-rfds smoke lock-smoke lock-vm evidence update-reference-images hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
 	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)"
@@ -43,6 +43,9 @@ smoke:
 
 lock-smoke:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).session-lock-smoke --print-build-logs
+
+lock-vm:
+	nix build .#checks.x86_64-linux.session-lock-vm --print-build-logs
 
 evidence:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).preview-evidence --print-build-logs

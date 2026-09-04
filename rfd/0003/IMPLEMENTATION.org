@@ -102,20 +102,20 @@ each new boundary, and do not ship a production path that unlocks without PAM.
 
 * Phase 7: Security and system verification
 
-- [ ] Add a feature-gated session-lock protocol and input observer harness that
+- [X] Add a feature-gated session-lock protocol and input observer harness that
   never records key contents or PAM responses.
-- [ ] Add an x86_64 NixOS VM with headless Sway, multiple outputs, a focused
+- [X] Add an x86_64 NixOS VM with headless Sway, multiple outputs, a focused
   ordinary client, injected input, and deterministic test-only PAM policy.
-- [ ] Verify lock readiness, lock denial, duplicate invocation, initial output
+- [X] Verify lock readiness, lock denial, duplicate invocation, initial output
   coverage, output hotplug/removal, mixed scaling, and compositor finish events.
-- [ ] Verify keyboard and pointer isolation before and after explicit unlock.
-- [ ] Verify failed and multi-prompt authentication retain the lock and correct
+- [X] Verify keyboard and pointer isolation before and after explicit unlock.
+- [X] Verify failed and multi-prompt authentication retain the lock and correct
   authentication explicitly restores the existing session.
-- [ ] Verify `SIGKILL`, panic, worker death, renderer failure, and compositor
+- [X] Verify `SIGKILL`, panic, worker death, renderer failure, and compositor
   disconnection never request unlock and exercise compositor recovery policy.
-- [ ] Verify a simulated before-sleep action cannot proceed before readiness and
+- [X] Verify a simulated before-sleep action cannot proceed before readiness and
   remains locked across the simulated resume boundary.
-- [ ] Run `make verify`, `make e2e`, the session-lock VM, and packaged graphics
+- [X] Run `make verify`, `make e2e`, the session-lock VM, and packaged graphics
   checks on every supported architecture where each check is applicable.
 - [ ] Run physical lock, suspend, resume, retry, output hotplug, and crash
   recovery checks on supported compositors with available AMD and NVIDIA

@@ -97,6 +97,18 @@ struct LockArguments {
     #[cfg(feature = "lock-test")]
     #[arg(long, hide = true)]
     test_unlock_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, value_parser = parse_ready_fd, conflicts_with = "daemonize")]
+    test_observer_fd: Option<std::os::fd::RawFd>,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    test_panic_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    test_renderer_failure_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    test_worker_failure_after_ready: bool,
 }
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
@@ -225,6 +237,14 @@ fn lock_config(arguments: LockArguments) -> locker::Config {
         ready_fd: arguments.ready_fd,
         #[cfg(feature = "lock-test")]
         test_unlock_after_ready: arguments.test_unlock_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_observer_fd: arguments.test_observer_fd,
+        #[cfg(feature = "lock-test")]
+        test_panic_after_ready: arguments.test_panic_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_renderer_failure_after_ready: arguments.test_renderer_failure_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_worker_failure_after_ready: arguments.test_worker_failure_after_ready,
     }
 }
 
@@ -359,9 +379,24 @@ mod tests {
         assert!(try_parse_lock(["genkan", "--daemonize", "--ready-fd", "7"]).is_err());
         assert!(Arguments::try_parse_from(["genkan", "login", "--ready-fd", "7"]).is_err());
         #[cfg(not(feature = "lock-test"))]
-        assert!(
-            Arguments::try_parse_from(["genkan", "lock", "--test-unlock-after-ready"]).is_err()
-        );
+        {
+            assert!(
+                Arguments::try_parse_from(["genkan", "lock", "--test-unlock-after-ready"]).is_err()
+            );
+            assert!(
+                Arguments::try_parse_from(["genkan", "lock", "--test-observer-fd", "7"]).is_err()
+            );
+        }
+        #[cfg(feature = "lock-test")]
+        {
+            assert_eq!(
+                try_parse_lock(["genkan", "--test-observer-fd", "7"])
+                    .unwrap()
+                    .test_observer_fd,
+                Some(7)
+            );
+            assert!(try_parse_lock(["genkan", "--daemonize", "--test-observer-fd", "7"]).is_err());
+        }
     }
 
     #[test]

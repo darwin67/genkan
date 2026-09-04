@@ -14,6 +14,7 @@ use smithay_client_toolkit::registry_handlers;
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
+use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerHandler};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::session_lock::{
     SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
@@ -25,7 +26,9 @@ use smithay_client_toolkit::shm::{
 };
 use thiserror::Error;
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_region, wl_seat, wl_shm, wl_surface};
+use wayland_client::protocol::{
+    wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_shm, wl_surface,
+};
 use wayland_client::{Connection, Proxy, QueueHandle};
 
 use super::{
@@ -120,6 +123,7 @@ struct Runtime {
     registry_state: RegistryState,
     seat_state: SeatState,
     keyboards: Vec<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
+    pointers: Vec<(wl_seat::WlSeat, wl_pointer::WlPointer)>,
     shm: Shm,
     session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
@@ -133,6 +137,12 @@ struct Runtime {
     test_unlock_after_ready: bool,
     #[cfg(feature = "lock-test")]
     test_unlock_at: Option<Instant>,
+    #[cfg(feature = "lock-test")]
+    test_observer: TestObserver,
+    #[cfg(feature = "lock-test")]
+    test_panic_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    test_renderer_failure_after_ready: bool,
 }
 
 pub(super) fn run(config: Config) -> Result<(), Error> {
@@ -153,6 +163,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         keyboards: Vec::new(),
+        pointers: Vec::new(),
         shm,
         session_lock_state: SessionLockState::new(&globals, &qh),
         session_lock: None,
@@ -166,6 +177,12 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         test_unlock_after_ready: config.test_unlock_after_ready,
         #[cfg(feature = "lock-test")]
         test_unlock_at: None,
+        #[cfg(feature = "lock-test")]
+        test_observer: TestObserver::new(config.test_observer),
+        #[cfg(feature = "lock-test")]
+        test_panic_after_ready: config.test_panic_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_renderer_failure_after_ready: config.test_renderer_failure_after_ready,
     };
     eprintln!(
         "genkan lock: requesting compositor lock for uid {} ({}; {})",
@@ -286,6 +303,8 @@ impl Runtime {
             },
             first_presented: false,
         });
+        #[cfg(feature = "lock-test")]
+        self.test_observer.record(TestEvent::OutputAdded);
         Ok(())
     }
 
@@ -437,6 +456,8 @@ impl Runtime {
             Action::None => {}
             Action::ReportReady => {
                 eprintln!("genkan lock: compositor confirmed lock");
+                #[cfg(feature = "lock-test")]
+                self.test_observer.record(TestEvent::Locked);
                 if let Err(error) = self.ready.apply(action) {
                     self.fail(Error::Runtime(format!(
                         "could not report lock readiness: {error}"
@@ -449,6 +470,14 @@ impl Runtime {
                 #[cfg(feature = "lock-test")]
                 if self.test_unlock_after_ready && !self.terminate {
                     self.test_unlock_at = Some(Instant::now() + TEST_UNLOCK_DELAY);
+                }
+                #[cfg(feature = "lock-test")]
+                if self.test_renderer_failure_after_ready && !self.terminate {
+                    self.fail(Error::Runtime("injected renderer failure".into()));
+                }
+                #[cfg(feature = "lock-test")]
+                if self.test_panic_after_ready && !self.terminate {
+                    panic!("injected session-lock panic");
                 }
             }
             Action::Abort => {
@@ -470,6 +499,8 @@ impl Runtime {
     }
 
     fn fail(&mut self, error: Error) {
+        #[cfg(feature = "lock-test")]
+        self.test_observer.record(TestEvent::Failed);
         let _ = self.state.update(Event::RuntimeFailed);
         self.failure.get_or_insert(error);
         self.terminate = true;
@@ -484,6 +515,8 @@ impl Runtime {
     }
 
     fn handle_key(&mut self, event: KeyEvent) {
+        #[cfg(feature = "lock-test")]
+        self.test_observer.record(TestEvent::Keyboard);
         let input = match event.keysym {
             Keysym::BackSpace => Some(Input::Backspace),
             Keysym::Return | Keysym::KP_Enter => Some(Input::Submit),
@@ -519,6 +552,8 @@ impl SessionLockHandler for Runtime {
 
     fn finished(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _lock: SessionLock) {
         eprintln!("genkan lock: compositor denied or terminated lock");
+        #[cfg(feature = "lock-test")]
+        self.test_observer.record(TestEvent::Finished);
         let action = self.state.update(Event::LockFinished);
         self.apply(action);
     }
@@ -544,6 +579,8 @@ impl SessionLockHandler for Runtime {
             surface.size = Some(configure.new_size);
             surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
             surface.redraw.request_geometry();
+            #[cfg(feature = "lock-test")]
+            self.test_observer.record(TestEvent::Geometry);
         }
     }
 }
@@ -567,6 +604,8 @@ impl CompositorHandler for Runtime {
                 surface.scale = scale;
                 surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
                 surface.redraw.request_geometry();
+                #[cfg(feature = "lock-test")]
+                self.test_observer.record(TestEvent::Geometry);
             }
         }
     }
@@ -588,6 +627,8 @@ impl CompositorHandler for Runtime {
                 surface.transform = transform;
                 surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
                 surface.redraw.request_geometry();
+                #[cfg(feature = "lock-test")]
+                self.test_observer.record(TestEvent::Geometry);
             }
         }
     }
@@ -664,6 +705,8 @@ impl OutputHandler for Runtime {
         output: wl_output::WlOutput,
     ) {
         self.surfaces.retain(|surface| surface.output != output);
+        #[cfg(feature = "lock-test")]
+        self.test_observer.record(TestEvent::OutputRemoved);
         eprintln!(
             "genkan lock: removed surface for output {}",
             output.id().protocol_id()
@@ -697,9 +740,19 @@ impl SeatHandler for Runtime {
             && !self.keyboards.iter().any(|(known, _)| known == &seat)
         {
             match self.seat_state.get_keyboard(qh, &seat, None) {
-                Ok(keyboard) => self.keyboards.push((seat, keyboard)),
+                Ok(keyboard) => self.keyboards.push((seat.clone(), keyboard)),
                 Err(error) => self.fail(Error::Runtime(format!(
                     "could not acquire lock keyboard: {error}"
+                ))),
+            }
+        }
+        if capability == Capability::Pointer
+            && !self.pointers.iter().any(|(known, _)| known == &seat)
+        {
+            match self.seat_state.get_pointer(qh, &seat) {
+                Ok(pointer) => self.pointers.push((seat, pointer)),
+                Err(error) => self.fail(Error::Runtime(format!(
+                    "could not acquire lock pointer: {error}"
                 ))),
             }
         }
@@ -722,6 +775,17 @@ impl SeatHandler for Runtime {
                 keyboard.release();
             }
             self.keyboards = retained;
+        }
+        if capability == Capability::Pointer {
+            let mut retained = Vec::new();
+            for (known, pointer) in self.pointers.drain(..) {
+                if known != seat {
+                    retained.push((known, pointer));
+                    continue;
+                }
+                pointer.release();
+            }
+            self.pointers = retained;
         }
     }
 
@@ -792,6 +856,30 @@ impl KeyboardHandler for Runtime {
     }
 }
 
+impl PointerHandler for Runtime {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        _events: &[PointerEvent],
+    ) {
+        #[cfg(feature = "lock-test")]
+        if _events.iter().any(|event| {
+            matches!(
+                event.kind,
+                smithay_client_toolkit::seat::pointer::PointerEventKind::Enter { .. }
+                    | smithay_client_toolkit::seat::pointer::PointerEventKind::Motion { .. }
+                    | smithay_client_toolkit::seat::pointer::PointerEventKind::Press { .. }
+                    | smithay_client_toolkit::seat::pointer::PointerEventKind::Release { .. }
+                    | smithay_client_toolkit::seat::pointer::PointerEventKind::Axis { .. }
+            )
+        }) {
+            self.test_observer.record(TestEvent::Pointer);
+        }
+    }
+}
+
 impl ShmHandler for Runtime {
     fn shm_state(&mut self) -> &mut Shm {
         &mut self.shm
@@ -803,6 +891,7 @@ smithay_client_toolkit::delegate_output!(Runtime);
 smithay_client_toolkit::delegate_registry!(Runtime);
 smithay_client_toolkit::delegate_seat!(Runtime);
 smithay_client_toolkit::delegate_keyboard!(Runtime);
+smithay_client_toolkit::delegate_pointer!(Runtime);
 smithay_client_toolkit::delegate_session_lock!(Runtime);
 smithay_client_toolkit::delegate_shm!(Runtime);
 wayland_client::delegate_noop!(Runtime: ignore wl_region::WlRegion);
@@ -945,6 +1034,46 @@ fn lock_confirmation_action(state: &mut State, blocked: bool) -> Action {
 }
 
 struct ReadySignal(Vec<File>);
+
+#[cfg(feature = "lock-test")]
+struct TestObserver(Option<File>);
+
+#[cfg(feature = "lock-test")]
+#[derive(Clone, Copy)]
+enum TestEvent {
+    Locked,
+    Finished,
+    Failed,
+    OutputAdded,
+    OutputRemoved,
+    Keyboard,
+    Pointer,
+    Geometry,
+}
+
+#[cfg(feature = "lock-test")]
+impl TestObserver {
+    fn new(fd: Option<OwnedFd>) -> Self {
+        Self(fd.map(File::from))
+    }
+
+    fn record(&mut self, event: TestEvent) {
+        if let Some(output) = self.0.as_mut() {
+            let event = match event {
+                TestEvent::Locked => "LOCKED",
+                TestEvent::Finished => "FINISHED",
+                TestEvent::Failed => "FAILED",
+                TestEvent::OutputAdded => "OUTPUT_ADDED",
+                TestEvent::OutputRemoved => "OUTPUT_REMOVED",
+                TestEvent::Keyboard => "KEYBOARD",
+                TestEvent::Pointer => "POINTER",
+                TestEvent::Geometry => "GEOMETRY",
+            };
+            let _ = writeln!(output, "{event}");
+            let _ = output.flush();
+        }
+    }
+}
 
 impl ReadySignal {
     fn new(fds: Vec<OwnedFd>) -> Self {
@@ -1134,6 +1263,34 @@ mod tests {
             reader.read_to_string(&mut message).unwrap();
             assert_eq!(message, "READY\n");
         }
+    }
+
+    #[cfg(feature = "lock-test")]
+    #[test]
+    fn test_observer_emits_only_fixed_non_secret_event_names() {
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        let mut observer = TestObserver::new(Some(writer.into()));
+
+        for event in [
+            TestEvent::Locked,
+            TestEvent::Finished,
+            TestEvent::Failed,
+            TestEvent::OutputAdded,
+            TestEvent::OutputRemoved,
+            TestEvent::Keyboard,
+            TestEvent::Pointer,
+            TestEvent::Geometry,
+        ] {
+            observer.record(event);
+        }
+        drop(observer);
+
+        let mut events = String::new();
+        reader.read_to_string(&mut events).unwrap();
+        assert_eq!(
+            events,
+            "LOCKED\nFINISHED\nFAILED\nOUTPUT_ADDED\nOUTPUT_REMOVED\nKEYBOARD\nPOINTER\nGEOMETRY\n"
+        );
     }
 
     #[test]
