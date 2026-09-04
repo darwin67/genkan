@@ -63,8 +63,8 @@ struct Surface {
 
 struct SurfaceBuffer {
     size: (u32, u32),
-    bytes: usize,
     buffer: Buffer,
+    pool: SlotPool,
 }
 
 #[derive(Default)]
@@ -84,10 +84,6 @@ impl RedrawState {
         self.frame_pending = true;
     }
 
-    fn retry_scheduled(&mut self) {
-        self.frame_pending = true;
-    }
-
     fn frame_done(&mut self) -> bool {
         self.frame_pending = false;
         self.redraw_pending
@@ -101,7 +97,6 @@ struct Runtime {
     output_state: OutputState,
     registry_state: RegistryState,
     shm: Shm,
-    pool: SlotPool,
     session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
     surfaces: Vec<Surface>,
@@ -126,9 +121,6 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         .map_err(|error| Error::MissingProtocol(format!("wl_compositor ({error})")))?;
     let shm = Shm::bind(&globals, &qh)
         .map_err(|error| Error::MissingProtocol(format!("wl_shm ({error})")))?;
-    let pool = SlotPool::new(1, &shm)
-        .map_err(|error| Error::Runtime(format!("could not initialize lock buffers: {error}")))?;
-
     let mut runtime = Runtime {
         #[cfg(feature = "lock-test")]
         conn: conn.clone(),
@@ -136,7 +128,6 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         output_state: OutputState::new(&globals, &qh),
         registry_state: RegistryState::new(&globals),
         shm,
-        pool,
         session_lock_state: SessionLockState::new(&globals, &qh),
         session_lock: None,
         surfaces: Vec::new(),
@@ -315,32 +306,34 @@ impl Runtime {
         let wl_surface = surface.lock_surface.wl_surface().clone();
         let output_id = surface.output.id().protocol_id();
         let frame = self.presentation.frame();
-        let (pool, surfaces) = (&mut self.pool, &mut self.surfaces);
-        let surface = &mut surfaces[index];
-        surface.buffers.retain(|item| {
-            let active = pool.canvas(&item.buffer).is_none();
+        let surface = &mut self.surfaces[index];
+        surface.buffers.retain_mut(|item| {
+            let active = item.pool.canvas(&item.buffer).is_none();
             keep_buffer(item.size, (buffer_width, buffer_height), active)
         });
-        let reusable = surface.buffers.iter().position(|item| {
-            item.size == (buffer_width, buffer_height) && pool.canvas(&item.buffer).is_some()
+        let reusable = surface.buffers.iter_mut().position(|item| {
+            item.size == (buffer_width, buffer_height) && item.pool.canvas(&item.buffer).is_some()
         });
         let buffer_index = if let Some(buffer_index) = reusable {
+            let SurfaceBuffer { buffer, pool, .. } = &mut surface.buffers[buffer_index];
             let canvas = pool
-                .canvas(&surface.buffers[buffer_index].buffer)
+                .canvas(buffer)
                 .expect("buffer release state changed without dispatch");
             draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
             buffer_index
         } else {
-            if !can_allocate_buffer(
-                surface.buffers.iter().map(|item| (item.size, item.bytes)),
+            let capacity = aligned_buffer_capacity(bytes)?;
+            ensure_buffer_budget(
+                surface
+                    .buffers
+                    .iter()
+                    .map(|item| (item.size, item.pool.len())),
                 (buffer_width, buffer_height),
-                bytes,
-            ) {
-                wl_surface.frame(qh, wl_surface.clone());
-                wl_surface.commit();
-                surface.redraw.retry_scheduled();
-                return Ok(());
-            }
+                capacity,
+            )?;
+            let mut pool = SlotPool::new(capacity, &self.shm).map_err(|error| {
+                Error::Runtime(format!("could not allocate lock buffer pool: {error}"))
+            })?;
             let (buffer, canvas) = pool
                 .create_buffer(
                     buffer_width as i32,
@@ -354,8 +347,8 @@ impl Runtime {
             draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
             surface.buffers.push(SurfaceBuffer {
                 size: (buffer_width, buffer_height),
-                bytes,
                 buffer,
+                pool,
             });
             surface.buffers.len() - 1
         };
@@ -618,6 +611,13 @@ fn keep_buffer(size: (u32, u32), configured_size: (u32, u32), active: bool) -> b
     size == configured_size || active
 }
 
+fn aligned_buffer_capacity(bytes: usize) -> Result<usize, Error> {
+    bytes
+        .checked_add(63)
+        .map(|capacity| capacity & !63)
+        .ok_or_else(|| Error::Runtime("lock buffer capacity overflow".into()))
+}
+
 fn can_allocate_buffer(
     existing: impl IntoIterator<Item = ((u32, u32), usize)>,
     configured_size: (u32, u32),
@@ -639,6 +639,16 @@ fn can_allocate_buffer(
         && retained_bytes
             .checked_add(bytes)
             .is_some_and(|total| total <= MAX_RETAINED_BUFFER_BYTES)
+}
+
+fn ensure_buffer_budget(
+    existing: impl IntoIterator<Item = ((u32, u32), usize)>,
+    configured_size: (u32, u32),
+    bytes: usize,
+) -> Result<(), Error> {
+    can_allocate_buffer(existing, configured_size, bytes)
+        .then_some(())
+        .ok_or_else(|| Error::Runtime("lock buffer resource budget exhausted during redraw".into()))
 }
 
 fn buffer_size(
@@ -841,10 +851,6 @@ mod tests {
         assert!(redraw.frame_done());
         redraw.committed();
         assert!(!redraw.frame_done());
-
-        redraw.request();
-        redraw.retry_scheduled();
-        assert!(redraw.frame_done());
     }
 
     #[test]
@@ -871,6 +877,13 @@ mod tests {
             (7680, 4320),
             128 * mib + 1
         ));
+        assert!(ensure_buffer_budget(
+            [((8192, 8192), MAX_RETAINED_BUFFER_BYTES)],
+            (1, 1),
+            64
+        )
+        .is_err());
+        assert_eq!(aligned_buffer_capacity(65).unwrap(), 128);
     }
 
     #[test]
