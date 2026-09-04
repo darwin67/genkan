@@ -33,9 +33,7 @@ const DIM_DENOMINATOR: u16 = 5;
 const MAX_SURFACE_PIXELS: usize = 16_384 * 16_384;
 const MAX_SURFACE_DIMENSION: u32 = 16_384;
 const BUFFER_COUNT: usize = 2;
-const MAX_RETAINED_BUFFERS: usize = 4;
 const MAX_BUFFER_BYTES: usize = 256 * 1024 * 1024;
-const MAX_RETAINED_BUFFER_BYTES: usize = BUFFER_COUNT * MAX_BUFFER_BYTES;
 #[cfg(feature = "lock-test")]
 const TEST_UNLOCK_DELAY: Duration = Duration::from_secs(5);
 
@@ -72,13 +70,6 @@ struct SurfaceBuffer {
 struct RedrawState {
     frame_pending: bool,
     redraw_pending: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BufferAdmission {
-    Allocate,
-    WaitForRelease,
-    Exhausted,
 }
 
 impl RedrawState {
@@ -292,15 +283,13 @@ impl Runtime {
                 surface.scale.max(1) as u32,
                 surface.transform,
             )?;
-            surface.buffers.retain_mut(|item| {
-                let active = item.pool.canvas(&item.buffer).is_none();
-                keep_buffer(item.size, configured_size, active)
+            surface.buffers.retain(|item| item.size == configured_size);
+            let reusable = surface.buffers.iter_mut().any(|item| {
+                item.size == configured_size && item.pool.canvas(&item.buffer).is_some()
             });
             if surface.redraw.redraw_pending
                 && !surface.redraw.frame_pending
-                && surface.buffers.iter_mut().any(|item| {
-                    item.size == configured_size && item.pool.canvas(&item.buffer).is_some()
-                })
+                && redraw_can_progress(surface.buffers.len(), reusable)
             {
                 ready_to_redraw.push(index);
             }
@@ -350,10 +339,9 @@ impl Runtime {
         let output_id = surface.output.id().protocol_id();
         let frame = self.presentation.frame();
         let surface = &mut self.surfaces[index];
-        surface.buffers.retain_mut(|item| {
-            let active = item.pool.canvas(&item.buffer).is_none();
-            keep_buffer(item.size, (buffer_width, buffer_height), active)
-        });
+        surface
+            .buffers
+            .retain(|item| item.size == (buffer_width, buffer_height));
         let reusable = surface.buffers.iter_mut().position(|item| {
             item.size == (buffer_width, buffer_height) && item.pool.canvas(&item.buffer).is_some()
         });
@@ -365,23 +353,10 @@ impl Runtime {
             draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
             buffer_index
         } else {
-            let capacity = aligned_buffer_capacity(bytes)?;
-            match buffer_admission(
-                surface
-                    .buffers
-                    .iter()
-                    .map(|item| (item.size, item.pool.len())),
-                (buffer_width, buffer_height),
-                capacity,
-            ) {
-                BufferAdmission::Allocate => {}
-                BufferAdmission::WaitForRelease => return Ok(()),
-                BufferAdmission::Exhausted => {
-                    return Err(Error::Runtime(
-                        "lock buffer resource budget exhausted during redraw".into(),
-                    ));
-                }
+            if surface.buffers.len() >= BUFFER_COUNT {
+                return Ok(());
             }
+            let capacity = aligned_buffer_capacity(bytes)?;
             let mut pool = SlotPool::new(capacity, &self.shm).map_err(|error| {
                 Error::Runtime(format!("could not allocate lock buffer pool: {error}"))
             })?;
@@ -658,8 +633,8 @@ smithay_client_toolkit::delegate_session_lock!(Runtime);
 smithay_client_toolkit::delegate_shm!(Runtime);
 wayland_client::delegate_noop!(Runtime: ignore wl_region::WlRegion);
 
-fn keep_buffer(size: (u32, u32), configured_size: (u32, u32), active: bool) -> bool {
-    size == configured_size || active
+fn redraw_can_progress(current_buffer_count: usize, reusable: bool) -> bool {
+    reusable || current_buffer_count < BUFFER_COUNT
 }
 
 fn aligned_buffer_capacity(bytes: usize) -> Result<usize, Error> {
@@ -667,36 +642,6 @@ fn aligned_buffer_capacity(bytes: usize) -> Result<usize, Error> {
         .checked_add(63)
         .map(|capacity| capacity & !63)
         .ok_or_else(|| Error::Runtime("lock buffer capacity overflow".into()))
-}
-
-fn buffer_admission(
-    existing: impl IntoIterator<Item = ((u32, u32), usize)>,
-    configured_size: (u32, u32),
-    bytes: usize,
-) -> BufferAdmission {
-    let mut count = 0;
-    let mut current_size_count = 0;
-    let mut retained_bytes = 0usize;
-    for (size, item_bytes) in existing {
-        count += 1;
-        current_size_count += usize::from(size == configured_size);
-        let Some(total) = retained_bytes.checked_add(item_bytes) else {
-            return BufferAdmission::Exhausted;
-        };
-        retained_bytes = total;
-    }
-    let can_allocate = count < MAX_RETAINED_BUFFERS
-        && current_size_count < BUFFER_COUNT
-        && retained_bytes
-            .checked_add(bytes)
-            .is_some_and(|total| total <= MAX_RETAINED_BUFFER_BYTES);
-    if can_allocate {
-        BufferAdmission::Allocate
-    } else if current_size_count > 0 {
-        BufferAdmission::WaitForRelease
-    } else {
-        BufferAdmission::Exhausted
-    }
 }
 
 fn buffer_size(
@@ -902,49 +847,10 @@ mod tests {
     }
 
     #[test]
-    fn resize_buffer_retention_is_explicitly_bounded() {
-        let mib = 1024 * 1024;
-        let buffers = [
-            ((3840, 2160), 32 * mib),
-            ((3840, 2160), 32 * mib),
-            ((5120, 2880), 56 * mib),
-        ];
-
-        assert!(keep_buffer((3840, 2160), (5120, 2880), true));
-        assert!(!keep_buffer((3840, 2160), (5120, 2880), false));
-        assert_eq!(
-            buffer_admission(buffers, (5120, 2880), 56 * mib),
-            BufferAdmission::Allocate
-        );
-
-        let at_count_limit = buffers.into_iter().chain([((2560, 1440), 16 * mib)]);
-        assert_eq!(
-            buffer_admission(at_count_limit, (7680, 4320), 128 * mib),
-            BufferAdmission::Exhausted
-        );
-        assert_eq!(
-            buffer_admission(
-                [((7680, 4320), 128 * mib), ((7680, 4320), 128 * mib)],
-                (7680, 4320),
-                64
-            ),
-            BufferAdmission::WaitForRelease
-        );
-        assert_eq!(
-            buffer_admission([((7680, 4320), 128 * mib)], (7680, 4320), 64),
-            BufferAdmission::Allocate
-        );
-        assert_eq!(
-            buffer_admission(
-                [
-                    ((8192, 8192), MAX_BUFFER_BYTES),
-                    ((8192, 8192), MAX_BUFFER_BYTES)
-                ],
-                (1, 1),
-                64
-            ),
-            BufferAdmission::Exhausted
-        );
+    fn double_buffer_pressure_waits_until_a_buffer_is_reusable() {
+        assert!(!redraw_can_progress(2, false));
+        assert!(redraw_can_progress(2, true));
+        assert!(redraw_can_progress(1, false));
         assert_eq!(aligned_buffer_capacity(65).unwrap(), 128);
     }
 

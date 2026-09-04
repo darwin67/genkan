@@ -76,17 +76,16 @@ fallback.
 One lock surface is created for every initial output and for each output added
 later. Output removal drops only its corresponding local surface. Configure,
 integer scale, and buffer transform changes redraw a correctly sized buffer.
-Each output keeps at most two reusable buffers for its configured size, plus
-retired in-flight buffers within explicit limits of four buffers, 256 MiB per
-buffer, and 512 MiB total retained allocation. Every retained buffer owns an
-exact-capacity shared-memory pool, avoiding allocator growth beyond the
-accounting bound; removing an output also releases those client mappings.
-Post-dispatch maintenance drops released stale-size pools and resumes a
-coalesced redraw after a current-size buffer release. Temporary double-buffer
-pressure waits for release; an unsatisfiable resize with no current-size buffer
-terminates fail-closed. Animated and compositor-driven redraws are coalesced
-behind compositor frame callbacks. Every committed buffer has alpha 255 and an
-explicit opaque region. Wallpaper frames use precomputed
+Each output keeps at most two reusable buffers for its configured size, with a
+256 MiB per-buffer and 512 MiB total client-mapping bound. Every retained
+buffer owns an exact-capacity shared-memory pool, avoiding allocator growth
+beyond that bound. A size change or output removal drops stale client mappings
+immediately; Wayland keeps an already committed protocol buffer valid until
+the compositor releases it. Post-dispatch maintenance resumes a coalesced
+redraw after a current-size buffer release, so temporary double-buffer pressure
+waits without allocating or failing. Animated and compositor-driven redraws
+are coalesced behind compositor frame callbacks. Every committed buffer has
+alpha 255 and an explicit opaque region. Wallpaper frames use precomputed
 cover-cropping coordinates and the same darkening treatment as login; decoder
 failure redraws the packaged poster or opaque generated fallback without
 changing lock lifecycle state.
