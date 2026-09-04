@@ -87,8 +87,9 @@ impl RedrawState {
     }
 
     fn should_render(&self, current_buffer_count: usize, reusable: bool) -> bool {
-        self.geometry_pending
-            || (!self.frame_pending && redraw_can_progress(current_buffer_count, reusable))
+        self.redraw_pending
+            && (self.geometry_pending
+                || (!self.frame_pending && redraw_can_progress(current_buffer_count, reusable)))
     }
 
     fn request_frame_callback(&self) -> bool {
@@ -101,9 +102,8 @@ impl RedrawState {
         self.frame_pending |= requested_frame_callback;
     }
 
-    fn frame_done(&mut self) -> bool {
+    fn frame_done(&mut self) {
         self.frame_pending = false;
-        self.redraw_pending
     }
 }
 
@@ -309,10 +309,9 @@ impl Runtime {
             let reusable = surface.buffers.iter_mut().any(|item| {
                 item.size == configured_size && item.pool.canvas(&item.buffer).is_some()
             });
-            if surface.redraw.redraw_pending
-                && surface
-                    .redraw
-                    .should_render(surface.buffers.len(), reusable)
+            if surface
+                .redraw
+                .should_render(surface.buffers.len(), reusable)
             {
                 ready_to_redraw.push(index);
             }
@@ -554,7 +553,7 @@ impl CompositorHandler for Runtime {
     fn frame(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
@@ -568,11 +567,7 @@ impl CompositorHandler for Runtime {
         else {
             return;
         };
-        if self.surfaces[index].redraw.frame_done() {
-            if let Err(error) = self.render(index, qh) {
-                self.fail(error);
-            }
-        }
+        self.surfaces[index].redraw.frame_done();
     }
 
     fn surface_enter(
@@ -863,9 +858,11 @@ mod tests {
         redraw.committed(true);
         assert!(!redraw.request());
         assert!(!redraw.request());
-        assert!(redraw.frame_done());
+        redraw.frame_done();
+        assert!(redraw.should_render(2, true));
         redraw.committed(true);
-        assert!(!redraw.frame_done());
+        redraw.frame_done();
+        assert!(!redraw.should_render(2, true));
     }
 
     #[test]
@@ -882,6 +879,21 @@ mod tests {
         assert!(redraw.frame_pending);
         assert!(!redraw.geometry_pending);
         assert!(!redraw.redraw_pending);
+    }
+
+    #[test]
+    fn frame_callback_defers_latest_geometry_to_post_dispatch_maintenance() {
+        let mut redraw = RedrawState::default();
+        redraw.request();
+        redraw.committed(true);
+        redraw.request_geometry();
+
+        redraw.frame_done();
+        redraw.request_geometry();
+
+        assert!(redraw.geometry_pending);
+        assert!(redraw.should_render(0, false));
+        assert!(redraw.request_frame_callback());
     }
 
     #[test]
