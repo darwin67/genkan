@@ -102,8 +102,9 @@ event batch even when an older callback is outstanding, without requesting a
 duplicate callback. Every committed buffer has alpha 255 and an explicit opaque
 region. Wallpaper frames use precomputed
 cover-cropping coordinates and the same darkening treatment as login; decoder
-failure redraws the packaged poster or opaque generated fallback without
-changing lock lifecycle state.
+failure before the first frame keeps the packaged poster or opaque generated
+fallback, while a later failure retains the last displayed frame. Neither case
+changes lock lifecycle state.
 
 Only the protocol's `locked` event transitions the state to locked and writes
 `READY` to `--ready-fd`. `finished` before confirmation is denial. `finished`

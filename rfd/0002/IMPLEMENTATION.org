@@ -112,8 +112,10 @@ inside the package output.
   The held-frame blend runs outside the shared-state lock. First-frame decode is
   bounded to 10 s for automatic decode and 60 s for the single software attempt;
   playback and post-seek frame gaps are bounded to 10 s. In Phase 2 each timeout
-  stopped the pipeline and restored the generated background; Phase 3 restores
-  the selected poster first.
+  stopped the pipeline and restored the generated background; Phase 3 initially
+  restored the selected poster first. The later flicker fix keeps the initial
+  background before the first frame and retains the last displayed frame after
+  playback begins.
 - iced renders each frame with centered ~ContentFit::Cover~. Geometry tests
   verify coverage and preserved 16:9 aspect ratio at 1366x768, 1920x1080,
   3840x2160, 3440x1440, and 800x1280.
@@ -167,9 +169,11 @@ inside the package output.
   and never initialize GStreamer. Ordinary preview uses the same static path;
   ~--animated-preview~ explicitly opts into playback and still takes the
   service-free preview branch with fixed fixture time and simulated actions.
-- The poster remains visible before the first video frame and is restored after
-  playback failure. A missing or invalid poster leaves the generated background
-  visible. Poster decoding is bounded to JPEG and cached once per catalog entry.
+- The poster remains visible before the first video frame. This Phase 3 record's
+  original restore-after-failure behavior was superseded by the flicker fix: a
+  failure before the first frame keeps the poster or generated background, and
+  a later failure retains the last displayed frame. Poster decoding is bounded
+  to JPEG and cached once per catalog entry.
 - The generated canvas no longer applies its own dimming. The application stack
   now places one uniform 20% black layer above either poster/video or generated
   fallback and below all greeter content, preserving the previous generated

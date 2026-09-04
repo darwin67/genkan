@@ -31,7 +31,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Wallpaper playback failures restore the selected static poster. If the poster is unavailable, Genkan uses its generated background."
+    after_help = "Before the first video frame, wallpaper playback failures keep the selected static poster or generated background. After playback begins, Genkan retains the last displayed frame."
 )]
 struct LoginArguments {
     #[arg(long, exclusive = true)]
@@ -431,14 +431,24 @@ mod tests {
 
     #[test]
     fn command_help_describes_wallpaper_fallbacks() {
+        let lock_audit = include_str!("../rfd/0003/SESSION_LOCK_AUDIT.adoc");
+        let lock_rfd = include_str!("../rfd/0003/README.adoc");
+        let wallpaper_implementation = include_str!("../rfd/0002/IMPLEMENTATION.org");
         let help = Arguments::command()
             .find_subcommand_mut("login")
             .expect("login subcommand")
             .render_long_help()
             .to_string();
-        assert!(help.contains("playback failures restore the selected static poster"));
-        assert!(help.contains("poster is unavailable"));
+        assert!(help.contains("Before the first video frame"));
+        assert!(help.contains("keep the selected static poster"));
         assert!(help.contains("generated background"));
+        assert!(help.contains("retains the last displayed frame"));
+        assert!(lock_audit.contains("failure before the first frame"));
+        assert!(lock_audit.contains("later failure retains the last displayed frame"));
+        assert!(lock_rfd.contains("Failure before the first"));
+        assert!(lock_rfd.contains("later failure retains"));
+        assert!(wallpaper_implementation.contains("superseded by the flicker fix"));
+        assert!(wallpaper_implementation.contains("retains the last displayed frame"));
     }
 
     #[test]

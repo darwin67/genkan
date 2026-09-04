@@ -108,6 +108,7 @@ pub(crate) struct App {
 pub(crate) enum Message {
     Tick,
     WallpaperFrameReady,
+    WallpaperAllocated(Result<iced_runtime::image::Allocation, iced_runtime::image::Error>),
     InputChanged(String),
     Submit,
     Retry,
@@ -261,6 +262,7 @@ impl App {
                     _,
                     Message::Tick
                     | Message::WallpaperFrameReady
+                    | Message::WallpaperAllocated(_)
                     | Message::AuthResult { .. }
                     | Message::AccountsResult(_)
                     | Message::CloseRequested(_)
@@ -281,9 +283,10 @@ impl App {
         }
 
         match message {
-            Message::WallpaperFrameReady => {
-                self.wallpaper.receive_latest();
-                Task::none()
+            Message::WallpaperFrameReady => self.prepare_wallpaper_frame(),
+            Message::WallpaperAllocated(result) => {
+                self.wallpaper.finish_allocation(result);
+                self.prepare_wallpaper_frame()
             }
             Message::Tick if self.preview => Task::none(),
             Message::Tick => {
@@ -578,6 +581,14 @@ impl App {
         } else {
             Duration::from_millis(50)
         }
+    }
+
+    fn prepare_wallpaper_frame(&mut self) -> Task<Message> {
+        self.wallpaper
+            .prepare_latest()
+            .map_or_else(Task::none, |handle| {
+                iced_runtime::image::allocate(handle).map(Message::WallpaperAllocated)
+            })
     }
 
     fn select_account(&mut self, account: Account) -> Task<Message> {

@@ -120,9 +120,11 @@ Tahoe Beach animates by default. Select another packaged catalog entry with:
 ```
 
 `--reduce-motion` (also available as `--static-wallpaper`) shows the selected
-poster without initializing GStreamer. If playback fails, Genkan reports the
-failure and returns to the poster. If the poster is unavailable, it retains the
-generated background.
+poster without initializing GStreamer. If playback fails before the first video
+frame, Genkan reports the failure and keeps the poster, or the generated
+background when the poster is unavailable. After playback begins, a failure
+retains the last displayed frame instead of briefly replacing it with the
+poster.
 
 The package installs immutable, hash-pinned wallpaper inputs; runtime playback
 does not access the network. Asset provenance, delivery, integrity, and loop

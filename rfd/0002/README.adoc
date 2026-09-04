@@ -125,10 +125,11 @@ but not required for correctness; the same package must retain a software
 decode path for supported systems and CI.
 
 The first-frame deadline is bounded. Until a decoded frame arrives, Genkan
-renders the selected static poster. Decode initialization, stream, seek, or
-device errors restore that poster and produce a diagnostic that contains no
-credentials or user-controlled media metadata. If the poster is missing or
-cannot be decoded, the existing generated background remains the fallback.
+renders the selected static poster. A failure before the first frame keeps that
+poster and produces a diagnostic that contains no credentials or user-controlled
+media metadata. If the poster is missing or cannot be decoded, the existing
+generated background remains the fallback. After playback begins, a stream,
+seek, device, or allocation failure retains the last displayed frame.
 Presentation failures do not close the greeter or disable any interaction.
 
 == Asset and packaging model
@@ -189,8 +190,9 @@ be visible in `--help` and documented next to `make dev`.
 
 The production default plays animation. An administrative reduced-motion or
 static setting shows the poster frame without initializing GStreamer. Decode
-failure automatically has the same visual result but is reported separately so
-operators can distinguish preference from failure.
+failure before the first frame has the same visual result but is reported
+separately so operators can distinguish preference from failure. A later
+failure retains the last displayed frame.
 
 == Performance and resource boundaries
 
@@ -231,14 +233,14 @@ icons, or transfer authentication ownership away from greetd.
 An invalid administrative path, unsupported codec, missing plugin, corrupt
 stream, unavailable hardware decoder, or failed loop seek is a presentation
 failure. Genkan records a bounded diagnostic, releases failed playback
-resources, and continues with the selected static poster, or with the generated
-background when that poster is unavailable. Decoder retries are bounded so a
-permanently invalid asset cannot create a busy loop. Administrative overrides
-are first bound with Linux `O_PATH` and validated as regular files without
-opening the target for I/O, so a pathname changed to a FIFO, device, or another
-special file cannot stall startup. The bound inode is then reopened through
-`/proc/self/fd` and passed to GStreamer, so later pathname replacement cannot
-substitute another file.
+resources, and keeps the initial poster or generated background until the first
+frame. Once playback has begun, it retains the last displayed frame. Decoder
+retries are bounded so a permanently invalid asset cannot create a busy loop.
+Administrative overrides are first bound with Linux `O_PATH` and validated as
+regular files without opening the target for I/O, so a pathname changed to a
+FIFO, device, or another special file cannot stall startup. The bound inode is
+then reopened through `/proc/self/fd` and passed to GStreamer, so later pathname
+replacement cannot substitute another file.
 
 == Verification
 
