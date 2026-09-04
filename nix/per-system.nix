@@ -39,6 +39,7 @@ let
   gstreamerPluginPath = pkgs.lib.makeSearchPath "lib/gstreamer-1.0" (
     map pkgs.lib.getLib gstreamerPackages
   );
+  fontConfig = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
 
   wallpaperManifest = builtins.fromTOML (builtins.readFile ../assets/wallpapers/manifest.toml);
   wallpapers = map (
@@ -79,7 +80,10 @@ let
       pkgs.makeWrapper
       pkgs.pkg-config
     ];
-    buildInputs = gstreamerPackages;
+    buildInputs = gstreamerPackages ++ [
+      pkgs.libxkbcommon
+      pkgs.pam
+    ];
     postInstall = ''
       wallpaperDirectory=$out/share/genkan/wallpapers
       mkdir -p "$wallpaperDirectory"
@@ -87,9 +91,15 @@ let
       ${pkgs.lib.concatMapStringsSep "\n" installWallpaper wallpapers}
 
       wrapProgram $out/bin/genkan \
+        --set FONTCONFIG_FILE ${fontConfig} \
         --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries} \
         --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${gstreamerPluginPath} \
         --suffix VK_ADD_DRIVER_FILES : ${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d
+
+      mkdir -p $out/libexec
+      install -m 0755 target/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/release/genkan-lock-auth \
+        $out/libexec/genkan-lock-auth
+      rm -f $out/bin/genkan-lock-auth
     '';
     postFixup = ''
       addDriverRunpath $out/bin/.genkan-wrapped
@@ -115,19 +125,28 @@ let
     src = self;
     cargoLock.lockFile = ../Cargo.lock;
     cargoBuildFlags = [
-      "--features=lock-test"
-      "--bin=genkan"
+      "--workspace"
+      "--features=genkan/lock-test"
     ];
     doCheck = false;
     nativeBuildInputs = [
       pkgs.makeWrapper
       pkgs.pkg-config
     ];
-    buildInputs = gstreamerPackages;
+    buildInputs = gstreamerPackages ++ [
+      pkgs.libxkbcommon
+      pkgs.pam
+    ];
     postInstall = ''
       wrapProgram $out/bin/genkan \
+        --set FONTCONFIG_FILE ${fontConfig} \
         --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries} \
         --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${gstreamerPluginPath}
+
+      mkdir -p $out/libexec
+      install -m 0755 target/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/release/genkan-lock-auth \
+        $out/libexec/genkan-lock-auth
+      rm -f $out/bin/genkan-lock-auth
     '';
   };
 
@@ -136,6 +155,8 @@ let
       pkgs.awscli2
       pkgs.git-cliff
       pkgs.jq
+      pkgs.libxkbcommon
+      pkgs.pam
       pkgs.pkg-config
       pkgs.util-linux
       rustToolchain
@@ -159,7 +180,7 @@ let
     ];
     text = ''
       export GENKAN_BIN=${package}/bin/genkan
-      export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }}
+      export FONTCONFIG_FILE=${fontConfig}
       ${builtins.readFile ../scripts/hardware-smoke.sh}
     '';
   };

@@ -51,6 +51,18 @@ The directly used shell and protocol crates are exact requirements in
 |`calloop-wayland-source`
 |0.4.1
 |`138efcf0940a02ebf0cc8d1eff41a1682a46b431630f4c52450d6265876021fa`
+
+|`pam-sys2`
+|1.0.2
+|`63e07ea89c210813e1a48fc32cb358ba693aae8ca70163461e22d11f1884bf1d`
+
+|`zeroize`
+|1.9.0
+|`e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e`
+
+|`xkbcommon`
+|0.8.0
+|`8d66ca9352cbd4eecbbc40871d8a11b4ac8107cfc528a6e14d7c19c69d0e1ac9`
 |===
 
 `wayland-backend` 0.3.17 is the protocol transport selected by those exact
@@ -59,9 +71,10 @@ requirements and locked with checksum
 It is not called directly by Genkan.
 
 The production Nix package builds the default feature set. It never enables
-`lock-test`; consequently the hidden deterministic authorization option and
-the only Phase 4 call to `SessionLock::unlock` are absent from the production
-binary.
+`lock-test`; consequently the hidden deterministic authorization option is
+absent from the production binary. Production authorization is received only
+from the private `genkan-lock-auth` worker after PAM authenticates the real-UID
+account.
 
 == Runtime invariants
 
@@ -98,7 +111,19 @@ after confirmation, rendering failure, and compositor loss terminate the
 runtime without calling `SessionLock::unlock`. The runtime has no generic iced
 exit, close, or escape action.
 
-Phase 5 will place production PAM authorization behind the private unlock
-capability. Until then, a production `genkan lock` intentionally has no
-graceful unlock path. Testing can compile `lock-test` and request the hidden
-one-shot authorization only after compositor confirmation.
+The production unlock capability is reached only after the expected private
+worker reports terminal PAM success, exits successfully, and still belongs to
+the active attempt. The runtime then calls `unlock_and_destroy`, synchronizes
+with the Wayland server, and exits. Testing can compile `lock-test` and request
+the hidden one-shot authorization only after compositor confirmation.
+
+Keyboard handling adds SCTK's `xkbcommon` feature and the exact `xkbcommon`
+crate version recorded by `Cargo.lock`. PAM runs only in the separately
+installed, unprivileged `genkan-lock-auth` worker. Its bounded versioned
+socketpair protocol is implemented in `crates/lock-auth`; responses neither
+implement revealing diagnostics nor cross a public socket.
+The worker's local PAM trampoline clears every application-owned Rust response
+and every C response allocated on an error path. After a successful callback,
+Linux-PAM owns the response array and its disposal; the PAM ABI provides no
+application callback for clearing that transferred storage after modules have
+consumed it.
