@@ -6,8 +6,8 @@ description = "A small graphical greetd frontend for Wayland"
 license = "MIT"
 
 [workspace]
-members = ["crates/session-lock"]
-default-members = [".", "crates/session-lock"]
+members = ["crates/lock-auth", "crates/session-lock"]
+default-members = [".", "crates/lock-auth", "crates/session-lock"]
 resolver = "2"
 
 [features]
@@ -19,6 +19,8 @@ lock-test = ["genkan-session-lock/lock-test"]
 gui = [
     "dep:bytes",
     "dep:chrono",
+    "dep:cosmic-text",
+    "dep:genkan-lock-auth",
     "dep:genkan-session-lock",
     "dep:gstreamer",
     "dep:gstreamer-app",
@@ -29,6 +31,7 @@ gui = [
     "dep:rclip-desktop-entry",
     "dep:rustix",
     "dep:unicode-general-category",
+    "dep:zeroize",
     "dep:zbus",
 ]
 
@@ -46,7 +49,9 @@ required-features = ["e2e"]
 bytes = { version = "1.10.1", optional = true }
 chrono = { version = "0.4.38", default-features = false, features = ["clock"], optional = true }
 clap = { version = "4.5.23", features = ["derive"] }
+cosmic-text = { version = "0.15.0", optional = true }
 genkan-session-lock = { path = "crates/session-lock", optional = true }
+genkan-lock-auth = { path = "crates/lock-auth", optional = true }
 greetd_ipc = { version = "0.10.3", features = ["tokio-codec"] }
 gstreamer = { version = "0.24.2", features = ["v1_26"], optional = true }
 gstreamer-app = { version = "0.24.2", features = ["v1_26"], optional = true }
@@ -59,6 +64,7 @@ rustix = { version = "1.1.4", features = ["fs", "process"], optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "time"] }
 unicode-general-category = { version = "1.1.0", optional = true }
+zeroize = { version = "=1.9.0", optional = true }
 zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }
 
 [dev-dependencies]
