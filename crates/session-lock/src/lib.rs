@@ -79,7 +79,7 @@ pub trait Presentation {
 pub struct Config {
     identity: Identity,
     presentation: Box<dyn Presentation>,
-    ready_fd: Option<OwnedFd>,
+    ready_fds: Vec<OwnedFd>,
     #[cfg(feature = "lock-test")]
     test_unlock_after_ready: bool,
 }
@@ -93,10 +93,15 @@ impl Config {
         Self {
             identity,
             presentation: Box::new(presentation),
-            ready_fd,
+            ready_fds: ready_fd.into_iter().collect(),
             #[cfg(feature = "lock-test")]
             test_unlock_after_ready: false,
         }
+    }
+
+    pub fn with_additional_ready_fd(mut self, ready_fd: OwnedFd) -> Self {
+        self.ready_fds.push(ready_fd);
+        self
     }
 
     #[cfg(feature = "lock-test")]

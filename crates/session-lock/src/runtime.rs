@@ -136,7 +136,7 @@ struct Runtime {
 }
 
 pub(super) fn run(config: Config) -> Result<(), Error> {
-    let ready = ReadySignal::new(config.ready_fd);
+    let ready = ReadySignal::new(config.ready_fds);
     let conn = Connection::connect_to_env().map_err(|error| Error::Connect(error.to_string()))?;
     let (globals, mut event_queue) =
         registry_queue_init(&conn).map_err(|error| Error::Runtime(error.to_string()))?;
@@ -943,16 +943,16 @@ fn lock_confirmation_action(state: &mut State, blocked: bool) -> Action {
     }
 }
 
-struct ReadySignal(Option<File>);
+struct ReadySignal(Vec<File>);
 
 impl ReadySignal {
-    fn new(fd: Option<OwnedFd>) -> Self {
-        Self(fd.map(File::from))
+    fn new(fds: Vec<OwnedFd>) -> Self {
+        Self(fds.into_iter().map(File::from).collect())
     }
 
     fn apply(&mut self, action: Action) -> std::io::Result<()> {
         if action == Action::ReportReady {
-            if let Some(mut ready) = self.0.take() {
+            for mut ready in self.0.drain(..) {
                 ready.write_all(b"READY\n")?;
                 ready.flush()?;
             }
@@ -1110,29 +1110,44 @@ mod tests {
     #[test]
     fn valid_readiness_descriptor_reports_exact_protocol_message() {
         let (mut reader, writer) = UnixStream::pair().unwrap();
-        let mut ready = ReadySignal::new(Some(writer.into()));
+        let mut ready = ReadySignal::new(vec![writer.into()]);
 
         ready.apply(Action::ReportReady).unwrap();
 
         let mut message = String::new();
         reader.read_to_string(&mut message).unwrap();
         assert_eq!(message, "READY\n");
-        assert!(ready.0.is_none());
+        assert!(ready.0.is_empty());
+    }
+
+    #[test]
+    fn compositor_confirmation_reaches_every_readiness_consumer() {
+        let (mut first_reader, first_writer) = UnixStream::pair().unwrap();
+        let (mut second_reader, second_writer) = UnixStream::pair().unwrap();
+        let mut ready = ReadySignal::new(vec![first_writer.into(), second_writer.into()]);
+
+        ready.apply(Action::ReportReady).unwrap();
+
+        for reader in [&mut first_reader, &mut second_reader] {
+            let mut message = String::new();
+            reader.read_to_string(&mut message).unwrap();
+            assert_eq!(message, "READY\n");
+        }
     }
 
     #[test]
     fn readiness_write_failures_are_reported() {
         let read_only = File::open("/dev/null").unwrap();
-        let mut ready = ReadySignal::new(Some(read_only.into()));
+        let mut ready = ReadySignal::new(vec![read_only.into()]);
 
         assert!(ready.apply(Action::ReportReady).is_err());
-        assert!(ready.0.is_none());
+        assert!(ready.0.is_empty());
     }
 
     #[test]
     fn fatal_error_before_confirmation_cannot_report_readiness() {
         let (mut reader, writer) = UnixStream::pair().unwrap();
-        let mut ready = ReadySignal::new(Some(writer.into()));
+        let mut ready = ReadySignal::new(vec![writer.into()]);
         let mut state = state();
 
         assert_eq!(state.update(Event::RuntimeFailed), Action::Abort);
