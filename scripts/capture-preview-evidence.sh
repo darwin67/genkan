@@ -190,8 +190,12 @@ capture narrow-long-authentication 480 600 long-authentication
 # Exact software-rendered lock states without acquiring a compositor lock.
 capture lock-securing 1280 800 securing lock
 capture lock-prompt 1280 800 prompt lock
+capture lock-challenge 1280 800 challenge lock
+capture lock-submitting 1280 800 submitting lock
 capture lock-failure 1280 800 failure lock
 capture lock-narrow-prompt 480 600 prompt lock
+capture lock-portrait-prompt 1080 1920 prompt lock
+capture lock-ultrawide-prompt 2560 720 prompt lock
 
 # Probe every fixture, including states that do not need a named review capture.
 for fixture in "${preview_fixtures[@]}"; do

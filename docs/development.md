@@ -42,6 +42,23 @@ Pass an explicit `--username` only when a particular synthetic identity is
 useful. To exercise real services, run Genkan without `--preview` in the
 intended greeter environment.
 
+## Safe lock preview
+
+```sh
+make lock-dev
+LOCK_PREVIEW=challenge make lock-dev
+LOCK_PREVIEW=submitting make lock-dev
+LOCK_PREVIEW=failure make lock-dev
+```
+
+The lock preview uses the production lock renderer in a normal window without
+requesting `ext-session-lock-v1` or contacting PAM. Login and lock share the
+same translucent authentication-field fill and outline. Login retains a
+stronger focused outline so keyboard focus remains unambiguous; lock has one
+active field and uses the base outline. Set `WIDTH`, `HEIGHT`, and `WALLPAPER`
+to inspect responsive layouts, for example `WIDTH=1080 HEIGHT=1920 make
+lock-dev`.
+
 ## Animated wallpaper preview
 
 Real wallpaper playback can be enabled without making preview authentication

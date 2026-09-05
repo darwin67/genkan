@@ -4,6 +4,8 @@ use iced::{Background, Border, Color, Shadow, Theme};
 
 const CONTROL_RADIUS: f32 = 18.0;
 const EMPHASIS_WIDTH: f32 = 3.0;
+pub(crate) const AUTHENTICATION_INPUT_BORDER: [u8; 4] = [255, 255, 255, 120];
+pub(crate) const AUTHENTICATION_INPUT_GLASS: [u8; 4] = [190, 205, 230, 54];
 
 pub fn primary_text() -> Color {
     Color::WHITE
@@ -31,6 +33,10 @@ pub fn status_text(error: bool) -> Color {
 
 fn material(alpha: f32) -> Background {
     Background::Color(Color::from_rgba8(7, 10, 24, alpha))
+}
+
+fn rgba8([red, green, blue, alpha]: [u8; 4]) -> Color {
+    Color::from_rgba8(red, green, blue, f32::from(alpha) / 255.0)
 }
 
 fn outline(alpha: f32, emphasized: bool) -> Border {
@@ -64,10 +70,10 @@ pub fn modal_scrim(_theme: &Theme) -> container::Style {
 pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {
-        background: material(0.72),
-        border: outline(0.42, focused),
+        background: Background::Color(rgba8(AUTHENTICATION_INPUT_GLASS)),
+        border: outline(f32::from(AUTHENTICATION_INPUT_BORDER[3]) / 255.0, focused),
         icon: primary_text(),
-        placeholder: Color::from_rgba8(255, 255, 255, 0.55),
+        placeholder: primary_text(),
         value: primary_text(),
         selection: Color::from_rgb8(65, 105, 225),
     }
@@ -767,6 +773,17 @@ mod tests {
             assert_eq!(border.width, EMPHASIS_WIDTH);
             assert_eq!(border.color, Color::from_rgba8(255, 255, 255, 0.95));
         }
+    }
+
+    #[test]
+    fn authentication_input_uses_shared_glass_material() {
+        let style = input(&Theme::Dark, text_input::Status::Active);
+
+        assert_eq!(
+            style.background,
+            Background::Color(rgba8(AUTHENTICATION_INPUT_GLASS))
+        );
+        assert_eq!(style.border.color, rgba8(AUTHENTICATION_INPUT_BORDER));
     }
 
     #[test]

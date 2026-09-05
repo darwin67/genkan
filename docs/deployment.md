@@ -89,6 +89,13 @@ and after it resumes. Resume does not start a second authentication attempt or
 unlock the session; the existing PAM conversation continues only when the user
 interacts with the lock screen.
 
+The login and lock screens use the same translucent authentication-field
+material and light outline over the selected wallpaper. Login adds a stronger
+outline to the currently focused control for keyboard navigation; the lock
+screen has a single active response field. This presentation consistency does
+not join their security backends: greetd still owns login authentication and
+the dedicated `genkan-lock` PAM worker still owns unlock authentication.
+
 For Sway and other sessions using swayidle, use its wait mode so the
 before-sleep command participates in swayidle's logind delay inhibitor:
 
