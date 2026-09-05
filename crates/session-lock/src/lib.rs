@@ -1,13 +1,23 @@
 mod runtime;
 
+use std::collections::TryReserveError;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 #[cfg(feature = "lock-test")]
 use std::time::Duration;
 
 use bytes::Bytes;
+use zeroize::Zeroizing;
 
 pub use runtime::Error;
+
+#[derive(Debug, thiserror::Error)]
+pub enum PreviewError {
+    #[error("preview dimensions exceed the renderer resource budget")]
+    InvalidDimensions,
+    #[error("could not allocate the preview pixel buffer")]
+    Allocation(#[from] TryReserveError),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
@@ -49,6 +59,10 @@ impl RgbaFrame {
 
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    pub fn into_pixels(self) -> Bytes {
+        self.pixels
     }
 }
 
@@ -96,13 +110,17 @@ impl PresentationFrame {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refresh {
     Unchanged,
+    /// The background or presentation geometry changed.
     Frame,
+    /// Only overlay pixels changed. The runtime promotes this to a full redraw
+    /// if the canvas or overlay bounds differ from the preceding frame.
+    Overlay,
     Failed,
 }
 
 #[derive(PartialEq, Eq)]
 pub enum Input {
-    Text(String),
+    Text(Zeroizing<String>),
     Backspace,
     Submit,
     Cancel,
@@ -112,6 +130,9 @@ pub trait Presentation {
     fn receive_latest(&mut self) -> Refresh;
     fn frame(&self) -> Option<PresentationFrame>;
     fn lock_confirmed(&mut self) {}
+    /// Applies user input and reports whether overlay pixels changed.
+    /// Geometry changes are detected and promoted to full redraws by the
+    /// runtime.
     fn input(&mut self, _input: Input) -> bool {
         false
     }
@@ -124,7 +145,11 @@ pub trait Presentation {
 ///
 /// This is intended for deterministic visual previews. Production lock
 /// surfaces are rendered directly into compositor-owned shared-memory buffers.
-pub fn render_preview(frame: &PresentationFrame, width: u32, height: u32) -> Option<RgbaFrame> {
+pub fn render_preview(
+    frame: &PresentationFrame,
+    width: u32,
+    height: u32,
+) -> Result<RgbaFrame, PreviewError> {
     runtime::render_preview(frame, width, height)
 }
 

@@ -33,8 +33,8 @@ use wayland_client::protocol::{wl_keyboard, wl_output, wl_region, wl_seat, wl_sh
 use wayland_client::{Connection, Proxy, QueueHandle};
 
 use super::{
-    Action, Config, Event, Input, Presentation, PresentationFrame, Refresh, RgbaFrame, State,
-    UnlockAuthorization,
+    Action, Config, Event, Input, Presentation, PresentationFrame, PreviewError, Refresh,
+    RgbaFrame, State, UnlockAuthorization,
 };
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -65,7 +65,6 @@ struct Surface {
     lock_surface: SessionLockSurface,
     size: Option<(u32, u32)>,
     scale: i32,
-    transform: wl_output::Transform,
     geometry_generation: u64,
     buffers: Vec<SurfaceBuffer>,
     redraw: RedrawState,
@@ -75,30 +74,45 @@ struct Surface {
 struct SurfaceBuffer {
     size: (u32, u32),
     geometry_generation: u64,
+    background_generation: u64,
     buffer: Buffer,
     pool: SlotPool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RedrawKind {
+    Overlay,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameGeometry {
+    canvas: (u32, u32),
+    overlay: Region,
 }
 
 #[derive(Default)]
 struct RedrawState {
     frame_pending: bool,
-    redraw_pending: bool,
+    redraw_pending: Option<RedrawKind>,
     geometry_pending: bool,
 }
 
 impl RedrawState {
-    fn request(&mut self) -> bool {
-        self.redraw_pending = true;
+    fn request(&mut self, kind: RedrawKind) -> bool {
+        if self.redraw_pending != Some(RedrawKind::Full) {
+            self.redraw_pending = Some(kind);
+        }
         !self.frame_pending
     }
 
     fn request_geometry(&mut self) {
-        self.redraw_pending = true;
+        self.redraw_pending = Some(RedrawKind::Full);
         self.geometry_pending = true;
     }
 
     fn should_render(&self, current_buffer_count: usize, reusable: bool) -> bool {
-        self.redraw_pending
+        self.redraw_pending.is_some()
             && (self.geometry_pending
                 || (!self.frame_pending && redraw_can_progress(current_buffer_count, reusable)))
     }
@@ -108,7 +122,7 @@ impl RedrawState {
     }
 
     fn committed(&mut self, requested_frame_callback: bool) {
-        self.redraw_pending = false;
+        self.redraw_pending = None;
         self.geometry_pending = false;
         self.frame_pending |= requested_frame_callback;
     }
@@ -133,6 +147,8 @@ struct Runtime {
     surfaces: Vec<Surface>,
     state: State,
     presentation: Box<dyn Presentation>,
+    presentation_geometry: Option<FrameGeometry>,
+    background_generation: u64,
     ready: ReadySignal,
     failure: Option<Error>,
     terminate: bool,
@@ -161,6 +177,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         .map_err(|error| Error::MissingProtocol(format!("wl_compositor ({error})")))?;
     let shm = Shm::bind(&globals, &qh)
         .map_err(|error| Error::MissingProtocol(format!("wl_shm ({error})")))?;
+    let presentation_geometry = frame_geometry(config.presentation.frame().as_ref());
     let mut runtime = Runtime {
         conn: conn.clone(),
         compositor,
@@ -176,6 +193,8 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         surfaces: Vec::new(),
         state: State::new(config.identity),
         presentation: config.presentation,
+        presentation_geometry,
+        background_generation: 1,
         ready,
         failure: None,
         terminate: false,
@@ -247,10 +266,26 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         }
         match refresh {
             Refresh::Unchanged => {}
-            Refresh::Frame => runtime.redraw_all(&qh),
+            Refresh::Frame => {
+                record_full_frame(
+                    &mut runtime.presentation_geometry,
+                    &mut runtime.background_generation,
+                    frame_geometry(runtime.presentation.frame().as_ref()),
+                );
+                runtime.redraw_all(&qh, RedrawKind::Full);
+            }
+            Refresh::Overlay => {
+                let kind = runtime.classify_overlay_redraw();
+                runtime.redraw_all(&qh, kind);
+            }
             Refresh::Failed => {
                 eprintln!("genkan lock: presentation failed; retaining opaque fallback");
-                runtime.redraw_all(&qh);
+                record_full_frame(
+                    &mut runtime.presentation_geometry,
+                    &mut runtime.background_generation,
+                    frame_geometry(runtime.presentation.frame().as_ref()),
+                );
+                runtime.redraw_all(&qh, RedrawKind::Full);
             }
         }
         if let Err(error) = runtime.maintain_surfaces(&qh) {
@@ -302,11 +337,10 @@ impl Runtime {
             lock_surface,
             size: None,
             scale: 1,
-            transform: wl_output::Transform::Normal,
             geometry_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
             redraw: RedrawState {
-                redraw_pending: true,
+                redraw_pending: Some(RedrawKind::Full),
                 ..RedrawState::default()
             },
             first_presented: false,
@@ -316,7 +350,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn redraw_all(&mut self, qh: &QueueHandle<Self>) {
+    fn redraw_all(&mut self, qh: &QueueHandle<Self>, kind: RedrawKind) {
         if self.terminate {
             return;
         }
@@ -325,7 +359,7 @@ impl Runtime {
             .iter_mut()
             .enumerate()
             .filter_map(|(index, surface)| {
-                (surface.size.is_some() && surface.redraw.request()).then_some(index)
+                (surface.size.is_some() && surface.redraw.request(kind)).then_some(index)
             })
             .collect::<Vec<_>>();
         for index in configured {
@@ -346,7 +380,7 @@ impl Runtime {
                 width,
                 height,
                 surface.scale.max(1) as u32,
-                surface.transform,
+                wl_output::Transform::Normal,
             )?;
             surface.buffers.retain(|item| {
                 item.size == configured_size
@@ -374,7 +408,8 @@ impl Runtime {
             .size
             .ok_or_else(|| Error::Runtime("attempted to render an unconfigured surface".into()))?;
         let scale = surface.scale.max(1) as u32;
-        let (buffer_width, buffer_height) = buffer_size(width, height, scale, surface.transform)?;
+        let (buffer_width, buffer_height) =
+            buffer_size(width, height, scale, wl_output::Transform::Normal)?;
         let bytes = buffer_width
             .checked_mul(buffer_height)
             .and_then(|pixels| usize::try_from(pixels).ok())
@@ -388,11 +423,12 @@ impl Runtime {
                 "compositor requested a lock buffer larger than the resource budget".into(),
             ));
         }
-        let transform = surface.transform;
         let geometry_generation = surface.geometry_generation;
+        let requested_redraw = surface.redraw.redraw_pending.unwrap_or(RedrawKind::Full);
         let wl_surface = surface.lock_surface.wl_surface().clone();
         let output_id = surface.output.id().protocol_id();
         let frame = self.presentation.frame();
+        let background_generation = self.background_generation;
         let surface = &mut self.surfaces[index];
         surface.buffers.retain(|item| {
             item.size == (buffer_width, buffer_height)
@@ -401,12 +437,33 @@ impl Runtime {
         let reusable = surface.buffers.iter_mut().position(|item| {
             item.size == (buffer_width, buffer_height) && item.pool.canvas(&item.buffer).is_some()
         });
+        let mut damaged = Region::full(buffer_width, buffer_height);
         let buffer_index = if let Some(buffer_index) = reusable {
-            let SurfaceBuffer { buffer, pool, .. } = &mut surface.buffers[buffer_index];
+            let SurfaceBuffer {
+                background_generation: rendered_background,
+                buffer,
+                pool,
+                ..
+            } = &mut surface.buffers[buffer_index];
             let canvas = pool
                 .canvas(buffer)
                 .expect("buffer release state changed without dispatch");
-            draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
+            let full_redraw = requested_redraw == RedrawKind::Full
+                || *rendered_background != background_generation;
+            damaged = redraw_region(
+                requested_redraw,
+                *rendered_background,
+                background_generation,
+                frame.as_ref(),
+                buffer_width,
+                buffer_height,
+            );
+            if !full_redraw {
+                draw_opaque_region(canvas, buffer_width, buffer_height, frame.as_ref(), damaged);
+            } else {
+                draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
+                *rendered_background = background_generation;
+            }
             buffer_index
         } else {
             if surface.buffers.len() >= BUFFER_COUNT {
@@ -430,6 +487,7 @@ impl Runtime {
             surface.buffers.push(SurfaceBuffer {
                 size: (buffer_width, buffer_height),
                 geometry_generation,
+                background_generation,
                 buffer,
                 pool,
             });
@@ -444,8 +502,13 @@ impl Runtime {
         wl_surface.set_opaque_region(Some(&region));
         region.destroy();
         wl_surface.set_buffer_scale(scale as i32);
-        wl_surface.set_buffer_transform(transform);
-        wl_surface.damage_buffer(0, 0, buffer_width as i32, buffer_height as i32);
+        wl_surface.set_buffer_transform(wl_output::Transform::Normal);
+        wl_surface.damage_buffer(
+            damaged.x as i32,
+            damaged.y as i32,
+            damaged.width as i32,
+            damaged.height as i32,
+        );
         let request_frame_callback = surface.redraw.request_frame_callback();
         if request_frame_callback {
             wl_surface.frame(qh, wl_surface.clone());
@@ -475,7 +538,12 @@ impl Runtime {
                 }
                 if !self.terminate {
                     self.presentation.lock_confirmed();
-                    self.redraw_all_surfaces();
+                    record_full_frame(
+                        &mut self.presentation_geometry,
+                        &mut self.background_generation,
+                        frame_geometry(self.presentation.frame().as_ref()),
+                    );
+                    self.redraw_all_surfaces(RedrawKind::Full);
                 }
                 #[cfg(feature = "lock-test")]
                 if self.test_unlock_after_ready && !self.terminate {
@@ -516,12 +584,22 @@ impl Runtime {
         self.terminate = true;
     }
 
-    fn redraw_all_surfaces(&mut self) {
+    fn redraw_all_surfaces(&mut self, kind: RedrawKind) {
         for surface in &mut self.surfaces {
             if surface.size.is_some() {
-                surface.redraw.request();
+                surface.redraw.request(kind);
             }
         }
+    }
+
+    fn classify_overlay_redraw(&mut self) -> RedrawKind {
+        let current = frame_geometry(self.presentation.frame().as_ref());
+        let kind = overlay_redraw_kind(self.presentation_geometry, current);
+        if kind == RedrawKind::Full {
+            self.presentation_geometry = current;
+            self.background_generation = self.background_generation.wrapping_add(1);
+        }
+        kind
     }
 
     fn handle_key(&mut self, event: KeyEvent) {
@@ -533,11 +611,13 @@ impl Runtime {
             Keysym::Escape => Some(Input::Cancel),
             _ => event
                 .utf8
+                .map(zeroize::Zeroizing::new)
                 .filter(|text| !text.chars().any(char::is_control))
                 .map(Input::Text),
         };
         if input.is_some_and(|input| self.presentation.input(input)) {
-            self.redraw_all_surfaces();
+            let kind = self.classify_overlay_redraw();
+            self.redraw_all_surfaces(kind);
         }
     }
 
@@ -624,23 +704,9 @@ impl CompositorHandler for Runtime {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        surface: &wl_surface::WlSurface,
-        transform: wl_output::Transform,
+        _surface: &wl_surface::WlSurface,
+        _transform: wl_output::Transform,
     ) {
-        if let Some(index) = self
-            .surfaces
-            .iter()
-            .position(|item| item.lock_surface.wl_surface() == surface)
-        {
-            let surface = &mut self.surfaces[index];
-            if surface.transform != transform {
-                surface.transform = transform;
-                surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
-                surface.redraw.request_geometry();
-                #[cfg(feature = "lock-test")]
-                self.test_observer.record(TestEvent::Geometry);
-            }
-        }
     }
 
     fn frame(
@@ -920,24 +986,55 @@ fn aligned_buffer_capacity(bytes: usize) -> Result<usize, Error> {
         .ok_or_else(|| Error::Runtime("lock buffer capacity overflow".into()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Region {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl Region {
+    fn full(width: u32, height: u32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+    }
+}
+
+fn frame_geometry(frame: Option<&PresentationFrame>) -> Option<FrameGeometry> {
+    let frame = frame?;
+    Some(FrameGeometry {
+        canvas: frame.dimensions(),
+        overlay: Region {
+            x: frame.overlay_x,
+            y: frame.overlay_y,
+            width: frame.overlay.width,
+            height: frame.overlay.height,
+        },
+    })
+}
+
+fn overlay_redraw_kind(
+    previous: Option<FrameGeometry>,
+    current: Option<FrameGeometry>,
+) -> RedrawKind {
+    if previous == current {
+        RedrawKind::Overlay
+    } else {
+        RedrawKind::Full
+    }
+}
+
 fn buffer_size(
     width: u32,
     height: u32,
     scale: u32,
-    transform: wl_output::Transform,
+    _transform: wl_output::Transform,
 ) -> Result<(u32, u32), Error> {
-    let rotated = matches!(
-        transform,
-        wl_output::Transform::_90
-            | wl_output::Transform::_270
-            | wl_output::Transform::Flipped90
-            | wl_output::Transform::Flipped270
-    );
-    let (width, height) = if rotated {
-        (height, width)
-    } else {
-        (width, height)
-    };
     let (width, height) = width
         .checked_mul(scale)
         .zip(height.checked_mul(scale))
@@ -956,62 +1053,192 @@ fn buffer_size(
 }
 
 fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&PresentationFrame>) {
-    let overlay_coordinates = frame.and_then(|frame| {
-        let (source_width, source_height) = frame.dimensions();
-        cover_coordinates(source_width, source_height, width, height)
-    });
-    let background_coordinates = frame.and_then(|frame| {
+    draw_opaque_region(target, width, height, frame, Region::full(width, height));
+}
+
+fn draw_opaque_region(
+    target: &mut [u8],
+    width: u32,
+    height: u32,
+    frame: Option<&PresentationFrame>,
+    region: Region,
+) {
+    let overlay_geometry = frame.and_then(|frame| overlay_geometry(frame, width, height));
+    let background_geometry = frame.and_then(|frame| {
         let background = frame.background.as_ref()?;
-        cover_coordinates(background.width, background.height, width, height)
+        let geometry = cover_geometry(background.width, background.height, width, height)?;
+        Some((background, geometry))
     });
-    for (index, pixel) in target.chunks_exact_mut(4).enumerate() {
-        let color = overlay_coordinates
-            .as_ref()
-            .and_then(|(source_x, source_y)| {
-                let x = source_x.get(index % width as usize)?;
-                let y = source_y.get(index / width as usize)?;
-                let frame = frame?;
-                let background = background_coordinates
-                    .as_ref()
-                    .zip(frame.background.as_ref())
-                    .and_then(|((background_x, background_y), background)| {
-                        frame_pixel(
-                            background,
-                            *background_x.get(index % width as usize)?,
-                            *background_y.get(index / width as usize)?,
-                        )
-                    })
-                    .unwrap_or(FALLBACK_RGB);
-                let overlay = x
-                    .checked_sub(frame.overlay_x)
-                    .zip(y.checked_sub(frame.overlay_y))
-                    .and_then(|(x, y)| frame_pixel_rgba(&frame.overlay, x, y));
-                Some(overlay.map_or(background, |overlay| blend_rgb(background, overlay)))
-            });
-        let [red, green, blue] = color.unwrap_or(FALLBACK_RGB);
-        pixel.copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
+    let end_x = region.x.saturating_add(region.width).min(width);
+    let end_y = region.y.saturating_add(region.height).min(height);
+    for y in region.y..end_y {
+        for x in region.x..end_x {
+            let background = background_geometry
+                .as_ref()
+                .and_then(|(background, geometry)| {
+                    frame_pixel(
+                        background,
+                        source_coordinate(x, geometry.0, geometry.2, background.width),
+                        source_coordinate(y, geometry.1, geometry.3, background.height),
+                    )
+                })
+                .unwrap_or(FALLBACK_RGB);
+            let overlay = frame
+                .zip(overlay_geometry.as_ref())
+                .and_then(|(frame, geometry)| geometry.sample(frame, x, y));
+            let [red, green, blue] =
+                overlay.map_or(background, |overlay| blend_rgb(background, overlay));
+            let offset = ((y as usize * width as usize) + x as usize) * 4;
+            target[offset..offset + 4].copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OverlayGeometry {
+    canvas_x: u32,
+    canvas_y: u32,
+    canvas_width: u32,
+    canvas_height: u32,
+    target: Region,
+}
+
+impl OverlayGeometry {
+    fn sample(&self, frame: &PresentationFrame, x: u32, y: u32) -> Option<[u8; 4]> {
+        let canvas_x = x.checked_sub(self.canvas_x)?;
+        let canvas_y = y.checked_sub(self.canvas_y)?;
+        let source_x = u64::from(canvas_x) * u64::from(frame.width) / u64::from(self.canvas_width);
+        let source_y =
+            u64::from(canvas_y) * u64::from(frame.height) / u64::from(self.canvas_height);
+        let overlay_x = u32::try_from(source_x).ok()?.checked_sub(frame.overlay_x)?;
+        let overlay_y = u32::try_from(source_y).ok()?.checked_sub(frame.overlay_y)?;
+        frame_pixel_rgba(&frame.overlay, overlay_x, overlay_y)
+    }
+}
+
+fn overlay_region(frame: Option<&PresentationFrame>, width: u32, height: u32) -> Option<Region> {
+    Some(overlay_geometry(frame?, width, height)?.target)
+}
+
+fn overlay_geometry(frame: &PresentationFrame, width: u32, height: u32) -> Option<OverlayGeometry> {
+    let (source_width, source_height) = frame.dimensions();
+    if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
+        return None;
+    }
+    let width_limited = u128::from(width) * u128::from(source_height)
+        <= u128::from(source_width) * u128::from(height);
+    let (canvas_width, canvas_height) = if width_limited {
+        (
+            width,
+            u32::try_from(u128::from(source_height) * u128::from(width) / u128::from(source_width))
+                .ok()?,
+        )
+    } else {
+        (
+            u32::try_from(
+                u128::from(source_width) * u128::from(height) / u128::from(source_height),
+            )
+            .ok()?,
+            height,
+        )
+    };
+    if canvas_width == 0 || canvas_height == 0 {
+        return None;
+    }
+    let canvas_x = (width - canvas_width) / 2;
+    let canvas_y = (height - canvas_height) / 2;
+    let left = canvas_x
+        + u32::try_from(
+            u128::from(frame.overlay_x) * u128::from(canvas_width) / u128::from(source_width),
+        )
+        .ok()?;
+    let top = canvas_y
+        + u32::try_from(
+            u128::from(frame.overlay_y) * u128::from(canvas_height) / u128::from(source_height),
+        )
+        .ok()?;
+    let right = canvas_x
+        + div_ceil_u128(
+            u128::from(frame.overlay_x + frame.overlay.width) * u128::from(canvas_width),
+            u128::from(source_width),
+        )?;
+    let bottom = canvas_y
+        + div_ceil_u128(
+            u128::from(frame.overlay_y + frame.overlay.height) * u128::from(canvas_height),
+            u128::from(source_height),
+        )?;
+    Some(OverlayGeometry {
+        canvas_x,
+        canvas_y,
+        canvas_width,
+        canvas_height,
+        target: Region {
+            x: left,
+            y: top,
+            width: right.saturating_sub(left),
+            height: bottom.saturating_sub(top),
+        },
+    })
+}
+
+fn redraw_region(
+    kind: RedrawKind,
+    rendered_background: u64,
+    current_background: u64,
+    frame: Option<&PresentationFrame>,
+    width: u32,
+    height: u32,
+) -> Region {
+    if kind == RedrawKind::Overlay && rendered_background == current_background {
+        overlay_region(frame, width, height).unwrap_or_else(|| Region::full(width, height))
+    } else {
+        Region::full(width, height)
+    }
+}
+
+fn record_full_frame(
+    presentation_geometry: &mut Option<FrameGeometry>,
+    background_generation: &mut u64,
+    current_geometry: Option<FrameGeometry>,
+) {
+    *presentation_geometry = current_geometry;
+    *background_generation = background_generation.wrapping_add(1);
+}
+
+fn div_ceil_u128(numerator: u128, denominator: u128) -> Option<u32> {
+    u32::try_from(numerator.checked_add(denominator.checked_sub(1)?)? / denominator).ok()
 }
 
 pub(super) fn render_preview(
     frame: &PresentationFrame,
     width: u32,
     height: u32,
-) -> Option<RgbaFrame> {
+) -> Result<RgbaFrame, PreviewError> {
     if width == 0 || height == 0 || width > MAX_SURFACE_DIMENSION || height > MAX_SURFACE_DIMENSION
     {
-        return None;
+        return Err(PreviewError::InvalidDimensions);
     }
-    let bytes = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
+    let bytes = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or(PreviewError::InvalidDimensions)?;
     if bytes > MAX_BUFFER_BYTES {
-        return None;
+        return Err(PreviewError::InvalidDimensions);
     }
-    let mut pixels = vec![0; bytes];
+    let mut pixels = allocate_preview_pixels(bytes)?;
     draw_opaque(&mut pixels, width, height, Some(frame));
     for pixel in pixels.chunks_exact_mut(4) {
         pixel.swap(0, 2);
     }
-    RgbaFrame::new(width, height, pixels.into())
+    RgbaFrame::new(width, height, pixels.into()).ok_or(PreviewError::InvalidDimensions)
+}
+
+fn allocate_preview_pixels(bytes: usize) -> Result<Vec<u8>, PreviewError> {
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(bytes)?;
+    pixels.resize(bytes, 0);
+    Ok(pixels)
 }
 
 #[cfg(test)]
@@ -1022,22 +1249,6 @@ fn sample_cover(frame: &RgbaFrame, width: u32, height: u32, x: u32, y: u32) -> O
         source_coordinate(x, geometry.0, geometry.2, frame.width),
         source_coordinate(y, geometry.1, geometry.3, frame.height),
     )
-}
-
-fn cover_coordinates(
-    source_width: u32,
-    source_height: u32,
-    width: u32,
-    height: u32,
-) -> Option<(Vec<u32>, Vec<u32>)> {
-    let geometry = cover_geometry(source_width, source_height, width, height)?;
-    let source_x = (0..width)
-        .map(|x| source_coordinate(x, geometry.0, geometry.2, source_width))
-        .collect();
-    let source_y = (0..height)
-        .map(|y| source_coordinate(y, geometry.1, geometry.3, source_height))
-        .collect();
-    Some((source_x, source_y))
 }
 
 fn cover_geometry(
@@ -1218,14 +1429,18 @@ mod tests {
     }
 
     #[test]
-    fn transformed_scaled_buffers_cover_the_configured_surface() {
+    fn preferred_output_transforms_use_upright_normal_buffers() {
         assert_eq!(
             buffer_size(1920, 1080, 2, wl_output::Transform::Normal).unwrap(),
             (3840, 2160)
         );
         assert_eq!(
             buffer_size(1920, 1080, 2, wl_output::Transform::_90).unwrap(),
-            (2160, 3840)
+            (3840, 2160)
+        );
+        assert_eq!(
+            buffer_size(1920, 1080, 2, wl_output::Transform::Flipped270).unwrap(),
+            (3840, 2160)
         );
         assert!(buffer_size(u32::MAX, 1, 2, wl_output::Transform::Normal).is_err());
         assert!(buffer_size(16_385, 1, 1, wl_output::Transform::Normal).is_err());
@@ -1236,10 +1451,11 @@ mod tests {
     fn redraws_are_coalesced_until_the_compositor_finishes_a_frame() {
         let mut redraw = RedrawState::default();
 
-        assert!(redraw.request());
+        assert!(redraw.request(RedrawKind::Overlay));
         redraw.committed(true);
-        assert!(!redraw.request());
-        assert!(!redraw.request());
+        assert!(!redraw.request(RedrawKind::Overlay));
+        assert!(!redraw.request(RedrawKind::Full));
+        assert_eq!(redraw.redraw_pending, Some(RedrawKind::Full));
         redraw.frame_done();
         assert!(redraw.should_render(2, true));
         redraw.committed(true);
@@ -1250,7 +1466,7 @@ mod tests {
     #[test]
     fn geometry_redraw_bypasses_an_obsolete_frame_callback_without_adding_one() {
         let mut redraw = RedrawState::default();
-        redraw.request();
+        redraw.request(RedrawKind::Overlay);
         redraw.committed(true);
 
         redraw.request_geometry();
@@ -1260,13 +1476,13 @@ mod tests {
         redraw.committed(false);
         assert!(redraw.frame_pending);
         assert!(!redraw.geometry_pending);
-        assert!(!redraw.redraw_pending);
+        assert!(redraw.redraw_pending.is_none());
     }
 
     #[test]
     fn frame_callback_defers_latest_geometry_to_post_dispatch_maintenance() {
         let mut redraw = RedrawState::default();
-        redraw.request();
+        redraw.request(RedrawKind::Overlay);
         redraw.committed(true);
         redraw.request_geometry();
 
@@ -1318,6 +1534,86 @@ mod tests {
     }
 
     #[test]
+    fn overlay_redraw_touches_only_the_contained_overlay_region() {
+        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[100, 0, 0, 255])).unwrap();
+        let overlay = RgbaFrame::new(2, 2, Bytes::from_static(&[200; 16])).unwrap();
+        let frame = PresentationFrame::new(4, 4, Some(background), overlay, 1, 1).unwrap();
+        let region = overlay_region(Some(&frame), 8, 4).unwrap();
+        let mut target = vec![17; 8 * 4 * 4];
+
+        let moved_overlay = RgbaFrame::new(2, 2, Bytes::from_static(&[200; 16])).unwrap();
+        let moved = PresentationFrame::new(4, 4, None, moved_overlay, 2, 1).unwrap();
+        assert_eq!(
+            overlay_redraw_kind(frame_geometry(Some(&frame)), frame_geometry(Some(&moved))),
+            RedrawKind::Full
+        );
+        assert_eq!(
+            overlay_redraw_kind(frame_geometry(Some(&frame)), frame_geometry(Some(&frame))),
+            RedrawKind::Overlay
+        );
+
+        assert_eq!(
+            redraw_region(RedrawKind::Overlay, 7, 7, Some(&frame), 8, 4),
+            region
+        );
+        assert_eq!(
+            redraw_region(RedrawKind::Overlay, 6, 7, Some(&frame), 8, 4),
+            Region::full(8, 4)
+        );
+        assert_eq!(
+            redraw_region(RedrawKind::Full, 7, 7, Some(&frame), 8, 4),
+            Region::full(8, 4)
+        );
+
+        draw_opaque_region(&mut target, 8, 4, Some(&frame), region);
+
+        assert_eq!(
+            region,
+            Region {
+                x: 3,
+                y: 1,
+                width: 2,
+                height: 2
+            }
+        );
+        assert_eq!(&target[0..4], &[17; 4]);
+        assert_ne!(&target[(8 + 3) * 4..(8 + 4) * 4], &[17; 4]);
+        assert_eq!(&target[(3 * 8 + 7) * 4..(4 * 8) * 4], &[17; 4]);
+    }
+
+    #[test]
+    fn full_redraws_record_current_geometry_and_invalidate_every_buffer_once() {
+        let old_overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
+        let old = PresentationFrame::new(2, 2, None, old_overlay, 0, 0).unwrap();
+        let new_overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
+        let new = PresentationFrame::new(4, 4, None, new_overlay, 2, 2).unwrap();
+        let mut geometry = frame_geometry(Some(&old));
+        let mut generation = u64::MAX;
+
+        record_full_frame(&mut geometry, &mut generation, frame_geometry(Some(&new)));
+
+        assert_eq!(geometry, frame_geometry(Some(&new)));
+        assert_eq!(generation, 0);
+        assert_eq!(
+            overlay_redraw_kind(geometry, frame_geometry(Some(&new))),
+            RedrawKind::Overlay
+        );
+    }
+
+    #[test]
+    fn overlay_remains_visible_on_portrait_ultrawide_and_minimum_outputs() {
+        let overlay = RgbaFrame::new(500, 400, Bytes::from(vec![0; 500 * 400 * 4])).unwrap();
+        let frame = PresentationFrame::new(1280, 800, None, overlay, 390, 200).unwrap();
+
+        for (width, height) in [(1080, 1920), (3840, 1080), (320, 320)] {
+            let region = overlay_region(Some(&frame), width, height).unwrap();
+            assert!(region.width > 0 && region.height > 0, "{width}x{height}");
+            assert!(region.x + region.width <= width, "{width}x{height}");
+            assert!(region.y + region.height <= height, "{width}x{height}");
+        }
+    }
+
+    #[test]
     fn rendering_composites_only_inside_the_positioned_overlay_bounds() {
         let background = RgbaFrame::new(
             3,
@@ -1347,8 +1643,18 @@ mod tests {
             render_preview(&frame, 1, 1).unwrap().pixels(),
             &[80, 120, 160, 255]
         );
-        assert!(render_preview(&frame, 0, 1).is_none());
-        assert!(render_preview(&frame, MAX_SURFACE_DIMENSION + 1, 1).is_none());
+        assert!(matches!(
+            render_preview(&frame, 0, 1),
+            Err(PreviewError::InvalidDimensions)
+        ));
+        assert!(matches!(
+            render_preview(&frame, MAX_SURFACE_DIMENSION + 1, 1),
+            Err(PreviewError::InvalidDimensions)
+        ));
+        assert!(matches!(
+            allocate_preview_pixels(usize::MAX),
+            Err(PreviewError::Allocation(_))
+        ));
     }
 
     #[test]
