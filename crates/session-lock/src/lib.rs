@@ -73,9 +73,6 @@ impl PresentationFrame {
     ) -> Option<Self> {
         if width == 0
             || height == 0
-            || background
-                .as_ref()
-                .is_some_and(|frame| frame.dimensions() != (width, height))
             || overlay_x.checked_add(overlay.width)? > width
             || overlay_y.checked_add(overlay.height)? > height
         {
@@ -322,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn presentation_frames_require_bounded_overlays_and_matching_backgrounds() {
+    fn presentation_frames_share_independent_backgrounds_and_bound_overlays() {
         let background = RgbaFrame::new(2, 2, Bytes::from_static(&[0; 16])).unwrap();
         let background_pixels = background.pixels().as_ptr();
         let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
@@ -334,7 +331,7 @@ mod tests {
             background_pixels,
             "sharing a presentation must not copy the background pixels"
         );
-        assert!(PresentationFrame::new(3, 2, Some(background), overlay.clone(), 1, 1).is_none());
+        assert!(PresentationFrame::new(3, 2, Some(background), overlay.clone(), 1, 1).is_some());
         assert!(PresentationFrame::new(2, 2, None, overlay, 2, 1).is_none());
     }
 

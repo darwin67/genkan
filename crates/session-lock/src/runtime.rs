@@ -956,26 +956,38 @@ fn buffer_size(
 }
 
 fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&PresentationFrame>) {
-    let coordinates = frame.and_then(|frame| {
+    let overlay_coordinates = frame.and_then(|frame| {
         let (source_width, source_height) = frame.dimensions();
         cover_coordinates(source_width, source_height, width, height)
     });
+    let background_coordinates = frame.and_then(|frame| {
+        let background = frame.background.as_ref()?;
+        cover_coordinates(background.width, background.height, width, height)
+    });
     for (index, pixel) in target.chunks_exact_mut(4).enumerate() {
-        let color = coordinates.as_ref().and_then(|(source_x, source_y)| {
-            let x = source_x.get(index % width as usize)?;
-            let y = source_y.get(index / width as usize)?;
-            let frame = frame?;
-            let background = frame
-                .background
-                .as_ref()
-                .and_then(|background| frame_pixel(background, *x, *y))
-                .unwrap_or(FALLBACK_RGB);
-            let overlay = x
-                .checked_sub(frame.overlay_x)
-                .zip(y.checked_sub(frame.overlay_y))
-                .and_then(|(x, y)| frame_pixel_rgba(&frame.overlay, x, y));
-            Some(overlay.map_or(background, |overlay| blend_rgb(background, overlay)))
-        });
+        let color = overlay_coordinates
+            .as_ref()
+            .and_then(|(source_x, source_y)| {
+                let x = source_x.get(index % width as usize)?;
+                let y = source_y.get(index / width as usize)?;
+                let frame = frame?;
+                let background = background_coordinates
+                    .as_ref()
+                    .zip(frame.background.as_ref())
+                    .and_then(|((background_x, background_y), background)| {
+                        frame_pixel(
+                            background,
+                            *background_x.get(index % width as usize)?,
+                            *background_y.get(index / width as usize)?,
+                        )
+                    })
+                    .unwrap_or(FALLBACK_RGB);
+                let overlay = x
+                    .checked_sub(frame.overlay_x)
+                    .zip(y.checked_sub(frame.overlay_y))
+                    .and_then(|(x, y)| frame_pixel_rgba(&frame.overlay, x, y));
+                Some(overlay.map_or(background, |overlay| blend_rgb(background, overlay)))
+            });
         let [red, green, blue] = color.unwrap_or(FALLBACK_RGB);
         pixel.copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
     }
@@ -1290,6 +1302,19 @@ mod tests {
         let mut target = [0; 8];
         draw_opaque(&mut target, 2, 1, Some(&frame));
         assert_eq!(target, [160, 120, 80, 255, 160, 120, 80, 255]);
+    }
+
+    #[test]
+    fn rendering_scales_wallpaper_independently_from_the_overlay_canvas() {
+        let background =
+            RgbaFrame::new(2, 1, Bytes::from_static(&[100, 0, 0, 255, 0, 0, 200, 255])).unwrap();
+        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
+        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
+        let mut target = [0; 8];
+
+        draw_opaque(&mut target, 2, 1, Some(&frame));
+
+        assert_eq!(target, [0, 0, 80, 255, 160, 0, 0, 255]);
     }
 
     #[test]
