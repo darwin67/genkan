@@ -33,7 +33,8 @@ use wayland_client::protocol::{wl_keyboard, wl_output, wl_region, wl_seat, wl_sh
 use wayland_client::{Connection, Proxy, QueueHandle};
 
 use super::{
-    Action, Config, Event, Input, Presentation, Refresh, RgbaFrame, State, UnlockAuthorization,
+    Action, Config, Event, Input, Presentation, PresentationFrame, Refresh, RgbaFrame, State,
+    UnlockAuthorization,
 };
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -954,13 +955,26 @@ fn buffer_size(
     Ok((width, height))
 }
 
-fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&RgbaFrame>) {
-    let coordinates = frame.and_then(|frame| cover_coordinates(frame, width, height));
+fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&PresentationFrame>) {
+    let coordinates = frame.and_then(|frame| {
+        let (source_width, source_height) = frame.dimensions();
+        cover_coordinates(source_width, source_height, width, height)
+    });
     for (index, pixel) in target.chunks_exact_mut(4).enumerate() {
         let color = coordinates.as_ref().and_then(|(source_x, source_y)| {
             let x = source_x.get(index % width as usize)?;
             let y = source_y.get(index / width as usize)?;
-            frame_pixel(frame?, *x, *y)
+            let frame = frame?;
+            let background = frame
+                .background
+                .as_ref()
+                .and_then(|background| frame_pixel(background, *x, *y))
+                .unwrap_or(FALLBACK_RGB);
+            let overlay = x
+                .checked_sub(frame.overlay_x)
+                .zip(y.checked_sub(frame.overlay_y))
+                .and_then(|(x, y)| frame_pixel_rgba(&frame.overlay, x, y));
+            Some(overlay.map_or(background, |overlay| blend_rgb(background, overlay)))
         });
         let [red, green, blue] = color.unwrap_or(FALLBACK_RGB);
         pixel.copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
@@ -969,7 +983,7 @@ fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&RgbaFr
 
 #[cfg(test)]
 fn sample_cover(frame: &RgbaFrame, width: u32, height: u32, x: u32, y: u32) -> Option<[u8; 3]> {
-    let geometry = cover_geometry(frame, width, height)?;
+    let geometry = cover_geometry(frame.width, frame.height, width, height)?;
     frame_pixel(
         frame,
         source_coordinate(x, geometry.0, geometry.2, frame.width),
@@ -977,32 +991,42 @@ fn sample_cover(frame: &RgbaFrame, width: u32, height: u32, x: u32, y: u32) -> O
     )
 }
 
-fn cover_coordinates(frame: &RgbaFrame, width: u32, height: u32) -> Option<(Vec<u32>, Vec<u32>)> {
-    let geometry = cover_geometry(frame, width, height)?;
+fn cover_coordinates(
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+) -> Option<(Vec<u32>, Vec<u32>)> {
+    let geometry = cover_geometry(source_width, source_height, width, height)?;
     let source_x = (0..width)
-        .map(|x| source_coordinate(x, geometry.0, geometry.2, frame.width))
+        .map(|x| source_coordinate(x, geometry.0, geometry.2, source_width))
         .collect();
     let source_y = (0..height)
-        .map(|y| source_coordinate(y, geometry.1, geometry.3, frame.height))
+        .map(|y| source_coordinate(y, geometry.1, geometry.3, source_height))
         .collect();
     Some((source_x, source_y))
 }
 
-fn cover_geometry(frame: &RgbaFrame, width: u32, height: u32) -> Option<(u128, u128, u128, u128)> {
-    if frame.width == 0 || frame.height == 0 || width == 0 || height == 0 {
+fn cover_geometry(
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+) -> Option<(u128, u128, u128, u128)> {
+    if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
         return None;
     }
-    let source_wider =
-        u128::from(frame.width) * u128::from(height) > u128::from(width) * u128::from(frame.height);
+    let source_wider = u128::from(source_width) * u128::from(height)
+        > u128::from(width) * u128::from(source_height);
     let (scaled_width, scaled_height) = if source_wider {
         (
-            u128::from(frame.width) * u128::from(height) / u128::from(frame.height),
+            u128::from(source_width) * u128::from(height) / u128::from(source_height),
             u128::from(height),
         )
     } else {
         (
             u128::from(width),
-            u128::from(frame.height) * u128::from(width) / u128::from(frame.width),
+            u128::from(source_height) * u128::from(width) / u128::from(source_width),
         )
     };
     let crop_x = scaled_width.saturating_sub(u128::from(width)) / 2;
@@ -1016,6 +1040,9 @@ fn source_coordinate(position: u32, crop: u128, scaled: u128, source: u32) -> u3
 }
 
 fn frame_pixel(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 3]> {
+    if source_x >= frame.width || source_y >= frame.height {
+        return None;
+    }
     let offset = u64::from(source_y)
         .checked_mul(u64::from(frame.width))?
         .checked_add(u64::from(source_x))?
@@ -1023,6 +1050,30 @@ fn frame_pixel(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 3
         .and_then(|offset| usize::try_from(offset).ok())?;
     let pixel = frame.pixels.get(offset..offset.checked_add(3)?)?;
     Some([pixel[0], pixel[1], pixel[2]])
+}
+
+fn frame_pixel_rgba(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 4]> {
+    if source_x >= frame.width || source_y >= frame.height {
+        return None;
+    }
+    let offset = u64::from(source_y)
+        .checked_mul(u64::from(frame.width))?
+        .checked_add(u64::from(source_x))?
+        .checked_mul(4)
+        .and_then(|offset| usize::try_from(offset).ok())?;
+    frame
+        .pixels
+        .get(offset..offset.checked_add(4)?)?
+        .try_into()
+        .ok()
+}
+
+fn blend_rgb(background: [u8; 3], foreground: [u8; 4]) -> [u8; 3] {
+    let alpha = u16::from(foreground[3]);
+    std::array::from_fn(|channel| {
+        ((u16::from(foreground[channel]) * alpha + u16::from(background[channel]) * (255 - alpha))
+            / 255) as u8
+    })
 }
 
 fn dim(value: u8) -> u8 {
@@ -1112,7 +1163,7 @@ mod tests {
 
     struct FakePresentation {
         refresh: Refresh,
-        frame: Option<RgbaFrame>,
+        frame: Option<PresentationFrame>,
     }
 
     impl Presentation for FakePresentation {
@@ -1120,7 +1171,7 @@ mod tests {
             self.refresh
         }
 
-        fn frame(&self) -> Option<RgbaFrame> {
+        fn frame(&self) -> Option<PresentationFrame> {
             self.frame.clone()
         }
     }
@@ -1204,14 +1255,40 @@ mod tests {
 
     #[test]
     fn rendering_forces_opaque_argb_and_dims_wallpaper() {
-        let frame = RgbaFrame {
+        let background = RgbaFrame {
             width: 1,
             height: 1,
             pixels: Bytes::from_static(&[100, 150, 200, 0]),
         };
+        let overlay = RgbaFrame {
+            width: 1,
+            height: 1,
+            pixels: Bytes::from_static(&[0, 0, 0, 0]),
+        };
+        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
         let mut target = [0; 8];
         draw_opaque(&mut target, 2, 1, Some(&frame));
         assert_eq!(target, [160, 120, 80, 255, 160, 120, 80, 255]);
+    }
+
+    #[test]
+    fn rendering_composites_only_inside_the_positioned_overlay_bounds() {
+        let background = RgbaFrame::new(
+            3,
+            1,
+            Bytes::from_static(&[100, 150, 200, 255, 100, 150, 200, 255, 100, 150, 200, 255]),
+        )
+        .unwrap();
+        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[200, 100, 50, 128])).unwrap();
+        let frame = PresentationFrame::new(3, 1, Some(background), overlay, 1, 0).unwrap();
+        let mut target = [0; 12];
+
+        draw_opaque(&mut target, 3, 1, Some(&frame));
+
+        assert_eq!(
+            target,
+            [160, 120, 80, 255, 99, 99, 120, 255, 160, 120, 80, 255,]
+        );
     }
 
     #[test]

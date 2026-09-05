@@ -13,7 +13,7 @@ use std::path::Path;
 
 use bytes::Bytes;
 use cosmic_text::{Align, Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache};
-use genkan_session_lock::{Input, Presentation, Refresh, RgbaFrame};
+use genkan_session_lock::{Input, Presentation, PresentationFrame, Refresh, RgbaFrame};
 use thiserror::Error;
 use zeroize::Zeroize;
 
@@ -69,7 +69,8 @@ struct LockerPresentation {
     prompt_id: Option<u64>,
     confirmed: bool,
     authorized: bool,
-    frame: Option<RgbaFrame>,
+    background: Option<RgbaFrame>,
+    frame: Option<PresentationFrame>,
     fonts: FontSystem,
     glyphs: SwashCache,
     #[cfg(feature = "lock-test")]
@@ -117,6 +118,7 @@ impl LockerPresentation {
             prompt_id: None,
             confirmed: false,
             authorized: false,
+            background: None,
             frame: None,
             fonts: FontSystem::new(),
             glyphs: SwashCache::new(),
@@ -247,31 +249,37 @@ impl LockerPresentation {
     fn rebuild(&mut self) {
         const WIDTH: u32 = 1280;
         const HEIGHT: u32 = 800;
-        let wallpaper = self.wallpaper.rgba_frame();
-        let (width, height, mut pixels) = wallpaper.as_ref().map_or_else(
-            || {
-                (
-                    WIDTH,
-                    HEIGHT,
-                    [5_u8, 9, 24, 255].repeat((WIDTH * HEIGHT) as usize),
-                )
-            },
-            |frame| {
-                let (width, height) = frame.dimensions();
-                (width, height, frame.pixels().to_vec())
-            },
-        );
-        render_authentication(
+        self.background = self.wallpaper.rgba_frame();
+        let (width, height) = self
+            .background
+            .as_ref()
+            .map_or((WIDTH, HEIGHT), RgbaFrame::dimensions);
+        self.rebuild_overlay(width, height);
+    }
+
+    fn rebuild_overlay(&mut self, width: u32, height: u32) {
+        let (panel_width, panel_height) = authentication_panel_dimensions(width, height);
+        let mut pixels = vec![0; (panel_width * panel_height * 4) as usize];
+        render_authentication_overlay(
             &mut pixels,
-            width,
-            height,
+            panel_width,
+            panel_height,
             &self.identity,
             &self.conversation,
             self.confirmed,
             &mut self.fonts,
             &mut self.glyphs,
         );
-        self.frame = RgbaFrame::new(width, height, Bytes::from(pixels));
+        let overlay = RgbaFrame::new(panel_width, panel_height, Bytes::from(pixels))
+            .expect("authentication overlay has valid dimensions");
+        self.frame = PresentationFrame::new(
+            width,
+            height,
+            self.background.clone(),
+            overlay,
+            (width - panel_width) / 2,
+            (height - panel_height) / 2,
+        );
     }
 
     #[cfg(feature = "lock-test")]
@@ -287,8 +295,14 @@ impl Presentation for LockerPresentation {
     fn receive_latest(&mut self) -> Refresh {
         let auth_changed = self.receive_auth();
         let wallpaper = self.wallpaper.receive_latest();
-        if auth_changed || wallpaper != wallpaper::Refresh::Unchanged {
+        if wallpaper != wallpaper::Refresh::Unchanged {
             self.rebuild();
+        } else if auth_changed {
+            let (width, height) = self
+                .frame
+                .as_ref()
+                .map_or((1280, 800), PresentationFrame::dimensions);
+            self.rebuild_overlay(width, height);
         }
         match wallpaper {
             wallpaper::Refresh::Failed => Refresh::Failed,
@@ -298,7 +312,7 @@ impl Presentation for LockerPresentation {
         }
     }
 
-    fn frame(&self) -> Option<RgbaFrame> {
+    fn frame(&self) -> Option<PresentationFrame> {
         self.frame.clone()
     }
 
@@ -318,7 +332,11 @@ impl Presentation for LockerPresentation {
         {
             self.fail_authentication();
         }
-        self.rebuild();
+        let (width, height) = self
+            .frame
+            .as_ref()
+            .map_or((1280, 800), PresentationFrame::dimensions);
+        self.rebuild_overlay(width, height);
     }
 
     fn input(&mut self, input: Input) -> bool {
@@ -351,7 +369,11 @@ impl Presentation for LockerPresentation {
             Input::Cancel => self.cancel_attempt(),
         };
         if changed {
-            self.rebuild();
+            let (width, height) = self
+                .frame
+                .as_ref()
+                .map_or((1280, 800), PresentationFrame::dimensions);
+            self.rebuild_overlay(width, height);
         }
         changed
     }
@@ -434,7 +456,7 @@ fn report_joined_ready(ready_fd: Option<OwnedFd>) -> Result<(), Error> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_authentication(
+fn render_authentication_overlay(
     pixels: &mut [u8],
     width: u32,
     height: u32,
@@ -444,19 +466,7 @@ fn render_authentication(
     fonts: &mut FontSystem,
     glyphs: &mut SwashCache,
 ) {
-    let panel_width = width.min(620);
-    let panel_height = height.min(340);
-    let left = (width - panel_width) / 2;
-    let top = (height - panel_height) / 2;
-    blend_rect(
-        pixels,
-        width,
-        left,
-        top,
-        panel_width,
-        panel_height,
-        [7, 10, 24, 210],
-    );
+    blend_rect(pixels, width, 0, 0, width, height, [7, 10, 24, 210]);
     draw_text(
         pixels,
         width,
@@ -465,7 +475,7 @@ fn render_authentication(
         glyphs,
         &identity.display_name,
         30.0,
-        top as i32 + 48,
+        48,
         [255, 255, 255, 255],
     );
     draw_text(
@@ -476,7 +486,7 @@ fn render_authentication(
         glyphs,
         &format!("@{}", identity.username),
         16.0,
-        top as i32 + 88,
+        88,
         [190, 196, 220, 255],
     );
     let prompt = if confirmed {
@@ -492,7 +502,7 @@ fn render_authentication(
         glyphs,
         prompt,
         17.0,
-        top as i32 + 140,
+        140,
         [255, 255, 255, 255],
     );
     if confirmed {
@@ -500,12 +510,12 @@ fn render_authentication(
         // responses out of the text renderer guarantees its internal scratch
         // buffers never retain application-owned response text.
         let input = "•".repeat(conversation.input().chars().count());
-        let (input_margin, input_width) = input_layout(panel_width);
+        let (input_margin, input_width) = input_layout(width);
         blend_rect(
             pixels,
             width,
-            left + input_margin,
-            top + 172,
+            input_margin,
+            172,
             input_width,
             52,
             [7, 10, 24, 220],
@@ -518,7 +528,7 @@ fn render_authentication(
             glyphs,
             &input,
             21.0,
-            top as i32 + 185,
+            185,
             [255, 255, 255, 255],
         );
         if let Some(notice) = conversation.notice() {
@@ -530,7 +540,7 @@ fn render_authentication(
                 glyphs,
                 notice,
                 15.0,
-                top as i32 + 250,
+                250,
                 if conversation.notice_is_error() {
                     [255, 171, 171, 255]
                 } else {
@@ -539,6 +549,10 @@ fn render_authentication(
             );
         }
     }
+}
+
+fn authentication_panel_dimensions(width: u32, height: u32) -> (u32, u32) {
+    (width.min(620), height.min(340))
 }
 
 fn input_layout(panel_width: u32) -> (u32, u32) {
@@ -612,12 +626,18 @@ fn blend_pixel(pixels: &mut [u8], width: u32, x: i32, y: i32, source: [u8; 4]) {
     let Some(target) = pixels.get_mut(index..index + 4) else {
         return;
     };
-    let alpha = source[3] as u16;
-    for channel in 0..3 {
-        target[channel] =
-            ((source[channel] as u16 * alpha + target[channel] as u16 * (255 - alpha)) / 255) as u8;
+    let source_alpha = u32::from(source[3]);
+    let target_alpha = u32::from(target[3]);
+    let output_alpha = source_alpha + target_alpha * (255 - source_alpha) / 255;
+    if output_alpha == 0 {
+        return;
     }
-    target[3] = 255;
+    for channel in 0..3 {
+        let premultiplied = u32::from(source[channel]) * source_alpha
+            + u32::from(target[channel]) * target_alpha * (255 - source_alpha) / 255;
+        target[channel] = (premultiplied / output_alpha) as u8;
+    }
+    target[3] = output_alpha as u8;
 }
 
 fn adopt_ready_fd(fd: RawFd) -> Result<OwnedFd, Error> {
@@ -738,6 +758,24 @@ mod tests {
         assert_eq!(input_layout(1), (0, 1));
         assert_eq!(input_layout(139), (15, 109));
         assert_eq!(input_layout(620), (68, 484));
+    }
+
+    #[test]
+    fn authentication_overlay_is_bounded_independently_of_wallpaper_size() {
+        assert_eq!(authentication_panel_dimensions(3840, 2160), (620, 340));
+        assert_eq!(authentication_panel_dimensions(320, 200), (320, 200));
+        assert_eq!(620 * 340 * 4, 843_200);
+    }
+
+    #[test]
+    fn alpha_blending_preserves_transparency_for_layered_rendering() {
+        let mut transparent = [0, 0, 0, 0];
+
+        blend_pixel(&mut transparent, 1, 0, 0, [7, 10, 24, 210]);
+        assert_eq!(transparent, [7, 10, 24, 210]);
+
+        blend_pixel(&mut transparent, 1, 0, 0, [255, 255, 255, 255]);
+        assert_eq!(transparent, [255, 255, 255, 255]);
     }
 
     #[test]

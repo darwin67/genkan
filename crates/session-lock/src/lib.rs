@@ -52,6 +52,50 @@ impl RgbaFrame {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationFrame {
+    width: u32,
+    height: u32,
+    background: Option<RgbaFrame>,
+    overlay: RgbaFrame,
+    overlay_x: u32,
+    overlay_y: u32,
+}
+
+impl PresentationFrame {
+    pub fn new(
+        width: u32,
+        height: u32,
+        background: Option<RgbaFrame>,
+        overlay: RgbaFrame,
+        overlay_x: u32,
+        overlay_y: u32,
+    ) -> Option<Self> {
+        if width == 0
+            || height == 0
+            || background
+                .as_ref()
+                .is_some_and(|frame| frame.dimensions() != (width, height))
+            || overlay_x.checked_add(overlay.width)? > width
+            || overlay_y.checked_add(overlay.height)? > height
+        {
+            return None;
+        }
+        Some(Self {
+            width,
+            height,
+            background,
+            overlay,
+            overlay_x,
+            overlay_y,
+        })
+    }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refresh {
     Unchanged,
@@ -69,7 +113,7 @@ pub enum Input {
 
 pub trait Presentation {
     fn receive_latest(&mut self) -> Refresh;
-    fn frame(&self) -> Option<RgbaFrame>;
+    fn frame(&self) -> Option<PresentationFrame>;
     fn lock_confirmed(&mut self) {}
     fn input(&mut self, _input: Input) -> bool {
         false
@@ -267,6 +311,23 @@ mod tests {
         assert!(RgbaFrame::new(1, 1, Bytes::from_static(&[0; 3])).is_none());
         assert!(RgbaFrame::new(u32::MAX, u32::MAX, Bytes::new()).is_none());
         assert!(RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).is_some());
+    }
+
+    #[test]
+    fn presentation_frames_require_bounded_overlays_and_matching_backgrounds() {
+        let background = RgbaFrame::new(2, 2, Bytes::from_static(&[0; 16])).unwrap();
+        let background_pixels = background.pixels().as_ptr();
+        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
+
+        let frame =
+            PresentationFrame::new(2, 2, Some(background.clone()), overlay.clone(), 1, 1).unwrap();
+        assert_eq!(
+            frame.background.as_ref().unwrap().pixels().as_ptr(),
+            background_pixels,
+            "sharing a presentation must not copy the background pixels"
+        );
+        assert!(PresentationFrame::new(3, 2, Some(background), overlay.clone(), 1, 1).is_none());
+        assert!(PresentationFrame::new(2, 2, None, overlay, 2, 1).is_none());
     }
 
     #[test]
