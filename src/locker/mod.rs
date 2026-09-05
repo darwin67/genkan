@@ -320,22 +320,23 @@ impl LockerPresentation {
 
 impl Presentation for LockerPresentation {
     fn receive_latest(&mut self) -> Refresh {
-        let auth_changed = self.receive_auth();
+        if self.receive_auth() {
+            self.rebuild_overlay();
+            Refresh::Overlay
+        } else {
+            Refresh::Unchanged
+        }
+    }
+
+    fn receive_deferred(&mut self) -> Refresh {
         let wallpaper = self.wallpaper.receive_latest();
         if wallpaper != wallpaper::Refresh::Unchanged {
             self.background = self.wallpaper.rgba_frame();
-            if auth_changed {
-                self.rebuild_overlay();
-            } else {
-                self.rebuild_frame();
-            }
-        } else if auth_changed {
-            self.rebuild_overlay();
+            self.rebuild_frame();
         }
         match wallpaper {
             wallpaper::Refresh::Failed => Refresh::Failed,
             wallpaper::Refresh::Frame => Refresh::Frame,
-            wallpaper::Refresh::Unchanged if auth_changed => Refresh::Overlay,
             wallpaper::Refresh::Unchanged => Refresh::Unchanged,
         }
     }
@@ -493,10 +494,6 @@ fn render_authentication_overlay(
     fonts: &mut FontSystem,
     glyphs: &mut SwashCache,
 ) {
-    const AVATAR_X: u32 = 194 * AUTHENTICATION_RENDER_SCALE;
-    const AVATAR_Y: u32 = 10 * AUTHENTICATION_RENDER_SCALE;
-    const AVATAR_DIAMETER: u32 = 112 * AUTHENTICATION_RENDER_SCALE;
-
     let scale = AUTHENTICATION_RENDER_SCALE;
     let px = |value: u32| value * scale;
     let position = |value: i32| value * scale as i32;
@@ -546,6 +543,7 @@ fn render_authentication_overlay(
             prompt,
             font_size(15.0),
             font_size(8.0),
+            font_size(1.0),
             position(66),
             px(15),
             width - px(30),
@@ -567,22 +565,7 @@ fn render_authentication_overlay(
             );
         }
     } else {
-        blend_circle(
-            pixels,
-            width,
-            AVATAR_X + AVATAR_DIAMETER / 2,
-            AVATAR_Y + AVATAR_DIAMETER / 2,
-            AVATAR_DIAMETER / 2,
-            [255, 255, 255, 90],
-        );
-        blend_circle(
-            pixels,
-            width,
-            AVATAR_X + AVATAR_DIAMETER / 2,
-            AVATAR_Y + AVATAR_DIAMETER / 2,
-            AVATAR_DIAMETER / 2 - 3,
-            [24, 31, 46, 220],
-        );
+        draw_authentication_avatar(pixels, width, scale);
         draw_shadowed_text(
             pixels,
             width,
@@ -706,6 +689,7 @@ fn render_authentication_overlay(
             notice,
             font_size(15.0),
             font_size(7.0),
+            font_size(1.0),
             position(315),
             px(10),
             width - px(20),
@@ -854,7 +838,32 @@ fn draw_authentication_field(pixels: &mut [u8], width: u32, scale: u32) {
         AUTHENTICATION_FIELD_WIDTH * scale,
         AUTHENTICATION_FIELD_HEIGHT * scale,
         AUTHENTICATION_FIELD_HEIGHT * scale / 2,
+        scale,
         theme::AUTHENTICATION_INPUT_BORDER,
+    );
+}
+
+fn draw_authentication_avatar(pixels: &mut [u8], width: u32, scale: u32) {
+    let x = 194 * scale;
+    let y = 10 * scale;
+    let diameter = 112 * scale;
+    let center_x = x + diameter / 2;
+    let center_y = y + diameter / 2;
+    blend_circle(
+        pixels,
+        width,
+        center_x,
+        center_y,
+        diameter / 2,
+        [255, 255, 255, 90],
+    );
+    blend_circle(
+        pixels,
+        width,
+        center_x,
+        center_y,
+        diameter / 2 - 3 * scale,
+        [24, 31, 46, 220],
     );
 }
 
@@ -890,22 +899,24 @@ fn blend_rounded_rect_outline(
     width: u32,
     height: u32,
     radius: u32,
+    thickness: u32,
     color: [u8; 4],
 ) {
     let radius = radius.min(width / 2).min(height / 2);
+    let thickness = thickness.min(width / 2).min(height / 2);
     for local_y in 0..height {
         for local_x in 0..width {
             let inside_outer = rounded_rect_contains(local_x, local_y, width, height, radius);
-            let inside_inner = local_x > 0
-                && local_y > 0
-                && local_x + 1 < width
-                && local_y + 1 < height
+            let inside_inner = local_x >= thickness
+                && local_y >= thickness
+                && local_x + thickness < width
+                && local_y + thickness < height
                 && rounded_rect_contains(
-                    local_x - 1,
-                    local_y - 1,
-                    width - 2,
-                    height - 2,
-                    radius.saturating_sub(1),
+                    local_x - thickness,
+                    local_y - thickness,
+                    width - thickness * 2,
+                    height - thickness * 2,
+                    radius.saturating_sub(thickness),
                 );
             if inside_outer && !inside_inner {
                 blend_pixel(
@@ -943,6 +954,7 @@ fn draw_wrapped_text_in(
     text: &str,
     maximum_size: f32,
     minimum_size: f32,
+    size_step: f32,
     y: i32,
     x: u32,
     text_width: u32,
@@ -971,7 +983,7 @@ fn draw_wrapped_text_in(
         if content_height <= text_height as f32 || size <= minimum_size {
             break candidate;
         }
-        size = (size - 1.0).max(minimum_size);
+        size = next_font_size(size, minimum_size, size_step);
     };
     let line_height = size * 1.3;
     let line_count = buffer.layout_runs().count();
@@ -1014,6 +1026,10 @@ fn draw_wrapped_text_in(
         }
     }
     page_count
+}
+
+fn next_font_size(size: f32, minimum: f32, step: f32) -> f32 {
+    (size - step).max(minimum)
 }
 
 fn page_layout(
@@ -1376,6 +1392,45 @@ mod tests {
         assert_eq!(authentication_overlay_dimensions(), (1500, 1200));
         assert_eq!(authentication_canvas_dimensions(), (3840, 2400));
         assert_eq!(1500 * 1200 * 4, 7_200_000);
+    }
+
+    #[test]
+    fn production_scale_preserves_field_and_avatar_border_thickness() {
+        let (width, height) = authentication_overlay_dimensions();
+        let mut pixels = vec![0; (width * height * 4) as usize];
+        draw_authentication_field(&mut pixels, width, AUTHENTICATION_RENDER_SCALE);
+        let center_x =
+            (AUTHENTICATION_FIELD_X + AUTHENTICATION_FIELD_WIDTH / 2) * AUTHENTICATION_RENDER_SCALE;
+        let top = AUTHENTICATION_FIELD_Y * AUTHENTICATION_RENDER_SCALE;
+        for y in top..top + AUTHENTICATION_RENDER_SCALE {
+            let offset = ((y * width + center_x) * 4) as usize;
+            assert!(pixels[offset + 3] > theme::AUTHENTICATION_INPUT_GLASS[3]);
+        }
+
+        draw_authentication_avatar(&mut pixels, width, AUTHENTICATION_RENDER_SCALE);
+        let avatar_center_x = (194 + 112 / 2) * AUTHENTICATION_RENDER_SCALE;
+        let avatar_top = 10 * AUTHENTICATION_RENDER_SCALE;
+        for y in avatar_top..avatar_top + 3 * AUTHENTICATION_RENDER_SCALE {
+            let offset = ((y * width + avatar_center_x) * 4) as usize;
+            assert_eq!(pixels[offset..offset + 3], [255, 255, 255]);
+        }
+    }
+
+    #[test]
+    fn scaled_font_fitting_uses_logical_size_steps() {
+        let candidates = |scale: f32| {
+            let mut size = 15.0 * scale;
+            let minimum = 7.0 * scale;
+            let mut count = 1;
+            while size > minimum {
+                size = next_font_size(size, minimum, scale);
+                count += 1;
+            }
+            count
+        };
+
+        assert_eq!(candidates(1.0), 9);
+        assert_eq!(candidates(3.0), 9);
     }
 
     #[test]
