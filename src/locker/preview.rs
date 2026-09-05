@@ -8,7 +8,10 @@ use iced::{Element, Fill, Task, Theme};
 use crate::conversation::{Conversation, Status};
 use crate::wallpaper;
 
-use super::{authentication_panel_dimensions, render_authentication_overlay};
+use super::{
+    authentication_overlay_dimensions, render_authentication_overlay, LOCK_CANVAS_HEIGHT,
+    LOCK_CANVAS_WIDTH,
+};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Fixture {
@@ -74,11 +77,7 @@ pub(crate) fn run(
 
 fn frame(settings: wallpaper::Settings, fixture: Fixture, width: u32, height: u32) -> RgbaFrame {
     let wallpaper = wallpaper::State::start(settings).rgba_frame();
-    let (canvas_width, canvas_height) = wallpaper
-        .as_ref()
-        .map_or((1280, 800), RgbaFrame::dimensions);
-    let (overlay_width, overlay_height) =
-        authentication_panel_dimensions(canvas_width, canvas_height);
+    let (overlay_width, overlay_height) = authentication_overlay_dimensions();
     let mut pixels = vec![0; (overlay_width * overlay_height * 4) as usize];
     let identity = super::identity::Identity {
         uid: 1000,
@@ -99,12 +98,12 @@ fn frame(settings: wallpaper::Settings, fixture: Fixture, width: u32, height: u3
     let overlay = RgbaFrame::new(overlay_width, overlay_height, pixels.into())
         .expect("preview overlay has valid dimensions");
     let presentation = PresentationFrame::new(
-        canvas_width,
-        canvas_height,
+        LOCK_CANVAS_WIDTH,
+        LOCK_CANVAS_HEIGHT,
         wallpaper,
         overlay,
-        (canvas_width - overlay_width) / 2,
-        (canvas_height - overlay_height) / 2,
+        (LOCK_CANVAS_WIDTH - overlay_width) / 2,
+        (LOCK_CANVAS_HEIGHT - overlay_height) / 2,
     )
     .expect("preview presentation has valid dimensions");
     genkan_session_lock::render_preview(&presentation, width, height)

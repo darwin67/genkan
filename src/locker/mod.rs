@@ -24,6 +24,10 @@ use crate::conversation::{Conversation, Effect, Response, Status};
 use crate::wallpaper;
 
 const MAX_AUTH_EVENTS_PER_REFRESH: usize = 32;
+const LOCK_CANVAS_WIDTH: u32 = 1280;
+const LOCK_CANVAS_HEIGHT: u32 = 800;
+const AUTHENTICATION_OVERLAY_WIDTH: u32 = 500;
+const AUTHENTICATION_OVERLAY_HEIGHT: u32 = 400;
 #[cfg(test)]
 static PROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -250,38 +254,32 @@ impl LockerPresentation {
     }
 
     fn rebuild(&mut self) {
-        const WIDTH: u32 = 1280;
-        const HEIGHT: u32 = 800;
         self.background = self.wallpaper.rgba_frame();
-        let (width, height) = self
-            .background
-            .as_ref()
-            .map_or((WIDTH, HEIGHT), RgbaFrame::dimensions);
-        self.rebuild_overlay(width, height);
+        self.rebuild_overlay();
     }
 
-    fn rebuild_overlay(&mut self, width: u32, height: u32) {
-        let (panel_width, panel_height) = authentication_panel_dimensions(width, height);
-        let mut pixels = vec![0; (panel_width * panel_height * 4) as usize];
+    fn rebuild_overlay(&mut self) {
+        let (overlay_width, overlay_height) = authentication_overlay_dimensions();
+        let mut pixels = vec![0; (overlay_width * overlay_height * 4) as usize];
         render_authentication_overlay(
             &mut pixels,
-            panel_width,
-            panel_height,
+            overlay_width,
+            overlay_height,
             &self.identity,
             &self.conversation,
             self.confirmed,
             &mut self.fonts,
             &mut self.glyphs,
         );
-        let overlay = RgbaFrame::new(panel_width, panel_height, Bytes::from(pixels))
+        let overlay = RgbaFrame::new(overlay_width, overlay_height, Bytes::from(pixels))
             .expect("authentication overlay has valid dimensions");
         self.frame = PresentationFrame::new(
-            width,
-            height,
+            LOCK_CANVAS_WIDTH,
+            LOCK_CANVAS_HEIGHT,
             self.background.clone(),
             overlay,
-            (width - panel_width) / 2,
-            (height - panel_height) / 2,
+            (LOCK_CANVAS_WIDTH - overlay_width) / 2,
+            (LOCK_CANVAS_HEIGHT - overlay_height) / 2,
         );
     }
 
@@ -301,11 +299,7 @@ impl Presentation for LockerPresentation {
         if wallpaper != wallpaper::Refresh::Unchanged {
             self.rebuild();
         } else if auth_changed {
-            let (width, height) = self
-                .frame
-                .as_ref()
-                .map_or((1280, 800), PresentationFrame::dimensions);
-            self.rebuild_overlay(width, height);
+            self.rebuild_overlay();
         }
         match wallpaper {
             wallpaper::Refresh::Failed => Refresh::Failed,
@@ -335,11 +329,7 @@ impl Presentation for LockerPresentation {
         {
             self.fail_authentication();
         }
-        let (width, height) = self
-            .frame
-            .as_ref()
-            .map_or((1280, 800), PresentationFrame::dimensions);
-        self.rebuild_overlay(width, height);
+        self.rebuild_overlay();
     }
 
     fn input(&mut self, input: Input) -> bool {
@@ -372,11 +362,7 @@ impl Presentation for LockerPresentation {
             Input::Cancel => self.cancel_attempt(),
         };
         if changed {
-            let (width, height) = self
-                .frame
-                .as_ref()
-                .map_or((1280, 800), PresentationFrame::dimensions);
-            self.rebuild_overlay(width, height);
+            self.rebuild_overlay();
         }
         changed
     }
@@ -469,19 +455,53 @@ fn render_authentication_overlay(
     fonts: &mut FontSystem,
     glyphs: &mut SwashCache,
 ) {
-    blend_rect(pixels, width, 0, 0, width, height, [7, 10, 24, 210]);
-    draw_text(
+    const AVATAR_X: u32 = 194;
+    const AVATAR_Y: u32 = 10;
+    const AVATAR_DIAMETER: u32 = 112;
+    const FIELD_X: u32 = 55;
+    const FIELD_Y: u32 = 247;
+    const FIELD_WIDTH: u32 = 390;
+    const FIELD_HEIGHT: u32 = 52;
+
+    blend_circle(
+        pixels,
+        width,
+        AVATAR_X + AVATAR_DIAMETER / 2,
+        AVATAR_Y + AVATAR_DIAMETER / 2,
+        AVATAR_DIAMETER / 2,
+        [255, 255, 255, 90],
+    );
+    blend_circle(
+        pixels,
+        width,
+        AVATAR_X + AVATAR_DIAMETER / 2,
+        AVATAR_Y + AVATAR_DIAMETER / 2,
+        AVATAR_DIAMETER / 2 - 3,
+        [24, 31, 46, 220],
+    );
+    draw_shadowed_text(
+        pixels,
+        width,
+        height,
+        fonts,
+        glyphs,
+        &initials(&identity.display_name),
+        34.0,
+        43,
+        [255, 255, 255, 255],
+    );
+    draw_shadowed_text(
         pixels,
         width,
         height,
         fonts,
         glyphs,
         &identity.display_name,
-        30.0,
-        48,
+        27.0,
+        139,
         [255, 255, 255, 255],
     );
-    draw_text(
+    draw_shadowed_text(
         pixels,
         width,
         height,
@@ -489,92 +509,176 @@ fn render_authentication_overlay(
         glyphs,
         &format!("@{}", identity.username),
         16.0,
-        88,
-        [190, 196, 220, 255],
-    );
-    let prompt = if confirmed {
-        conversation.prompt()
-    } else {
-        "Securing session…"
-    };
-    draw_text(
-        pixels,
-        width,
-        height,
-        fonts,
-        glyphs,
-        prompt,
-        17.0,
-        140,
+        177,
         [255, 255, 255, 255],
     );
-    if confirmed {
-        // Treat visible PAM responses as credentials too. Keeping all mutable
-        // responses out of the text renderer guarantees its internal scratch
-        // buffers never retain application-owned response text.
-        let input = "•".repeat(conversation.input().chars().count());
-        let (input_margin, input_width) = input_layout(width);
-        blend_rect(
-            pixels,
-            width,
-            input_margin,
-            172,
-            input_width,
-            52,
-            [7, 10, 24, 220],
-        );
-        draw_text(
+    if !confirmed {
+        draw_shadowed_text(
             pixels,
             width,
             height,
             fonts,
             glyphs,
-            &input,
-            21.0,
-            185,
+            "Securing session…",
+            17.0,
+            235,
             [255, 255, 255, 255],
         );
-        if let Some(notice) = conversation.notice() {
-            draw_text(
-                pixels,
-                width,
-                height,
-                fonts,
-                glyphs,
-                notice,
-                15.0,
-                250,
-                if conversation.notice_is_error() {
-                    [255, 171, 171, 255]
-                } else {
-                    [220, 224, 240, 255]
-                },
-            );
+        return;
+    }
+
+    blend_rounded_rect(
+        pixels,
+        width,
+        FIELD_X,
+        FIELD_Y,
+        FIELD_WIDTH,
+        FIELD_HEIGHT,
+        FIELD_HEIGHT / 2,
+        [255, 255, 255, 105],
+    );
+    blend_rounded_rect(
+        pixels,
+        width,
+        FIELD_X + 1,
+        FIELD_Y + 1,
+        FIELD_WIDTH - 2,
+        FIELD_HEIGHT - 2,
+        FIELD_HEIGHT / 2 - 1,
+        [20, 24, 34, 235],
+    );
+
+    // Treat visible PAM responses as credentials too. Keeping all mutable
+    // responses out of the text renderer guarantees its internal scratch
+    // buffers never retain application-owned response text.
+    let input = "•".repeat(conversation.input().chars().count());
+    let field_text = if input.is_empty() {
+        conversation.prompt()
+    } else {
+        &input
+    };
+    draw_text_in(
+        pixels,
+        width,
+        height,
+        fonts,
+        glyphs,
+        field_text,
+        if input.is_empty() { 16.0 } else { 21.0 },
+        261,
+        FIELD_X + 24,
+        FIELD_WIDTH - 82,
+        if input.is_empty() {
+            [245, 246, 250, 255]
+        } else {
+            [255, 255, 255, 255]
+        },
+    );
+    blend_circle(
+        pixels,
+        width,
+        FIELD_X + 364,
+        FIELD_Y + 26,
+        18,
+        [255, 255, 255, 235],
+    );
+    draw_text_in(
+        pixels,
+        width,
+        height,
+        fonts,
+        glyphs,
+        "→",
+        20.0,
+        259,
+        FIELD_X + 346,
+        36,
+        [28, 31, 39, 255],
+    );
+
+    if let Some(notice) = conversation.notice() {
+        draw_shadowed_text(
+            pixels,
+            width,
+            height,
+            fonts,
+            glyphs,
+            notice,
+            15.0,
+            320,
+            if conversation.notice_is_error() {
+                [255, 215, 215, 255]
+            } else {
+                [240, 242, 248, 255]
+            },
+        );
+    }
+}
+
+fn authentication_overlay_dimensions() -> (u32, u32) {
+    (AUTHENTICATION_OVERLAY_WIDTH, AUTHENTICATION_OVERLAY_HEIGHT)
+}
+
+fn initials(name: &str) -> String {
+    name.split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase()
+}
+
+fn blend_circle(
+    pixels: &mut [u8],
+    stride: u32,
+    center_x: u32,
+    center_y: u32,
+    radius: u32,
+    color: [u8; 4],
+) {
+    let radius_squared = i64::from(radius).pow(2);
+    for y in center_y.saturating_sub(radius)..center_y.saturating_add(radius) {
+        for x in center_x.saturating_sub(radius)..center_x.saturating_add(radius) {
+            let dx = i64::from(x) - i64::from(center_x);
+            let dy = i64::from(y) - i64::from(center_y);
+            if dx * dx + dy * dy <= radius_squared {
+                blend_pixel(pixels, stride, x as i32, y as i32, color);
+            }
         }
     }
 }
 
-fn authentication_panel_dimensions(width: u32, height: u32) -> (u32, u32) {
-    (width.min(620), height.min(340))
-}
-
-fn input_layout(panel_width: u32) -> (u32, u32) {
-    let margin = (panel_width / 9).min(70);
-    (margin, panel_width.saturating_sub(margin.saturating_mul(2)))
-}
-
-fn blend_rect(
+#[allow(clippy::too_many_arguments)]
+fn blend_rounded_rect(
     pixels: &mut [u8],
     stride: u32,
     x: u32,
     y: u32,
     width: u32,
     height: u32,
+    radius: u32,
     color: [u8; 4],
 ) {
+    let radius = radius.min(width / 2).min(height / 2);
+    let radius_squared = i64::from(radius).pow(2);
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
-            blend_pixel(pixels, stride, column as i32, row as i32, color);
+            let local_x = column - x;
+            let local_y = row - y;
+            let dx = if local_x < radius {
+                radius - 1 - local_x
+            } else {
+                local_x.saturating_sub(width - radius)
+            };
+            let dy = if local_y < radius {
+                radius - 1 - local_y
+            } else {
+                local_y.saturating_sub(height - radius)
+            };
+            let dx = i64::from(dx);
+            let dy = i64::from(dy);
+            if dx * dx + dy * dy <= radius_squared {
+                blend_pixel(pixels, stride, column as i32, row as i32, color);
+            }
         }
     }
 }
@@ -591,10 +695,55 @@ fn draw_text(
     y: i32,
     color: [u8; 4],
 ) {
+    draw_text_in(
+        pixels, width, height, fonts, glyphs, text, size, y, 0, width, color,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_shadowed_text(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    fonts: &mut FontSystem,
+    glyphs: &mut SwashCache,
+    text: &str,
+    size: f32,
+    y: i32,
+    color: [u8; 4],
+) {
+    draw_text(
+        pixels,
+        width,
+        height,
+        fonts,
+        glyphs,
+        text,
+        size,
+        y + 2,
+        [0, 0, 0, 190],
+    );
+    draw_text(pixels, width, height, fonts, glyphs, text, size, y, color);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_text_in(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    fonts: &mut FontSystem,
+    glyphs: &mut SwashCache,
+    text: &str,
+    size: f32,
+    y: i32,
+    x: u32,
+    text_width: u32,
+    color: [u8; 4],
+) {
     let mut buffer = Buffer::new(fonts, Metrics::new(size, size * 1.3));
     buffer.set_size(
         fonts,
-        Some(width as f32),
+        Some(text_width as f32),
         Some((height as i32 - y).max(0) as f32),
     );
     buffer.set_text(
@@ -609,8 +758,14 @@ fn draw_text(
         fonts,
         glyphs,
         Color::rgba(color[0], color[1], color[2], color[3]),
-        |x, glyph_y, _, _, glyph_color| {
-            blend_pixel(pixels, width, x, y + glyph_y, glyph_color.as_rgba());
+        |glyph_x, glyph_y, _, _, glyph_color| {
+            blend_pixel(
+                pixels,
+                width,
+                x as i32 + glyph_x,
+                y + glyph_y,
+                glyph_color.as_rgba(),
+            );
         },
     );
 }
@@ -757,17 +912,36 @@ mod tests {
     }
 
     #[test]
-    fn authentication_layout_handles_tiny_frames_without_underflow() {
-        assert_eq!(input_layout(1), (0, 1));
-        assert_eq!(input_layout(139), (15, 109));
-        assert_eq!(input_layout(620), (68, 484));
+    fn authentication_identity_uses_tahoe_style_initials() {
+        assert_eq!(initials("Preview User"), "PU");
+        assert_eq!(initials("alice"), "A");
+        assert_eq!(initials(""), "");
     }
 
     #[test]
     fn authentication_overlay_is_bounded_independently_of_wallpaper_size() {
-        assert_eq!(authentication_panel_dimensions(3840, 2160), (620, 340));
-        assert_eq!(authentication_panel_dimensions(320, 200), (320, 200));
-        assert_eq!(620 * 340 * 4, 843_200);
+        assert_eq!(authentication_overlay_dimensions(), (500, 400));
+        assert_eq!(500 * 400 * 4, 800_000);
+    }
+
+    #[test]
+    fn authentication_field_has_transparent_rounded_corners() {
+        let mut pixels = [0; 9 * 9 * 4];
+
+        blend_rounded_rect(&mut pixels, 9, 0, 0, 9, 9, 4, [10, 20, 30, 255]);
+
+        assert_eq!(&pixels[0..4], &[0, 0, 0, 0]);
+        assert_eq!(
+            &pixels[(4 * 9 + 4) * 4..(4 * 9 + 5) * 4],
+            &[10, 20, 30, 255]
+        );
+
+        let mut capsule = vec![0; 52 * 52 * 4];
+        blend_rounded_rect(&mut capsule, 52, 0, 0, 52, 52, 26, [10, 20, 30, 255]);
+        assert_eq!(
+            &capsule[(26 * 52 + 26) * 4..(26 * 52 + 27) * 4],
+            &[10, 20, 30, 255]
+        );
     }
 
     #[test]
