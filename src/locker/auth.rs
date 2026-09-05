@@ -297,15 +297,23 @@ fn spawn_worker(path: &Path, child_socket: RawFd) -> Result<(libc::pid_t, OwnedF
     unsafe extern "C" {
         static mut environ: *mut *mut libc::c_char;
     }
-    let result = unsafe {
-        libc::posix_spawn(
-            &mut pid,
-            path.as_ptr(),
-            &actions.0,
-            std::ptr::null(),
-            argv.as_mut_ptr(),
-            environ,
-        )
+    let mut attempts = 0;
+    let result = loop {
+        let result = unsafe {
+            libc::posix_spawn(
+                &mut pid,
+                path.as_ptr(),
+                &actions.0,
+                std::ptr::null(),
+                argv.as_mut_ptr(),
+                environ,
+            )
+        };
+        if result != libc::ETXTBSY || attempts == 9 {
+            break result;
+        }
+        attempts += 1;
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     if result != 0 {
         return Err(Error::Spawn(io::Error::from_raw_os_error(result)));

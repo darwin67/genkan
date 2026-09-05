@@ -97,6 +97,21 @@ struct LockArguments {
     #[cfg(feature = "lock-test")]
     #[arg(long, hide = true)]
     test_unlock_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, value_parser = parse_ready_fd, conflicts_with = "daemonize")]
+    test_observer_fd: Option<std::os::fd::RawFd>,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    test_panic_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    test_renderer_failure_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    test_worker_failure_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true)]
+    test_ready_delay_ms: Option<u64>,
 }
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
@@ -225,6 +240,16 @@ fn lock_config(arguments: LockArguments) -> locker::Config {
         ready_fd: arguments.ready_fd,
         #[cfg(feature = "lock-test")]
         test_unlock_after_ready: arguments.test_unlock_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_observer_fd: arguments.test_observer_fd,
+        #[cfg(feature = "lock-test")]
+        test_panic_after_ready: arguments.test_panic_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_renderer_failure_after_ready: arguments.test_renderer_failure_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_worker_failure_after_ready: arguments.test_worker_failure_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_ready_delay_ms: arguments.test_ready_delay_ms,
     }
 }
 
@@ -269,6 +294,11 @@ fn daemon_child_arguments(arguments: &LockArguments) -> Result<Vec<CString>, std
     #[cfg(feature = "lock-test")]
     if arguments.test_unlock_after_ready {
         child.push(CString::new("--test-unlock-after-ready").expect("static argument"));
+    }
+    #[cfg(feature = "lock-test")]
+    if let Some(delay) = arguments.test_ready_delay_ms {
+        child.push(CString::new("--test-ready-delay-ms").expect("static argument"));
+        child.push(CString::new(delay.to_string()).expect("integer contains no NUL"));
     }
     Ok(child)
 }
@@ -359,9 +389,35 @@ mod tests {
         assert!(try_parse_lock(["genkan", "--daemonize", "--ready-fd", "7"]).is_err());
         assert!(Arguments::try_parse_from(["genkan", "login", "--ready-fd", "7"]).is_err());
         #[cfg(not(feature = "lock-test"))]
-        assert!(
-            Arguments::try_parse_from(["genkan", "lock", "--test-unlock-after-ready"]).is_err()
-        );
+        {
+            for option in [
+                "--test-unlock-after-ready",
+                "--test-panic-after-ready",
+                "--test-renderer-failure-after-ready",
+                "--test-worker-failure-after-ready",
+            ] {
+                assert!(Arguments::try_parse_from(["genkan", "lock", option]).is_err());
+            }
+            for option in ["--test-observer-fd", "--test-ready-delay-ms"] {
+                assert!(Arguments::try_parse_from(["genkan", "lock", option, "7"]).is_err());
+            }
+        }
+        #[cfg(feature = "lock-test")]
+        {
+            assert_eq!(
+                try_parse_lock(["genkan", "--test-observer-fd", "7"])
+                    .unwrap()
+                    .test_observer_fd,
+                Some(7)
+            );
+            assert!(try_parse_lock(["genkan", "--daemonize", "--test-observer-fd", "7"]).is_err());
+            assert_eq!(
+                try_parse_lock(["genkan", "--test-ready-delay-ms", "2000"])
+                    .unwrap()
+                    .test_ready_delay_ms,
+                Some(2000)
+            );
+        }
     }
 
     #[test]
@@ -392,6 +448,22 @@ mod tests {
             ]
         );
         assert!(!child.iter().any(|argument| argument == "--daemonize"));
+    }
+
+    #[cfg(feature = "lock-test")]
+    #[test]
+    fn daemon_child_preserves_test_readiness_delay() {
+        let arguments =
+            try_parse_lock(["genkan", "--daemonize", "--test-ready-delay-ms", "2000"]).unwrap();
+        let child = daemon_child_arguments(&arguments)
+            .unwrap()
+            .into_iter()
+            .map(|argument| argument.into_string().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(child
+            .windows(2)
+            .any(|arguments| { arguments == ["--test-ready-delay-ms", "2000"] }));
     }
 
     #[test]

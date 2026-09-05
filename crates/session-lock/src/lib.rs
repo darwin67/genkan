@@ -2,6 +2,8 @@ mod runtime;
 
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
+#[cfg(feature = "lock-test")]
+use std::time::Duration;
 
 use bytes::Bytes;
 
@@ -84,6 +86,14 @@ pub struct Config {
     ready_fds: Vec<OwnedFd>,
     #[cfg(feature = "lock-test")]
     test_unlock_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    test_observer: Option<OwnedFd>,
+    #[cfg(feature = "lock-test")]
+    test_panic_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    test_renderer_failure_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    test_ready_delay: Duration,
 }
 
 impl Config {
@@ -100,6 +110,14 @@ impl Config {
             ready_fds: ready_fd.into_iter().collect(),
             #[cfg(feature = "lock-test")]
             test_unlock_after_ready: false,
+            #[cfg(feature = "lock-test")]
+            test_observer: None,
+            #[cfg(feature = "lock-test")]
+            test_panic_after_ready: false,
+            #[cfg(feature = "lock-test")]
+            test_renderer_failure_after_ready: false,
+            #[cfg(feature = "lock-test")]
+            test_ready_delay: Duration::ZERO,
         }
     }
 
@@ -111,6 +129,30 @@ impl Config {
     #[cfg(feature = "lock-test")]
     pub fn with_test_unlock_after_ready(mut self, enabled: bool) -> Self {
         self.test_unlock_after_ready = enabled;
+        self
+    }
+
+    #[cfg(feature = "lock-test")]
+    pub fn with_test_observer(mut self, observer: Option<OwnedFd>) -> Self {
+        self.test_observer = observer;
+        self
+    }
+
+    #[cfg(feature = "lock-test")]
+    pub fn with_test_panic_after_ready(mut self, enabled: bool) -> Self {
+        self.test_panic_after_ready = enabled;
+        self
+    }
+
+    #[cfg(feature = "lock-test")]
+    pub fn with_test_renderer_failure_after_ready(mut self, enabled: bool) -> Self {
+        self.test_renderer_failure_after_ready = enabled;
+        self
+    }
+
+    #[cfg(feature = "lock-test")]
+    pub fn with_test_ready_delay(mut self, delay: Duration) -> Self {
+        self.test_ready_delay = delay;
         self
     }
 }

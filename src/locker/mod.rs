@@ -4,6 +4,10 @@ mod identity;
 mod launcher;
 
 use std::ffi::CString;
+#[cfg(feature = "lock-test")]
+use std::fs::File;
+#[cfg(feature = "lock-test")]
+use std::io::Write;
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
 
@@ -26,6 +30,16 @@ pub(crate) struct Config {
     pub(crate) ready_fd: Option<RawFd>,
     #[cfg(feature = "lock-test")]
     pub(crate) test_unlock_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    pub(crate) test_observer_fd: Option<RawFd>,
+    #[cfg(feature = "lock-test")]
+    pub(crate) test_panic_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    pub(crate) test_renderer_failure_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    pub(crate) test_worker_failure_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    pub(crate) test_ready_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Error)]
@@ -34,6 +48,9 @@ pub(crate) enum Error {
     Identity(#[from] identity::Error),
     #[error("could not adopt readiness descriptor: {0}")]
     ReadyFd(#[source] std::io::Error),
+    #[cfg(feature = "lock-test")]
+    #[error("could not duplicate test observer descriptor: {0}")]
+    ObserverFd(#[source] std::io::Error),
     #[error(transparent)]
     Coordination(#[from] coordination::Error),
     #[error(transparent)]
@@ -55,6 +72,31 @@ struct LockerPresentation {
     frame: Option<RgbaFrame>,
     fonts: FontSystem,
     glyphs: SwashCache,
+    #[cfg(feature = "lock-test")]
+    fail_worker_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    test_observer: Option<File>,
+}
+
+#[cfg(feature = "lock-test")]
+#[derive(Clone, Copy)]
+enum AuthTestEvent {
+    Prompt,
+    Retry,
+    Success,
+    Failure,
+}
+
+#[cfg(feature = "lock-test")]
+impl AuthTestEvent {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Prompt => "AUTH_PROMPT",
+            Self::Retry => "AUTH_RETRY",
+            Self::Success => "AUTH_SUCCESS",
+            Self::Failure => "AUTH_FAILURE",
+        }
+    }
 }
 
 impl LockerPresentation {
@@ -62,6 +104,8 @@ impl LockerPresentation {
         identity: identity::Identity,
         auth: auth::Client,
         wallpaper: wallpaper::Settings,
+        #[cfg(feature = "lock-test")] fail_worker_after_ready: bool,
+        #[cfg(feature = "lock-test")] test_observer: Option<OwnedFd>,
     ) -> Self {
         let conversation = Conversation::new();
         let attempt = conversation.attempt();
@@ -76,6 +120,10 @@ impl LockerPresentation {
             frame: None,
             fonts: FontSystem::new(),
             glyphs: SwashCache::new(),
+            #[cfg(feature = "lock-test")]
+            fail_worker_after_ready,
+            #[cfg(feature = "lock-test")]
+            test_observer: test_observer.map(File::from),
         };
         presentation.rebuild();
         presentation
@@ -111,6 +159,8 @@ impl LockerPresentation {
                             message: text,
                         },
                     );
+                    #[cfg(feature = "lock-test")]
+                    self.record_test_event(AuthTestEvent::Prompt);
                 }
                 auth::Event::Notice { error, text } => {
                     let _ = self.conversation.receive(
@@ -127,6 +177,8 @@ impl LockerPresentation {
                         == Some(Effect::Authenticated)
                     {
                         self.authorized = true;
+                        #[cfg(feature = "lock-test")]
+                        self.record_test_event(AuthTestEvent::Success);
                     }
                 }
                 auth::Event::Failure => {
@@ -134,6 +186,8 @@ impl LockerPresentation {
                     let _ = self
                         .conversation
                         .receive(attempt, Response::Failure("Authentication failed".into()));
+                    #[cfg(feature = "lock-test")]
+                    self.record_test_event(AuthTestEvent::Failure);
                 }
             }
         }
@@ -141,6 +195,8 @@ impl LockerPresentation {
     }
 
     fn retry(&mut self) -> bool {
+        #[cfg(feature = "lock-test")]
+        self.record_test_event(AuthTestEvent::Retry);
         let next = self.conversation.begin_attempt();
         if let Some((attempt, client)) = self.auth.as_mut() {
             if client.retry().is_ok() {
@@ -174,14 +230,18 @@ impl LockerPresentation {
                 Ok(()) => self.auth = Some((attempt, replacement)),
                 Err(_) => {
                     replacement.cancel();
-                    self.conversation
-                        .fail("Authentication worker unavailable".into());
+                    self.fail_authentication();
                 }
             },
-            Err(_) => self
-                .conversation
-                .fail("Authentication worker unavailable".into()),
+            Err(_) => self.fail_authentication(),
         }
+    }
+
+    fn fail_authentication(&mut self) {
+        self.conversation
+            .fail("Authentication worker unavailable".into());
+        #[cfg(feature = "lock-test")]
+        self.record_test_event(AuthTestEvent::Failure);
     }
 
     fn rebuild(&mut self) {
@@ -213,6 +273,14 @@ impl LockerPresentation {
         );
         self.frame = RgbaFrame::new(width, height, Bytes::from(pixels));
     }
+
+    #[cfg(feature = "lock-test")]
+    fn record_test_event(&mut self, event: AuthTestEvent) {
+        if let Some(observer) = self.test_observer.as_mut() {
+            let _ = writeln!(observer, "{}", event.name());
+            let _ = observer.flush();
+        }
+    }
 }
 
 impl Presentation for LockerPresentation {
@@ -236,13 +304,19 @@ impl Presentation for LockerPresentation {
 
     fn lock_confirmed(&mut self) {
         self.confirmed = true;
+        #[cfg(feature = "lock-test")]
+        if self.fail_worker_after_ready {
+            self.fail_worker_after_ready = false;
+            if let Some((_, client)) = self.auth.as_mut() {
+                client.cancel();
+            }
+        }
         if self
             .auth
             .as_mut()
             .is_none_or(|(_, client)| client.begin().is_err())
         {
-            self.conversation
-                .fail("Authentication worker unavailable".into());
+            self.fail_authentication();
         }
         self.rebuild();
     }
@@ -270,8 +344,7 @@ impl Presentation for LockerPresentation {
                     return false;
                 };
                 if *active_attempt != attempt || client.respond(id, response).is_err() {
-                    self.conversation
-                        .fail("Authentication worker unavailable".into());
+                    self.fail_authentication();
                 }
                 true
             }
@@ -294,6 +367,14 @@ fn authentication_input_enabled(confirmed: bool) -> bool {
 
 pub(crate) fn run(config: Config) -> Result<(), Error> {
     let ready_fd = config.ready_fd.map(adopt_ready_fd).transpose()?;
+    #[cfg(feature = "lock-test")]
+    let observer_fd = config.test_observer_fd.map(adopt_ready_fd).transpose()?;
+    #[cfg(feature = "lock-test")]
+    let presentation_observer = observer_fd
+        .as_ref()
+        .map(OwnedFd::try_clone)
+        .transpose()
+        .map_err(Error::ObserverFd)?;
     let coordination = coordination::enter()?;
     let coordination::Entry::Owner {
         coordination: owner,
@@ -312,12 +393,27 @@ pub(crate) fn run(config: Config) -> Result<(), Error> {
         identity.username.clone(),
         identity.display_name.clone(),
     );
-    let presentation = LockerPresentation::new(identity, authentication, config.wallpaper);
+    let presentation = LockerPresentation::new(
+        identity,
+        authentication,
+        config.wallpaper,
+        #[cfg(feature = "lock-test")]
+        config.test_worker_failure_after_ready,
+        #[cfg(feature = "lock-test")]
+        presentation_observer,
+    );
     let runtime =
         genkan_session_lock::Config::new(wayland, runtime_identity, presentation, ready_fd)
             .with_additional_ready_fd(coordination_ready);
     #[cfg(feature = "lock-test")]
-    let runtime = runtime.with_test_unlock_after_ready(config.test_unlock_after_ready);
+    let runtime = runtime
+        .with_test_unlock_after_ready(config.test_unlock_after_ready)
+        .with_test_observer(observer_fd)
+        .with_test_panic_after_ready(config.test_panic_after_ready)
+        .with_test_renderer_failure_after_ready(config.test_renderer_failure_after_ready)
+        .with_test_ready_delay(std::time::Duration::from_millis(
+            config.test_ready_delay_ms.unwrap_or_default(),
+        ));
     genkan_session_lock::run(runtime)?;
     Ok(())
 }
@@ -648,5 +744,20 @@ mod tests {
     fn authentication_input_is_disabled_before_compositor_confirmation() {
         assert!(!authentication_input_enabled(false));
         assert!(authentication_input_enabled(true));
+    }
+
+    #[cfg(feature = "lock-test")]
+    #[test]
+    fn authentication_observer_uses_fixed_non_secret_event_names() {
+        assert_eq!(
+            [
+                AuthTestEvent::Prompt,
+                AuthTestEvent::Retry,
+                AuthTestEvent::Success,
+                AuthTestEvent::Failure,
+            ]
+            .map(AuthTestEvent::name),
+            ["AUTH_PROMPT", "AUTH_RETRY", "AUTH_SUCCESS", "AUTH_FAILURE"]
+        );
     }
 }
