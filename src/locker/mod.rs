@@ -27,6 +27,12 @@ const LOCK_CANVAS_WIDTH: u32 = 1280;
 const LOCK_CANVAS_HEIGHT: u32 = 800;
 const AUTHENTICATION_OVERLAY_WIDTH: u32 = 500;
 const AUTHENTICATION_OVERLAY_HEIGHT: u32 = 400;
+const AUTHENTICATION_FIELD_X: u32 = 55;
+const AUTHENTICATION_FIELD_Y: u32 = 247;
+const AUTHENTICATION_FIELD_WIDTH: u32 = 390;
+const AUTHENTICATION_FIELD_HEIGHT: u32 = 52;
+const AUTHENTICATION_FIELD_BORDER: [u8; 4] = [255, 255, 255, 120];
+const AUTHENTICATION_FIELD_GLASS: [u8; 4] = [190, 205, 230, 54];
 #[cfg(test)]
 static PROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -490,10 +496,6 @@ fn render_authentication_overlay(
     const AVATAR_X: u32 = 194;
     const AVATAR_Y: u32 = 10;
     const AVATAR_DIAMETER: u32 = 112;
-    const FIELD_X: u32 = 55;
-    const FIELD_Y: u32 = 247;
-    const FIELD_WIDTH: u32 = 390;
-    const FIELD_HEIGHT: u32 = 52;
 
     let display_name = fit_single_line(fonts, &identity.display_name, 27.0, width as f32);
     let username = fit_single_line(
@@ -621,26 +623,7 @@ fn render_authentication_overlay(
         return;
     }
 
-    blend_rounded_rect(
-        pixels,
-        width,
-        FIELD_X,
-        FIELD_Y,
-        FIELD_WIDTH,
-        FIELD_HEIGHT,
-        FIELD_HEIGHT / 2,
-        [255, 255, 255, 105],
-    );
-    blend_rounded_rect(
-        pixels,
-        width,
-        FIELD_X + 1,
-        FIELD_Y + 1,
-        FIELD_WIDTH - 2,
-        FIELD_HEIGHT - 2,
-        FIELD_HEIGHT / 2 - 1,
-        [20, 24, 34, 235],
-    );
+    draw_authentication_field(pixels, width);
 
     // Treat visible PAM responses as credentials too. Keeping all mutable
     // responses out of the text renderer guarantees its internal scratch
@@ -655,7 +638,7 @@ fn render_authentication_overlay(
             conversation.prompt()
         },
         16.0,
-        (FIELD_WIDTH - 82) as f32,
+        (AUTHENTICATION_FIELD_WIDTH - 82) as f32,
     );
     let field_text = if submitting {
         "Authenticating…"
@@ -673,8 +656,8 @@ fn render_authentication_overlay(
         field_text,
         if input.is_empty() { 16.0 } else { 21.0 },
         261,
-        FIELD_X + 24,
-        FIELD_WIDTH - 82,
+        AUTHENTICATION_FIELD_X + 24,
+        AUTHENTICATION_FIELD_WIDTH - 82,
         if input.is_empty() || submitting {
             [245, 246, 250, 255]
         } else {
@@ -691,7 +674,7 @@ fn render_authentication_overlay(
         if submitting { "…" } else { "↵" },
         20.0,
         259,
-        FIELD_X + 346,
+        AUTHENTICATION_FIELD_X + 346,
         36,
         if submitting {
             [180, 184, 194, 255]
@@ -828,6 +811,29 @@ fn blend_circle(
     }
 }
 
+fn draw_authentication_field(pixels: &mut [u8], width: u32) {
+    blend_rounded_rect(
+        pixels,
+        width,
+        AUTHENTICATION_FIELD_X,
+        AUTHENTICATION_FIELD_Y,
+        AUTHENTICATION_FIELD_WIDTH,
+        AUTHENTICATION_FIELD_HEIGHT,
+        AUTHENTICATION_FIELD_HEIGHT / 2,
+        AUTHENTICATION_FIELD_GLASS,
+    );
+    blend_rounded_rect_outline(
+        pixels,
+        width,
+        AUTHENTICATION_FIELD_X,
+        AUTHENTICATION_FIELD_Y,
+        AUTHENTICATION_FIELD_WIDTH,
+        AUTHENTICATION_FIELD_HEIGHT,
+        AUTHENTICATION_FIELD_HEIGHT / 2,
+        AUTHENTICATION_FIELD_BORDER,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn blend_rounded_rect(
     pixels: &mut [u8],
@@ -840,28 +846,68 @@ fn blend_rounded_rect(
     color: [u8; 4],
 ) {
     let radius = radius.min(width / 2).min(height / 2);
-    let radius_squared = i64::from(radius).pow(2);
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
             let local_x = column - x;
             let local_y = row - y;
-            let dx = if local_x < radius {
-                radius - 1 - local_x
-            } else {
-                local_x.saturating_sub(width - radius)
-            };
-            let dy = if local_y < radius {
-                radius - 1 - local_y
-            } else {
-                local_y.saturating_sub(height - radius)
-            };
-            let dx = i64::from(dx);
-            let dy = i64::from(dy);
-            if dx * dx + dy * dy <= radius_squared {
+            if rounded_rect_contains(local_x, local_y, width, height, radius) {
                 blend_pixel(pixels, stride, column as i32, row as i32, color);
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blend_rounded_rect_outline(
+    pixels: &mut [u8],
+    stride: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    radius: u32,
+    color: [u8; 4],
+) {
+    let radius = radius.min(width / 2).min(height / 2);
+    for local_y in 0..height {
+        for local_x in 0..width {
+            let inside_outer = rounded_rect_contains(local_x, local_y, width, height, radius);
+            let inside_inner = local_x > 0
+                && local_y > 0
+                && local_x + 1 < width
+                && local_y + 1 < height
+                && rounded_rect_contains(
+                    local_x - 1,
+                    local_y - 1,
+                    width - 2,
+                    height - 2,
+                    radius.saturating_sub(1),
+                );
+            if inside_outer && !inside_inner {
+                blend_pixel(
+                    pixels,
+                    stride,
+                    (x + local_x) as i32,
+                    (y + local_y) as i32,
+                    color,
+                );
+            }
+        }
+    }
+}
+
+fn rounded_rect_contains(local_x: u32, local_y: u32, width: u32, height: u32, radius: u32) -> bool {
+    let dx = if local_x < radius {
+        radius - 1 - local_x
+    } else {
+        local_x.saturating_sub(width - radius)
+    };
+    let dy = if local_y < radius {
+        radius - 1 - local_y
+    } else {
+        local_y.saturating_sub(height - radius)
+    };
+    i64::from(dx).pow(2) + i64::from(dy).pow(2) <= i64::from(radius).pow(2)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1323,6 +1369,32 @@ mod tests {
             &capsule[(26 * 52 + 26) * 4..(26 * 52 + 27) * 4],
             &[10, 20, 30, 255]
         );
+    }
+
+    #[test]
+    fn authentication_field_uses_translucent_glass_material() {
+        let mut pixels =
+            vec![0; (AUTHENTICATION_OVERLAY_WIDTH * AUTHENTICATION_OVERLAY_HEIGHT * 4) as usize];
+        draw_authentication_field(&mut pixels, AUTHENTICATION_OVERLAY_WIDTH);
+        let pixel = |x: u32, y: u32| {
+            let offset = ((y * AUTHENTICATION_OVERLAY_WIDTH + x) * 4) as usize;
+            <[u8; 4]>::try_from(&pixels[offset..offset + 4]).unwrap()
+        };
+
+        assert_eq!(
+            pixel(
+                AUTHENTICATION_FIELD_X + 12,
+                AUTHENTICATION_FIELD_Y + AUTHENTICATION_FIELD_HEIGHT / 2,
+            ),
+            AUTHENTICATION_FIELD_GLASS
+        );
+        let border = pixel(
+            AUTHENTICATION_FIELD_X,
+            AUTHENTICATION_FIELD_Y + AUTHENTICATION_FIELD_HEIGHT / 2,
+        );
+        assert!(border[3] > AUTHENTICATION_FIELD_GLASS[3]);
+        assert!(border[3] < 192);
+        assert!(AUTHENTICATION_FIELD_GLASS[3] < 64);
     }
 
     #[test]
