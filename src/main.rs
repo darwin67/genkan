@@ -79,6 +79,19 @@ struct LoginArguments {
     after_help = "The lock is ready only after the compositor confirms ext-session-lock-v1 ownership. Unlock authentication uses the host's genkan-lock PAM service for the invoking real-UID account."
 )]
 struct LockArguments {
+    /// Render a deterministic lock state in a normal window without locking.
+    #[arg(
+        long,
+        value_enum,
+        num_args = 0..=1,
+        default_missing_value = "prompt",
+        conflicts_with_all = ["daemonize", "ready_fd"]
+    )]
+    preview: Option<locker::PreviewFixture>,
+    #[arg(long, requires_all = ["preview", "height"], value_parser = parse_dimension)]
+    width: Option<u32>,
+    #[arg(long, requires_all = ["preview", "width"], value_parser = parse_dimension)]
+    height: Option<u32>,
     /// Spawn a foreground locker and return after compositor confirmation.
     #[arg(long, conflicts_with = "ready_fd")]
     daemonize: bool,
@@ -95,22 +108,27 @@ struct LockArguments {
     #[arg(long, visible_alias = "static-wallpaper")]
     reduce_motion: bool,
     #[cfg(feature = "lock-test")]
-    #[arg(long, hide = true)]
+    #[arg(long, hide = true, conflicts_with = "preview")]
     test_unlock_after_ready: bool,
     #[cfg(feature = "lock-test")]
-    #[arg(long, hide = true, value_parser = parse_ready_fd, conflicts_with = "daemonize")]
+    #[arg(
+        long,
+        hide = true,
+        value_parser = parse_ready_fd,
+        conflicts_with_all = ["daemonize", "preview"]
+    )]
     test_observer_fd: Option<std::os::fd::RawFd>,
     #[cfg(feature = "lock-test")]
-    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    #[arg(long, hide = true, conflicts_with_all = ["daemonize", "preview"])]
     test_panic_after_ready: bool,
     #[cfg(feature = "lock-test")]
-    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    #[arg(long, hide = true, conflicts_with_all = ["daemonize", "preview"])]
     test_renderer_failure_after_ready: bool,
     #[cfg(feature = "lock-test")]
-    #[arg(long, hide = true, conflicts_with = "daemonize")]
+    #[arg(long, hide = true, conflicts_with_all = ["daemonize", "preview"])]
     test_worker_failure_after_ready: bool,
     #[cfg(feature = "lock-test")]
-    #[arg(long, hide = true)]
+    #[arg(long, hide = true, conflicts_with = "preview")]
     test_ready_delay_ms: Option<u64>,
 }
 
@@ -254,6 +272,19 @@ fn lock_config(arguments: LockArguments) -> locker::Config {
 }
 
 fn run_lock(arguments: LockArguments) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(fixture) = arguments.preview {
+        locker::run_preview(
+            wallpaper::Settings {
+                catalog: arguments.wallpaper,
+                override_path: arguments.wallpaper_file,
+                animate: false,
+            },
+            fixture,
+            arguments.width.unwrap_or(DEFAULT_WINDOW_WIDTH),
+            arguments.height.unwrap_or(DEFAULT_WINDOW_HEIGHT),
+        )?;
+        return Ok(());
+    }
     if arguments.daemonize {
         let executable = std::env::current_exe()?;
         let child_arguments = daemon_child_arguments(&arguments)?;
@@ -418,6 +449,20 @@ mod tests {
                 Some(2000)
             );
         }
+    }
+
+    #[test]
+    fn lock_preview_is_windowed_service_free_and_dimension_bounded() {
+        let arguments = try_parse_lock(["genkan", "--preview"]).unwrap();
+        assert_eq!(arguments.preview, Some(locker::PreviewFixture::Prompt));
+        assert!(try_parse_lock(["genkan", "--preview", "failure"]).is_ok());
+        assert!(try_parse_lock(["genkan", "--preview", "unknown"]).is_err());
+        assert!(try_parse_lock(["genkan", "--preview", "--daemonize"]).is_err());
+        assert!(try_parse_lock(["genkan", "--preview", "--ready-fd", "7"]).is_err());
+        assert!(try_parse_lock(["genkan", "--preview", "--width", "640"]).is_err());
+        assert!(
+            try_parse_lock(["genkan", "--preview", "--width", "640", "--height", "480",]).is_ok()
+        );
     }
 
     #[test]

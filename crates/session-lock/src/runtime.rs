@@ -981,6 +981,27 @@ fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&Presen
     }
 }
 
+pub(super) fn render_preview(
+    frame: &PresentationFrame,
+    width: u32,
+    height: u32,
+) -> Option<RgbaFrame> {
+    if width == 0 || height == 0 || width > MAX_SURFACE_DIMENSION || height > MAX_SURFACE_DIMENSION
+    {
+        return None;
+    }
+    let bytes = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
+    if bytes > MAX_BUFFER_BYTES {
+        return None;
+    }
+    let mut pixels = vec![0; bytes];
+    draw_opaque(&mut pixels, width, height, Some(frame));
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    RgbaFrame::new(width, height, pixels.into())
+}
+
 #[cfg(test)]
 fn sample_cover(frame: &RgbaFrame, width: u32, height: u32, x: u32, y: u32) -> Option<[u8; 3]> {
     let geometry = cover_geometry(frame.width, frame.height, width, height)?;
@@ -1289,6 +1310,20 @@ mod tests {
             target,
             [160, 120, 80, 255, 99, 99, 120, 255, 160, 120, 80, 255,]
         );
+    }
+
+    #[test]
+    fn preview_rendering_converts_compositor_argb_to_rgba_and_bounds_allocations() {
+        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[100, 150, 200, 255])).unwrap();
+        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
+        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
+
+        assert_eq!(
+            render_preview(&frame, 1, 1).unwrap().pixels(),
+            &[80, 120, 160, 255]
+        );
+        assert!(render_preview(&frame, 0, 1).is_none());
+        assert!(render_preview(&frame, MAX_SURFACE_DIMENSION + 1, 1).is_none());
     }
 
     #[test]
