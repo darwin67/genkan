@@ -10,8 +10,8 @@ use crate::conversation::{Conversation, Status};
 use crate::wallpaper;
 
 use super::{
-    authentication_overlay_dimensions, render_authentication_overlay, LOCK_CANVAS_HEIGHT,
-    LOCK_CANVAS_WIDTH,
+    authentication_canvas_dimensions, authentication_overlay_dimensions,
+    render_authentication_overlay,
 };
 
 const MAX_PREVIEW_PIXELS: u32 = 4096 * 4096;
@@ -238,13 +238,14 @@ fn presentation(settings: wallpaper::Settings, fixture: Fixture) -> Presentation
     );
     let overlay = RgbaFrame::new(overlay_width, overlay_height, pixels.into())
         .expect("preview overlay has valid dimensions");
+    let (canvas_width, canvas_height) = authentication_canvas_dimensions();
     PresentationFrame::new(
-        LOCK_CANVAS_WIDTH,
-        LOCK_CANVAS_HEIGHT,
+        canvas_width,
+        canvas_height,
         wallpaper,
         overlay,
-        (LOCK_CANVAS_WIDTH - overlay_width) / 2,
-        (LOCK_CANVAS_HEIGHT - overlay_height) / 2,
+        (canvas_width - overlay_width) / 2,
+        (canvas_height - overlay_height) / 2,
     )
     .expect("preview presentation has valid dimensions")
 }

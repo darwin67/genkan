@@ -254,6 +254,19 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
             runtime.fail(error);
             break;
         }
+        // Commit input-driven overlay updates before polling another wallpaper
+        // frame. Otherwise continuous playback promotes every keypress to a
+        // full-output redraw before the smaller overlay redraw can run.
+        if runtime
+            .surfaces
+            .iter()
+            .any(|surface| surface.redraw.redraw_pending == Some(RedrawKind::Overlay))
+        {
+            if let Err(error) = runtime.maintain_surfaces(&qh) {
+                runtime.fail(error);
+                break;
+            }
+        }
         let refresh = refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state);
         if runtime.presentation.take_authorization() {
             let action = runtime
@@ -1065,56 +1078,201 @@ fn draw_opaque_region(
     region: Region,
 ) {
     let overlay_geometry = frame.and_then(|frame| overlay_geometry(frame, width, height));
-    let background_geometry = frame.and_then(|frame| {
-        let background = frame.background.as_ref()?;
-        let geometry = cover_geometry(background.width, background.height, width, height)?;
-        Some((background, geometry))
-    });
+    let background = BackgroundSampler::new(
+        frame.and_then(|frame| frame.background.as_ref()),
+        width,
+        height,
+    );
     let end_x = region.x.saturating_add(region.width).min(width);
     let end_y = region.y.saturating_add(region.height).min(height);
     for y in region.y..end_y {
+        let source_row = background.source_row(y);
         for x in region.x..end_x {
-            let background = background_geometry
-                .as_ref()
-                .and_then(|(background, geometry)| {
-                    frame_pixel(
-                        background,
-                        source_coordinate(x, geometry.0, geometry.2, background.width),
-                        source_coordinate(y, geometry.1, geometry.3, background.height),
-                    )
-                })
-                .unwrap_or(FALLBACK_RGB);
-            let overlay = frame
-                .zip(overlay_geometry.as_ref())
-                .and_then(|(frame, geometry)| geometry.sample(frame, x, y));
-            let [red, green, blue] =
-                overlay.map_or(background, |overlay| blend_rgb(background, overlay));
+            let [red, green, blue] = background.pixel(source_row, x);
+            let offset = ((y as usize * width as usize) + x as usize) * 4;
+            target[offset..offset + 4].copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
+        }
+    }
+
+    let Some((frame, geometry)) = frame.zip(overlay_geometry.as_ref()) else {
+        return;
+    };
+    let Some(overlay_region) = intersect(region, geometry.target) else {
+        return;
+    };
+    let horizontal = filtered_axis(frame.overlay.width, geometry.target.width);
+    let vertical = filtered_axis(frame.overlay.height, geometry.target.height);
+    for y in overlay_region.y..overlay_region.y + overlay_region.height {
+        let source_row = background.source_row(y);
+        let vertical = vertical[(y - geometry.target.y) as usize];
+        for x in overlay_region.x..overlay_region.x + overlay_region.width {
+            let horizontal = horizontal[(x - geometry.target.x) as usize];
+            let overlay = filtered_pixel(&frame.overlay, horizontal, vertical);
+            if overlay[3] == 0 {
+                continue;
+            }
+            let background = background.pixel(source_row, x);
+            let [red, green, blue] = blend_rgb(background, overlay);
             let offset = ((y as usize * width as usize) + x as usize) * 4;
             target[offset..offset + 4].copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct OverlayGeometry {
-    canvas_x: u32,
-    canvas_y: u32,
-    canvas_width: u32,
-    canvas_height: u32,
-    target: Region,
+struct BackgroundSampler<'a> {
+    frame: Option<&'a RgbaFrame>,
+    columns: Vec<usize>,
+    crop_y: u128,
+    scaled_height: u128,
 }
 
-impl OverlayGeometry {
-    fn sample(&self, frame: &PresentationFrame, x: u32, y: u32) -> Option<[u8; 4]> {
-        let canvas_x = x.checked_sub(self.canvas_x)?;
-        let canvas_y = y.checked_sub(self.canvas_y)?;
-        let source_x = u64::from(canvas_x) * u64::from(frame.width) / u64::from(self.canvas_width);
-        let source_y =
-            u64::from(canvas_y) * u64::from(frame.height) / u64::from(self.canvas_height);
-        let overlay_x = u32::try_from(source_x).ok()?.checked_sub(frame.overlay_x)?;
-        let overlay_y = u32::try_from(source_y).ok()?.checked_sub(frame.overlay_y)?;
-        frame_pixel_rgba(&frame.overlay, overlay_x, overlay_y)
+impl<'a> BackgroundSampler<'a> {
+    fn new(frame: Option<&'a RgbaFrame>, width: u32, height: u32) -> Self {
+        let Some(frame) = frame else {
+            return Self {
+                frame: None,
+                columns: Vec::new(),
+                crop_y: 0,
+                scaled_height: 1,
+            };
+        };
+        let Some((crop_x, crop_y, scaled_width, scaled_height)) =
+            cover_geometry(frame.width, frame.height, width, height)
+        else {
+            return Self {
+                frame: None,
+                columns: Vec::new(),
+                crop_y: 0,
+                scaled_height: 1,
+            };
+        };
+        let columns = (0..width)
+            .map(|x| {
+                usize::try_from(source_coordinate(x, crop_x, scaled_width, frame.width)).unwrap()
+                    * 4
+            })
+            .collect();
+        Self {
+            frame: Some(frame),
+            columns,
+            crop_y,
+            scaled_height,
+        }
     }
+
+    fn source_row(&self, y: u32) -> Option<usize> {
+        let frame = self.frame?;
+        Some(
+            usize::try_from(source_coordinate(
+                y,
+                self.crop_y,
+                self.scaled_height,
+                frame.height,
+            ))
+            .unwrap()
+                * frame.width as usize
+                * 4,
+        )
+    }
+
+    fn pixel(&self, source_row: Option<usize>, x: u32) -> [u8; 3] {
+        let Some((frame, source_row)) = self.frame.zip(source_row) else {
+            return FALLBACK_RGB;
+        };
+        let offset = source_row + self.columns[x as usize];
+        [
+            frame.pixels[offset],
+            frame.pixels[offset + 1],
+            frame.pixels[offset + 2],
+        ]
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FilteredCoordinate {
+    lower: u32,
+    upper: u32,
+    upper_weight: u32,
+}
+
+fn filtered_axis(source: u32, target: u32) -> Vec<FilteredCoordinate> {
+    let denominator = u64::from(target) * 2;
+    (0..target)
+        .map(|position| {
+            let centered = (u64::from(position) * 2 + 1)
+                .saturating_mul(u64::from(source))
+                .saturating_sub(u64::from(target));
+            let lower = (centered / denominator).min(u64::from(source - 1)) as u32;
+            let upper = lower.saturating_add(1).min(source - 1);
+            let upper_weight = if lower == upper {
+                0
+            } else {
+                ((centered % denominator) * 65_536 / denominator) as u32
+            };
+            FilteredCoordinate {
+                lower,
+                upper,
+                upper_weight,
+            }
+        })
+        .collect()
+}
+
+fn filtered_pixel(
+    frame: &RgbaFrame,
+    horizontal: FilteredCoordinate,
+    vertical: FilteredCoordinate,
+) -> [u8; 4] {
+    let x_weights = [65_536 - horizontal.upper_weight, horizontal.upper_weight];
+    let y_weights = [65_536 - vertical.upper_weight, vertical.upper_weight];
+    let xs = [horizontal.lower, horizontal.upper];
+    let ys = [vertical.lower, vertical.upper];
+    let mut alpha_weight = 0_u64;
+    let mut channels = [0_u64; 3];
+    for (y, y_weight) in ys.into_iter().zip(y_weights) {
+        for (x, x_weight) in xs.into_iter().zip(x_weights) {
+            let offset = (y as usize * frame.width as usize + x as usize) * 4;
+            let weight = u64::from(x_weight) * u64::from(y_weight);
+            let alpha = u64::from(frame.pixels[offset + 3]);
+            alpha_weight += alpha * weight;
+            for (channel, result) in channels.iter_mut().enumerate() {
+                *result += u64::from(frame.pixels[offset + channel]) * alpha * weight;
+            }
+        }
+    }
+    if alpha_weight == 0 {
+        return [0; 4];
+    }
+    [
+        (channels[0] / alpha_weight) as u8,
+        (channels[1] / alpha_weight) as u8,
+        (channels[2] / alpha_weight) as u8,
+        (alpha_weight / (65_536_u64 * 65_536)) as u8,
+    ]
+}
+
+fn intersect(first: Region, second: Region) -> Option<Region> {
+    let left = first.x.max(second.x);
+    let top = first.y.max(second.y);
+    let right = first
+        .x
+        .saturating_add(first.width)
+        .min(second.x.saturating_add(second.width));
+    let bottom = first
+        .y
+        .saturating_add(first.height)
+        .min(second.y.saturating_add(second.height));
+    (left < right && top < bottom).then_some(Region {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OverlayGeometry {
+    target: Region,
 }
 
 fn overlay_region(frame: Option<&PresentationFrame>, width: u32, height: u32) -> Option<Region> {
@@ -1169,10 +1327,6 @@ fn overlay_geometry(frame: &PresentationFrame, width: u32, height: u32) -> Optio
             u128::from(source_height),
         )?;
     Some(OverlayGeometry {
-        canvas_x,
-        canvas_y,
-        canvas_width,
-        canvas_height,
         target: Region {
             x: left,
             y: top,
@@ -1284,6 +1438,7 @@ fn source_coordinate(position: u32, crop: u128, scaled: u128, source: u32) -> u3
         as u32
 }
 
+#[cfg(test)]
 fn frame_pixel(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 3]> {
     if source_x >= frame.width || source_y >= frame.height {
         return None;
@@ -1295,22 +1450,6 @@ fn frame_pixel(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 3
         .and_then(|offset| usize::try_from(offset).ok())?;
     let pixel = frame.pixels.get(offset..offset.checked_add(3)?)?;
     Some([pixel[0], pixel[1], pixel[2]])
-}
-
-fn frame_pixel_rgba(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 4]> {
-    if source_x >= frame.width || source_y >= frame.height {
-        return None;
-    }
-    let offset = u64::from(source_y)
-        .checked_mul(u64::from(frame.width))?
-        .checked_add(u64::from(source_x))?
-        .checked_mul(4)
-        .and_then(|offset| usize::try_from(offset).ok())?;
-    frame
-        .pixels
-        .get(offset..offset.checked_add(4)?)?
-        .try_into()
-        .ok()
 }
 
 fn blend_rgb(background: [u8; 3], foreground: [u8; 4]) -> [u8; 3] {
@@ -1532,6 +1671,35 @@ mod tests {
         draw_opaque(&mut target, 2, 1, Some(&frame));
 
         assert_eq!(target, [0, 0, 80, 255, 160, 0, 0, 255]);
+    }
+
+    #[test]
+    fn scaled_overlays_are_filtered_instead_of_pixel_doubled() {
+        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 255])).unwrap();
+        let overlay =
+            RgbaFrame::new(2, 1, Bytes::from_static(&[255, 0, 0, 255, 0, 0, 255, 255])).unwrap();
+        let frame = PresentationFrame::new(2, 1, Some(background), overlay, 0, 0).unwrap();
+        let mut target = [0; 32];
+
+        draw_opaque(&mut target, 4, 2, Some(&frame));
+
+        assert_eq!(target[0..4], [0, 0, 204, 255]);
+        assert_eq!(target[4..8], [50, 0, 152, 255]);
+        assert_eq!(target[8..12], [152, 0, 50, 255]);
+        assert_eq!(target[12..16], [204, 0, 0, 255]);
+    }
+
+    #[test]
+    fn filtered_transparency_does_not_add_dark_edge_fringe() {
+        let overlay =
+            RgbaFrame::new(2, 1, Bytes::from_static(&[0, 0, 0, 0, 255, 255, 255, 255])).unwrap();
+        let horizontal = filtered_axis(2, 4);
+        let vertical = filtered_axis(1, 1);
+
+        let edge = filtered_pixel(&overlay, horizontal[1], vertical[0]);
+
+        assert_eq!(&edge[..3], &[255, 255, 255]);
+        assert!(edge[3] > 0 && edge[3] < u8::MAX);
     }
 
     #[test]

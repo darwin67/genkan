@@ -27,6 +27,7 @@ const LOCK_CANVAS_WIDTH: u32 = 1280;
 const LOCK_CANVAS_HEIGHT: u32 = 800;
 const AUTHENTICATION_OVERLAY_WIDTH: u32 = 500;
 const AUTHENTICATION_OVERLAY_HEIGHT: u32 = 400;
+const AUTHENTICATION_RENDER_SCALE: u32 = 3;
 const AUTHENTICATION_FIELD_X: u32 = 55;
 const AUTHENTICATION_FIELD_Y: u32 = 247;
 const AUTHENTICATION_FIELD_WIDTH: u32 = 390;
@@ -297,13 +298,14 @@ impl LockerPresentation {
             return;
         };
         let (overlay_width, overlay_height) = overlay.dimensions();
+        let (canvas_width, canvas_height) = authentication_canvas_dimensions();
         self.frame = PresentationFrame::new(
-            LOCK_CANVAS_WIDTH,
-            LOCK_CANVAS_HEIGHT,
+            canvas_width,
+            canvas_height,
             self.background.clone(),
             overlay,
-            (LOCK_CANVAS_WIDTH - overlay_width) / 2,
-            (LOCK_CANVAS_HEIGHT - overlay_height) / 2,
+            (canvas_width - overlay_width) / 2,
+            (canvas_height - overlay_height) / 2,
         );
     }
 
@@ -491,15 +493,21 @@ fn render_authentication_overlay(
     fonts: &mut FontSystem,
     glyphs: &mut SwashCache,
 ) {
-    const AVATAR_X: u32 = 194;
-    const AVATAR_Y: u32 = 10;
-    const AVATAR_DIAMETER: u32 = 112;
+    const AVATAR_X: u32 = 194 * AUTHENTICATION_RENDER_SCALE;
+    const AVATAR_Y: u32 = 10 * AUTHENTICATION_RENDER_SCALE;
+    const AVATAR_DIAMETER: u32 = 112 * AUTHENTICATION_RENDER_SCALE;
 
-    let display_name = fit_single_line(fonts, &identity.display_name, 27.0, width as f32);
+    let scale = AUTHENTICATION_RENDER_SCALE;
+    let px = |value: u32| value * scale;
+    let position = |value: i32| value * scale as i32;
+    let font_size = |value: f32| value * scale as f32;
+
+    let display_name =
+        fit_single_line(fonts, &identity.display_name, font_size(27.0), width as f32);
     let username = fit_single_line(
         fonts,
         &format!("@{}", identity.username),
-        16.0,
+        font_size(16.0),
         width as f32,
     );
     let detailed_prompt = confirmed
@@ -513,9 +521,10 @@ fn render_authentication_overlay(
             fonts,
             glyphs,
             &display_name,
-            22.0,
-            8,
+            font_size(22.0),
+            position(8),
             [255, 255, 255, 255],
+            scale,
         );
         draw_shadowed_text(
             pixels,
@@ -524,9 +533,10 @@ fn render_authentication_overlay(
             fonts,
             glyphs,
             &username,
-            14.0,
-            38,
+            font_size(14.0),
+            position(38),
             [255, 255, 255, 255],
+            scale,
         );
         let prompt_pages = draw_wrapped_text_in(
             pixels,
@@ -534,12 +544,12 @@ fn render_authentication_overlay(
             fonts,
             glyphs,
             prompt,
-            15.0,
-            8.0,
-            66,
-            15,
-            width - 30,
-            155,
+            font_size(15.0),
+            font_size(8.0),
+            position(66),
+            px(15),
+            width - px(30),
+            px(155),
             [255, 255, 255, 255],
             instruction_page,
         );
@@ -552,7 +562,8 @@ fn render_authentication_overlay(
                 glyphs,
                 instruction_page,
                 prompt_pages,
-                226,
+                position(226),
+                scale,
             );
         }
     } else {
@@ -579,9 +590,10 @@ fn render_authentication_overlay(
             fonts,
             glyphs,
             &initials(&identity.display_name),
-            34.0,
-            43,
+            font_size(34.0),
+            position(43),
             [255, 255, 255, 255],
+            scale,
         );
         draw_shadowed_text(
             pixels,
@@ -590,9 +602,10 @@ fn render_authentication_overlay(
             fonts,
             glyphs,
             &display_name,
-            27.0,
-            139,
+            font_size(27.0),
+            position(139),
             [255, 255, 255, 255],
+            scale,
         );
         draw_shadowed_text(
             pixels,
@@ -601,9 +614,10 @@ fn render_authentication_overlay(
             fonts,
             glyphs,
             &username,
-            16.0,
-            177,
+            font_size(16.0),
+            position(177),
             [255, 255, 255, 255],
+            scale,
         );
     }
     if !confirmed {
@@ -614,14 +628,15 @@ fn render_authentication_overlay(
             fonts,
             glyphs,
             "Securing session…",
-            17.0,
-            235,
+            font_size(17.0),
+            position(235),
             [255, 255, 255, 255],
+            scale,
         );
         return;
     }
 
-    draw_authentication_field(pixels, width);
+    draw_authentication_field(pixels, width, scale);
 
     // Treat visible PAM responses as credentials too. Keeping all mutable
     // responses out of the text renderer guarantees its internal scratch
@@ -635,8 +650,8 @@ fn render_authentication_overlay(
         } else {
             conversation.prompt()
         },
-        16.0,
-        (AUTHENTICATION_FIELD_WIDTH - 82) as f32,
+        font_size(16.0),
+        px(AUTHENTICATION_FIELD_WIDTH - 82) as f32,
     );
     let field_text = if submitting {
         "Authenticating…"
@@ -652,10 +667,10 @@ fn render_authentication_overlay(
         fonts,
         glyphs,
         field_text,
-        if input.is_empty() { 16.0 } else { 21.0 },
-        261,
-        AUTHENTICATION_FIELD_X + 24,
-        AUTHENTICATION_FIELD_WIDTH - 82,
+        font_size(if input.is_empty() { 16.0 } else { 21.0 }),
+        position(261),
+        px(AUTHENTICATION_FIELD_X + 24),
+        px(AUTHENTICATION_FIELD_WIDTH - 82),
         if input.is_empty() || submitting {
             [245, 246, 250, 255]
         } else {
@@ -670,10 +685,10 @@ fn render_authentication_overlay(
         fonts,
         glyphs,
         if submitting { "…" } else { "↵" },
-        20.0,
-        259,
-        AUTHENTICATION_FIELD_X + 346,
-        36,
+        font_size(20.0),
+        position(259),
+        px(AUTHENTICATION_FIELD_X + 346),
+        px(36),
         if submitting {
             [180, 184, 194, 255]
         } else {
@@ -689,12 +704,12 @@ fn render_authentication_overlay(
             fonts,
             glyphs,
             notice,
-            15.0,
-            7.0,
-            315,
-            10,
-            width - 20,
-            66,
+            font_size(15.0),
+            font_size(7.0),
+            position(315),
+            px(10),
+            width - px(20),
+            px(66),
             if conversation.notice_is_error() {
                 [255, 215, 215, 255]
             } else {
@@ -711,14 +726,25 @@ fn render_authentication_overlay(
                 glyphs,
                 instruction_page,
                 notice_pages,
-                384,
+                position(384),
+                scale,
             );
         }
     }
 }
 
 fn authentication_overlay_dimensions() -> (u32, u32) {
-    (AUTHENTICATION_OVERLAY_WIDTH, AUTHENTICATION_OVERLAY_HEIGHT)
+    (
+        AUTHENTICATION_OVERLAY_WIDTH * AUTHENTICATION_RENDER_SCALE,
+        AUTHENTICATION_OVERLAY_HEIGHT * AUTHENTICATION_RENDER_SCALE,
+    )
+}
+
+fn authentication_canvas_dimensions() -> (u32, u32) {
+    (
+        LOCK_CANVAS_WIDTH * AUTHENTICATION_RENDER_SCALE,
+        LOCK_CANVAS_HEIGHT * AUTHENTICATION_RENDER_SCALE,
+    )
 }
 
 fn initials(name: &str) -> String {
@@ -809,25 +835,25 @@ fn blend_circle(
     }
 }
 
-fn draw_authentication_field(pixels: &mut [u8], width: u32) {
+fn draw_authentication_field(pixels: &mut [u8], width: u32, scale: u32) {
     blend_rounded_rect(
         pixels,
         width,
-        AUTHENTICATION_FIELD_X,
-        AUTHENTICATION_FIELD_Y,
-        AUTHENTICATION_FIELD_WIDTH,
-        AUTHENTICATION_FIELD_HEIGHT,
-        AUTHENTICATION_FIELD_HEIGHT / 2,
+        AUTHENTICATION_FIELD_X * scale,
+        AUTHENTICATION_FIELD_Y * scale,
+        AUTHENTICATION_FIELD_WIDTH * scale,
+        AUTHENTICATION_FIELD_HEIGHT * scale,
+        AUTHENTICATION_FIELD_HEIGHT * scale / 2,
         theme::AUTHENTICATION_INPUT_GLASS,
     );
     blend_rounded_rect_outline(
         pixels,
         width,
-        AUTHENTICATION_FIELD_X,
-        AUTHENTICATION_FIELD_Y,
-        AUTHENTICATION_FIELD_WIDTH,
-        AUTHENTICATION_FIELD_HEIGHT,
-        AUTHENTICATION_FIELD_HEIGHT / 2,
+        AUTHENTICATION_FIELD_X * scale,
+        AUTHENTICATION_FIELD_Y * scale,
+        AUTHENTICATION_FIELD_WIDTH * scale,
+        AUTHENTICATION_FIELD_HEIGHT * scale,
+        AUTHENTICATION_FIELD_HEIGHT * scale / 2,
         theme::AUTHENTICATION_INPUT_BORDER,
     );
 }
@@ -1017,6 +1043,7 @@ fn draw_page_hint(
     page: usize,
     page_count: usize,
     y: i32,
+    scale: u32,
 ) {
     draw_text(
         pixels,
@@ -1025,7 +1052,7 @@ fn draw_page_hint(
         fonts,
         glyphs,
         &format!("{} / {page_count} · Tab for more", page % page_count + 1),
-        10.0,
+        10.0 * scale as f32,
         y,
         [230, 232, 238, 255],
     );
@@ -1059,6 +1086,7 @@ fn draw_shadowed_text(
     size: f32,
     y: i32,
     color: [u8; 4],
+    scale: u32,
 ) {
     draw_text_in(
         pixels,
@@ -1068,7 +1096,7 @@ fn draw_shadowed_text(
         glyphs,
         text,
         size,
-        y + 2,
+        y + 2 * scale as i32,
         0,
         width,
         [0, 0, 0, 190],
@@ -1345,8 +1373,9 @@ mod tests {
 
     #[test]
     fn authentication_overlay_is_bounded_independently_of_wallpaper_size() {
-        assert_eq!(authentication_overlay_dimensions(), (500, 400));
-        assert_eq!(500 * 400 * 4, 800_000);
+        assert_eq!(authentication_overlay_dimensions(), (1500, 1200));
+        assert_eq!(authentication_canvas_dimensions(), (3840, 2400));
+        assert_eq!(1500 * 1200 * 4, 7_200_000);
     }
 
     #[test]
@@ -1373,7 +1402,7 @@ mod tests {
     fn authentication_field_uses_translucent_glass_material() {
         let mut pixels =
             vec![0; (AUTHENTICATION_OVERLAY_WIDTH * AUTHENTICATION_OVERLAY_HEIGHT * 4) as usize];
-        draw_authentication_field(&mut pixels, AUTHENTICATION_OVERLAY_WIDTH);
+        draw_authentication_field(&mut pixels, AUTHENTICATION_OVERLAY_WIDTH, 1);
         let pixel = |x: u32, y: u32| {
             let offset = ((y * AUTHENTICATION_OVERLAY_WIDTH + x) * 4) as usize;
             <[u8; 4]>::try_from(&pixels[offset..offset + 4]).unwrap()
