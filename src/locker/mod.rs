@@ -38,6 +38,8 @@ pub(crate) struct Config {
     pub(crate) test_renderer_failure_after_ready: bool,
     #[cfg(feature = "lock-test")]
     pub(crate) test_worker_failure_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    pub(crate) test_ready_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Error)]
@@ -83,6 +85,18 @@ enum AuthTestEvent {
     Retry,
     Success,
     Failure,
+}
+
+#[cfg(feature = "lock-test")]
+impl AuthTestEvent {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Prompt => "AUTH_PROMPT",
+            Self::Retry => "AUTH_RETRY",
+            Self::Success => "AUTH_SUCCESS",
+            Self::Failure => "AUTH_FAILURE",
+        }
+    }
 }
 
 impl LockerPresentation {
@@ -263,13 +277,7 @@ impl LockerPresentation {
     #[cfg(feature = "lock-test")]
     fn record_test_event(&mut self, event: AuthTestEvent) {
         if let Some(observer) = self.test_observer.as_mut() {
-            let event = match event {
-                AuthTestEvent::Prompt => "AUTH_PROMPT",
-                AuthTestEvent::Retry => "AUTH_RETRY",
-                AuthTestEvent::Success => "AUTH_SUCCESS",
-                AuthTestEvent::Failure => "AUTH_FAILURE",
-            };
-            let _ = writeln!(observer, "{event}");
+            let _ = writeln!(observer, "{}", event.name());
             let _ = observer.flush();
         }
     }
@@ -402,7 +410,10 @@ pub(crate) fn run(config: Config) -> Result<(), Error> {
         .with_test_unlock_after_ready(config.test_unlock_after_ready)
         .with_test_observer(observer_fd)
         .with_test_panic_after_ready(config.test_panic_after_ready)
-        .with_test_renderer_failure_after_ready(config.test_renderer_failure_after_ready);
+        .with_test_renderer_failure_after_ready(config.test_renderer_failure_after_ready)
+        .with_test_ready_delay(std::time::Duration::from_millis(
+            config.test_ready_delay_ms.unwrap_or_default(),
+        ));
     genkan_session_lock::run(runtime)?;
     Ok(())
 }
@@ -733,5 +744,20 @@ mod tests {
     fn authentication_input_is_disabled_before_compositor_confirmation() {
         assert!(!authentication_input_enabled(false));
         assert!(authentication_input_enabled(true));
+    }
+
+    #[cfg(feature = "lock-test")]
+    #[test]
+    fn authentication_observer_uses_fixed_non_secret_event_names() {
+        assert_eq!(
+            [
+                AuthTestEvent::Prompt,
+                AuthTestEvent::Retry,
+                AuthTestEvent::Success,
+                AuthTestEvent::Failure,
+            ]
+            .map(AuthTestEvent::name),
+            ["AUTH_PROMPT", "AUTH_RETRY", "AUTH_SUCCESS", "AUTH_FAILURE"]
+        );
     }
 }

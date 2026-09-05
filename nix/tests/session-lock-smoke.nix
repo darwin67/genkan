@@ -126,11 +126,20 @@ pkgs.runCommand "genkan-session-lock-smoke"
     assert poll.poll(2000), "worker survived its verified parent"
     os.close(worker_pidfd)
     PY
-    if ${productionGenkan}/bin/genkan lock --test-unlock-after-ready > "$production_log" 2>&1; then
-      echo "production package accepted the test-only unlock option" >&2
-      exit 1
-    fi
-    grep -F -- '--test-unlock-after-ready' "$production_log"
+    for test_option in \
+      '--test-unlock-after-ready' \
+      '--test-observer-fd 4' \
+      '--test-panic-after-ready' \
+      '--test-renderer-failure-after-ready' \
+      '--test-worker-failure-after-ready' \
+      '--test-ready-delay-ms 1'; do
+      read -r -a test_arguments <<< "$test_option"
+      if ${productionGenkan}/bin/genkan lock "''${test_arguments[@]}" > "$production_log" 2>&1; then
+        echo "production package accepted test-only option: $test_option" >&2
+        exit 1
+      fi
+      grep -F -- "''${test_arguments[0]}" "$production_log"
+    done
 
     printf '%s\n' \
       'output * mode 800x600' \
@@ -177,12 +186,12 @@ pkgs.runCommand "genkan-session-lock-smoke"
         3>"$ready" 4>"$observer" 2>"$lock_log" &
     lock_pid=$!
 
-    for _ in $(seq 1 300); do
+    for _ in $(seq 1 3000); do
       grep -Fxq READY "$ready" && break
       ! kill -0 "$lock_pid" 2>/dev/null && break
       sleep 0.01
     done
-    if ! grep -Fxq READY "$ready"; then
+    if [[ $(cat "$ready") != READY ]]; then
       echo "foreground lock did not report readiness" >&2
       cat "$log" "$lock_log" >&2
       exit 1
@@ -200,14 +209,18 @@ pkgs.runCommand "genkan-session-lock-smoke"
       cat "$log" "$lock_log" "$observer" >&2
       exit 1
     fi
+    initial_keyboard=$(grep -Fc KEYBOARD "$observer" || true)
+    initial_pointer=$(grep -Fc POINTER "$observer" || true)
     XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") wtype -s 50 x
     XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") wlrctl pointer move 1 1
     XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") wlrctl pointer click
     for _ in $(seq 1 300); do
-      grep -Fxq KEYBOARD "$observer" && grep -Fxq POINTER "$observer" && break
+      [[ $(grep -Fc KEYBOARD "$observer") -gt $initial_keyboard ]] &&
+        [[ $(grep -Fc POINTER "$observer") -gt $initial_pointer ]] && break
       sleep 0.01
     done
-    if ! grep -Fxq KEYBOARD "$observer" || ! grep -Fxq POINTER "$observer"; then
+    if [[ $(grep -Fc KEYBOARD "$observer") -le $initial_keyboard ]] ||
+       [[ $(grep -Fc POINTER "$observer") -le $initial_pointer ]]; then
       echo "input observer did not receive isolated keyboard and pointer input" >&2
       cat "$log" "$lock_log" "$observer" >&2
       exit 1
@@ -278,10 +291,9 @@ pkgs.runCommand "genkan-session-lock-smoke"
 
     daemon_one=$(mktemp)
     daemon_two=$(mktemp)
-    before_sleep=$(mktemp)
-    rm -f "$before_sleep"
     env WAYLAND_DISPLAY=$(basename "$socket") XDG_RUNTIME_DIR="$runtime" \
       ${genkan}/bin/genkan lock --daemonize --reduce-motion --test-unlock-after-ready \
+      --test-ready-delay-ms 10000 \
       2>"$daemon_one" &
     daemon_one_pid=$!
     for _ in $(seq 1 100); do
@@ -293,10 +305,25 @@ pkgs.runCommand "genkan-session-lock-smoke"
       cat "$daemon_one" >&2
       exit 1
     fi
+    for _ in $(seq 1 300); do
+      grep -Fq 'compositor confirmed lock' "$daemon_one" && break
+      sleep 0.01
+    done
+    if ! grep -Fq 'compositor confirmed lock' "$daemon_one"; then
+      echo "owner did not enter the delayed readiness interval" >&2
+      cat "$daemon_one" >&2
+      exit 1
+    fi
     env WAYLAND_DISPLAY=$(basename "$socket") XDG_RUNTIME_DIR="$runtime" \
       ${genkan}/bin/genkan lock --daemonize --reduce-motion --test-unlock-after-ready \
       2>"$daemon_two" &
     daemon_two_pid=$!
+    sleep 0.5
+    if ! kill -0 "$daemon_one_pid" 2>/dev/null || ! kill -0 "$daemon_two_pid" 2>/dev/null; then
+      echo "a duplicate launcher returned before compositor readiness" >&2
+      cat "$daemon_one" "$daemon_two" >&2
+      exit 1
+    fi
     if ! wait "$daemon_one_pid"; then
       echo "first readiness launcher failed" >&2
       cat "$daemon_one" "$daemon_two" >&2
@@ -307,8 +334,6 @@ pkgs.runCommand "genkan-session-lock-smoke"
       cat "$daemon_one" "$daemon_two" >&2
       exit 1
     fi
-    touch "$before_sleep"
-    test -e "$before_sleep"
     if [[ $(cat "$daemon_one" "$daemon_two" | grep -Fc 'compositor confirmed lock') -ne 1 ]]; then
       echo "duplicate launchers did not join exactly one protocol lock" >&2
       cat "$log" "$daemon_one" "$daemon_two" >&2
@@ -330,6 +355,6 @@ pkgs.runCommand "genkan-session-lock-smoke"
       echo "daemon launcher accepted a missing compositor before readiness" >&2
       exit 1
     fi
-    rm -f "$daemon_one" "$daemon_two" "$before_sleep"
+    rm -f "$daemon_one" "$daemon_two"
     touch "$out"
   ''

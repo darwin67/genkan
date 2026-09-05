@@ -421,6 +421,24 @@ mod tests {
             adopt_wayland_socket(file),
             Err(Error::WaylandConnection)
         ));
+        let status = Command::new(std::env::current_exe().unwrap())
+            .env("GENKAN_TEST_CLOSED_WAYLAND", "1")
+            .arg("--exact")
+            .arg("locker::coordination::tests::closed_wayland_socket_helper")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            Error::WaylandConnection.to_string(),
+            "WAYLAND_SOCKET or WAYLAND_DISPLAY must identify a compositor connection"
+        );
+    }
+
+    #[test]
+    fn closed_wayland_socket_helper() {
+        if std::env::var_os("GENKAN_TEST_CLOSED_WAYLAND").is_none() {
+            return;
+        }
         let (closed, _peer) = UnixStream::pair().unwrap();
         let closed = closed.into_raw_fd();
         // SAFETY: ownership is intentionally transferred to the closed-descriptor case.
@@ -429,10 +447,6 @@ mod tests {
             adopt_wayland_socket(closed),
             Err(Error::WaylandConnection)
         ));
-        assert_eq!(
-            Error::WaylandConnection.to_string(),
-            "WAYLAND_SOCKET or WAYLAND_DISPLAY must identify a compositor connection"
-        );
     }
 
     #[test]

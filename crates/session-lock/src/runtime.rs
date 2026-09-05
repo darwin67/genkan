@@ -14,6 +14,7 @@ use smithay_client_toolkit::registry_handlers;
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
+#[cfg(feature = "lock-test")]
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerHandler};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::session_lock::{
@@ -26,9 +27,9 @@ use smithay_client_toolkit::shm::{
 };
 use thiserror::Error;
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{
-    wl_keyboard, wl_output, wl_pointer, wl_region, wl_seat, wl_shm, wl_surface,
-};
+#[cfg(feature = "lock-test")]
+use wayland_client::protocol::wl_pointer;
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_region, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 
 use super::{
@@ -123,6 +124,7 @@ struct Runtime {
     registry_state: RegistryState,
     seat_state: SeatState,
     keyboards: Vec<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
+    #[cfg(feature = "lock-test")]
     pointers: Vec<(wl_seat::WlSeat, wl_pointer::WlPointer)>,
     shm: Shm,
     session_lock_state: SessionLockState,
@@ -143,6 +145,8 @@ struct Runtime {
     test_panic_after_ready: bool,
     #[cfg(feature = "lock-test")]
     test_renderer_failure_after_ready: bool,
+    #[cfg(feature = "lock-test")]
+    test_ready_delay: Duration,
 }
 
 pub(super) fn run(config: Config) -> Result<(), Error> {
@@ -163,6 +167,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         keyboards: Vec::new(),
+        #[cfg(feature = "lock-test")]
         pointers: Vec::new(),
         shm,
         session_lock_state: SessionLockState::new(&globals, &qh),
@@ -183,6 +188,8 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         test_panic_after_ready: config.test_panic_after_ready,
         #[cfg(feature = "lock-test")]
         test_renderer_failure_after_ready: config.test_renderer_failure_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_ready_delay: config.test_ready_delay,
     };
     eprintln!(
         "genkan lock: requesting compositor lock for uid {} ({}; {})",
@@ -458,6 +465,8 @@ impl Runtime {
                 eprintln!("genkan lock: compositor confirmed lock");
                 #[cfg(feature = "lock-test")]
                 self.test_observer.record(TestEvent::Locked);
+                #[cfg(feature = "lock-test")]
+                std::thread::sleep(self.test_ready_delay);
                 if let Err(error) = self.ready.apply(action) {
                     self.fail(Error::Runtime(format!(
                         "could not report lock readiness: {error}"
@@ -746,6 +755,7 @@ impl SeatHandler for Runtime {
                 ))),
             }
         }
+        #[cfg(feature = "lock-test")]
         if capability == Capability::Pointer
             && !self.pointers.iter().any(|(known, _)| known == &seat)
         {
@@ -776,6 +786,7 @@ impl SeatHandler for Runtime {
             }
             self.keyboards = retained;
         }
+        #[cfg(feature = "lock-test")]
         if capability == Capability::Pointer {
             let mut retained = Vec::new();
             for (known, pointer) in self.pointers.drain(..) {
@@ -856,16 +867,16 @@ impl KeyboardHandler for Runtime {
     }
 }
 
+#[cfg(feature = "lock-test")]
 impl PointerHandler for Runtime {
     fn pointer_frame(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_pointer::WlPointer,
-        _events: &[PointerEvent],
+        events: &[PointerEvent],
     ) {
-        #[cfg(feature = "lock-test")]
-        if _events.iter().any(|event| {
+        if events.iter().any(|event| {
             matches!(
                 event.kind,
                 smithay_client_toolkit::seat::pointer::PointerEventKind::Enter { .. }
@@ -891,6 +902,7 @@ smithay_client_toolkit::delegate_output!(Runtime);
 smithay_client_toolkit::delegate_registry!(Runtime);
 smithay_client_toolkit::delegate_seat!(Runtime);
 smithay_client_toolkit::delegate_keyboard!(Runtime);
+#[cfg(feature = "lock-test")]
 smithay_client_toolkit::delegate_pointer!(Runtime);
 smithay_client_toolkit::delegate_session_lock!(Runtime);
 smithay_client_toolkit::delegate_shm!(Runtime);
