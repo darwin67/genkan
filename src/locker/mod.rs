@@ -2,6 +2,9 @@ mod auth;
 mod coordination;
 mod identity;
 mod launcher;
+mod preview;
+
+pub(crate) use preview::{run as run_preview, Fixture as PreviewFixture};
 
 use std::ffi::CString;
 #[cfg(feature = "lock-test")]

@@ -49,6 +49,7 @@ capture() {
   local width=$2
   local height=$3
   local fixture=$4
+  local mode=${5:-login}
   local case_dir="$work_dir/$name"
   local socket="wayland-$name"
   local screenshot
@@ -83,12 +84,21 @@ capture() {
   done
   [[ -S "$case_dir/runtime/$socket" ]]
 
-  cat > "$case_dir/run-genkan" <<EOF
+  if [[ $mode == login ]]; then
+    cat > "$case_dir/run-genkan" <<EOF
 #!${SHELL:-/bin/sh}
 echo \$\$ > "$case_dir/genkan.pid"
 exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
   "$GENKAN_BIN" login --windowed --preview "$fixture" --width "$width" --height "$height"
 EOF
+  else
+    cat > "$case_dir/run-genkan" <<EOF
+#!${SHELL:-/bin/sh}
+echo \$\$ > "$case_dir/genkan.pid"
+exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
+  "$GENKAN_BIN" lock --preview "$fixture" --width "$width" --height "$height"
+EOF
+  fi
   chmod +x "$case_dir/run-genkan"
 
   HOME="$case_dir/home" \
@@ -154,7 +164,9 @@ EOF
     exit 1
   fi
   mv "$screenshot" "$PREVIEW_OUTPUT_DIR/$name.png"
-  covered_fixtures["$fixture"]=1
+  if [[ $mode == login ]]; then
+    covered_fixtures["$fixture"]=1
+  fi
 
   cleanup_case
 
@@ -174,6 +186,12 @@ capture widescreen-users 1920 1080 users
 capture ultrawide-selected 2560 1080 selected
 capture narrow-selected 480 600 selected
 capture narrow-long-authentication 480 600 long-authentication
+
+# Exact software-rendered lock states without acquiring a compositor lock.
+capture lock-securing 1280 800 securing lock
+capture lock-prompt 1280 800 prompt lock
+capture lock-failure 1280 800 failure lock
+capture lock-narrow-prompt 480 600 prompt lock
 
 # Probe every fixture, including states that do not need a named review capture.
 for fixture in "${preview_fixtures[@]}"; do

@@ -1,9 +1,10 @@
 PREVIEW ?= selected
+LOCK_PREVIEW ?= prompt
 WIDTH ?= 1280
 HEIGHT ?= 800
 WALLPAPER ?= tahoe-beach
 
-.PHONY: dev animated-dev check fmt fmt-fix lint test scripts-test check-rfds smoke lock-smoke lock-vm evidence update-reference-images hardware-smoke e2e build package verify changelog next-version clean
+.PHONY: dev animated-dev lock-dev check fmt fmt-fix lint test scripts-test check-rfds smoke lock-smoke lock-vm evidence update-reference-images hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
 	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)"
@@ -11,6 +12,9 @@ dev:
 animated-dev:
 	@test -n "$(GENKAN_WALLPAPER_DIR)" || { echo "GENKAN_WALLPAPER_DIR is unavailable; run this target inside nix develop" >&2; exit 1; }
 	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --animated-preview --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)" --wallpaper-file "$(GENKAN_WALLPAPER_DIR)/$(WALLPAPER).mov"
+
+lock-dev:
+	cargo run --bin genkan -- lock --preview "$(LOCK_PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)"
 
 check:
 	cargo check

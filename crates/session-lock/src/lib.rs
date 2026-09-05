@@ -123,6 +123,14 @@ pub trait Presentation {
     }
 }
 
+/// Render a presentation into RGBA pixels without acquiring a session lock.
+///
+/// This is intended for deterministic visual previews. Production lock
+/// surfaces are rendered directly into compositor-owned shared-memory buffers.
+pub fn render_preview(frame: &PresentationFrame, width: u32, height: u32) -> Option<RgbaFrame> {
+    runtime::render_preview(frame, width, height)
+}
+
 pub struct Config {
     wayland: UnixStream,
     identity: Identity,
