@@ -609,6 +609,7 @@ impl Runtime {
             Keysym::BackSpace => Some(Input::Backspace),
             Keysym::Return | Keysym::KP_Enter => Some(Input::Submit),
             Keysym::Escape => Some(Input::Cancel),
+            Keysym::Tab => Some(Input::NextPage),
             _ => event
                 .utf8
                 .map(zeroize::Zeroizing::new)

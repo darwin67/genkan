@@ -124,6 +124,7 @@ pub enum Input {
     Backspace,
     Submit,
     Cancel,
+    NextPage,
 }
 
 pub trait Presentation {

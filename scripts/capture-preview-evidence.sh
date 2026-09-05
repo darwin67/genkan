@@ -190,6 +190,7 @@ capture narrow-long-authentication 480 600 long-authentication
 # Exact software-rendered lock states without acquiring a compositor lock.
 capture lock-securing 1280 800 securing lock
 capture lock-prompt 1280 800 prompt lock
+capture lock-challenge 1280 800 challenge lock
 capture lock-submitting 1280 800 submitting lock
 capture lock-failure 1280 800 failure lock
 capture lock-narrow-prompt 480 600 prompt lock

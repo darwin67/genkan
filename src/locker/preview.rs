@@ -28,6 +28,7 @@ pub(crate) enum Fixture {
     Securing,
     #[default]
     Prompt,
+    Challenge,
     Submitting,
     Failure,
 }
@@ -231,6 +232,7 @@ fn presentation(settings: wallpaper::Settings, fixture: Fixture) -> Presentation
         &identity,
         &conversation,
         confirmed,
+        0,
         &mut FontSystem::new(),
         &mut SwashCache::new(),
     );
@@ -294,6 +296,20 @@ impl Fixture {
                 ),
                 true,
             ),
+            Self::Challenge => (
+                Conversation::for_preview(
+                    "7".into(),
+                    format!(
+                        "{}\nEnter the following challenge response: 793146",
+                        "Step\n".repeat(16)
+                    ),
+                    None,
+                    false,
+                    false,
+                    Status::Waiting,
+                ),
+                true,
+            ),
             Self::Submitting => (
                 Conversation::for_preview(
                     String::new(),
@@ -329,6 +345,7 @@ mod tests {
         for fixture in [
             Fixture::Securing,
             Fixture::Prompt,
+            Fixture::Challenge,
             Fixture::Submitting,
             Fixture::Failure,
         ] {
