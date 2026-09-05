@@ -18,3 +18,4 @@ smithay-client-toolkit = { version = "=0.20.0", default-features = false, featur
 thiserror = "2.0.9"
 wayland-client = "=0.31.15"
 wayland-protocols = { version = "=0.32.13", features = ["client", "staging"] }
+zeroize = "=1.9.0"
