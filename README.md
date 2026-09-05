@@ -26,6 +26,8 @@ synthetic accounts and sessions and never sends credentials or power requests.
   posters, reduced-motion support, smooth loop transitions, and safe fallback.
 - Reproducible Nix packaging for x86_64-linux and aarch64-linux.
 - Service-free deterministic previews for UI development and review.
+- A consistent translucent-glass authentication field across login and lock
+  screens, with stronger focus indication in the keyboard-driven login flow.
 - An experimental `ext-session-lock-v1` compositor boundary with fail-closed
   multi-output coverage and lock-confirmation readiness reporting, isolated in
   the independently tested `genkan-session-lock` workspace crate.
@@ -45,6 +47,15 @@ Select another UI state with `PREVIEW`:
 PREVIEW=users make dev
 PREVIEW=visible-prompt make dev
 PREVIEW=power-confirmation make dev
+```
+
+Preview the matching lock authentication states without acquiring a compositor
+session lock or contacting PAM:
+
+```sh
+make lock-dev
+LOCK_PREVIEW=challenge make lock-dev
+LOCK_PREVIEW=failure make lock-dev
 ```
 
 To preview the real wallpaper animation while keeping authentication and power
