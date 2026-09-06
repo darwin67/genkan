@@ -1,5 +1,4 @@
-use iced::overlay::menu;
-use iced::widget::{button, container, pick_list, scrollable, text_input};
+use iced::widget::{button, container, scrollable, text_input};
 use iced::{Background, Border, Color, Shadow, Theme};
 
 const CONTROL_RADIUS: f32 = 18.0;
@@ -79,32 +78,46 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
-pub fn selector(_theme: &Theme, status: pick_list::Status, focused: bool) -> pick_list::Style {
-    let hovered = matches!(status, pick_list::Status::Hovered);
-    let opened = matches!(status, pick_list::Status::Opened { .. });
-    pick_list::Style {
+pub fn inline_selector(
+    _theme: &Theme,
+    status: button::Status,
+    focused: bool,
+    opened: bool,
+) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
         text_color: primary_text(),
-        placeholder_color: Color::from_rgba8(255, 255, 255, 0.72),
-        handle_color: Color::from_rgba8(255, 255, 255, 0.8),
-        background: material(if opened {
+        background: Some(material(if opened {
             0.76
         } else if hovered {
             0.68
         } else {
             0.58
-        }),
+        })),
         border: outline(if hovered { 0.5 } else { 0.28 }, opened || focused),
+        ..Default::default()
     }
 }
 
-pub fn selector_menu(_theme: &Theme) -> menu::Style {
-    menu::Style {
-        background: Background::Color(Color::from_rgb8(22, 27, 56)),
+pub fn inline_selector_menu(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb8(22, 27, 56))),
         border: outline(0.28, false),
+        ..Default::default()
+    }
+}
+
+pub fn inline_selector_option(
+    _theme: &Theme,
+    status: button::Status,
+    selected: bool,
+) -> button::Style {
+    button::Style {
+        background: (selected || matches!(status, button::Status::Hovered))
+            .then_some(Background::Color(Color::from_rgb8(56, 92, 204))),
         text_color: primary_text(),
-        selected_text_color: primary_text(),
-        selected_background: Background::Color(Color::from_rgb8(56, 92, 204)),
-        shadow: Default::default(),
+        border: Border::default(),
+        ..Default::default()
     }
 }
 
@@ -399,8 +412,12 @@ mod tests {
     }
 
     fn assert_overlay_contrast(theme: &Theme, underlay: Color, blend_space: BlendSpace) {
-        let menu = selector_menu(theme);
-        let menu_surface = composite(background_color(menu.background), underlay, blend_space);
+        let menu = inline_selector_menu(theme);
+        let menu_surface = composite(
+            background_color(menu.background.expect("selector menu material")),
+            underlay,
+            blend_space,
+        );
         assert_boundary_contrast(
             menu.border,
             underlay,
@@ -409,19 +426,14 @@ mod tests {
             blend_space,
             "selector menu inner boundary",
         );
-        assert_text_contrast(
-            menu.text_color,
-            menu_surface,
-            blend_space,
-            "selector menu text",
-        );
+        let selected = inline_selector_option(theme, button::Status::Active, true);
         let selected_surface = composite(
-            background_color(menu.selected_background),
+            background_color(selected.background.expect("selected option material")),
             menu_surface,
             blend_space,
         );
         assert_text_contrast(
-            menu.selected_text_color,
+            selected.text_color,
             selected_surface,
             blend_space,
             "selected menu text",
@@ -532,33 +544,18 @@ mod tests {
                     }
                 }
 
-                for status in [
-                    pick_list::Status::Active,
-                    pick_list::Status::Hovered,
-                    pick_list::Status::Opened { is_hovered: false },
+                for (status, opened) in [
+                    (button::Status::Active, false),
+                    (button::Status::Hovered, false),
+                    (button::Status::Active, true),
                 ] {
-                    let style = selector(&theme, status, false);
-                    let surface =
-                        composite(background_color(style.background), backdrop, blend_space);
+                    let style = inline_selector(&theme, status, false, opened);
+                    let surface = composite(
+                        background_color(style.background.expect("selector material")),
+                        backdrop,
+                        blend_space,
+                    );
                     assert_text_contrast(style.text_color, surface, blend_space, "selector text");
-                    assert_text_contrast(
-                        style.placeholder_color,
-                        surface,
-                        blend_space,
-                        "selector placeholder",
-                    );
-                    assert_boundary_contrast(
-                        Border {
-                            color: style.handle_color,
-                            width: 1.0,
-                            ..Border::default()
-                        },
-                        surface,
-                        surface,
-                        surface,
-                        blend_space,
-                        "selector handle",
-                    );
                     assert_boundary_contrast(
                         style.border,
                         backdrop,
@@ -640,7 +637,7 @@ mod tests {
                     input(&theme, text_input::Status::Focused { is_hovered: false });
                 let focused_account = account_tile(&theme, button::Status::Active, true);
                 let focused_primary = primary_button(&theme, button::Status::Active, true);
-                let focused_selector = selector(&theme, pick_list::Status::Active, true);
+                let focused_selector = inline_selector(&theme, button::Status::Active, true, false);
                 for (border, background) in [
                     (focused_input.border, focused_input.background),
                     (
@@ -651,7 +648,10 @@ mod tests {
                         focused_primary.border,
                         focused_primary.background.expect("primary material"),
                     ),
-                    (focused_selector.border, focused_selector.background),
+                    (
+                        focused_selector.border,
+                        focused_selector.background.expect("selector material"),
+                    ),
                 ] {
                     let surface = composite(background_color(background), backdrop, blend_space);
                     assert_boundary_contrast(
@@ -741,13 +741,9 @@ mod tests {
         let focused_input = input(&theme, text_input::Status::Focused { is_hovered: false });
         let focused_account = account_tile(&theme, button::Status::Active, true);
         let focused_dialog = dialog_button(&theme, button::Status::Active, true, false);
-        let opened_selector = selector(
-            &theme,
-            pick_list::Status::Opened { is_hovered: false },
-            false,
-        );
+        let opened_selector = inline_selector(&theme, button::Status::Active, false, true);
         let dialog = dialog(&theme);
-        let selector_menu = selector_menu(&theme);
+        let selector_menu = inline_selector_menu(&theme);
 
         assert_eq!(active_input.border.radius, CONTROL_RADIUS.into());
         assert_eq!(
@@ -789,12 +785,8 @@ mod tests {
     #[test]
     fn opened_selector_is_emphasized_without_claiming_keyboard_focus() {
         let theme = Theme::Dark;
-        let closed = selector(&theme, pick_list::Status::Active, false);
-        let opened = selector(
-            &theme,
-            pick_list::Status::Opened { is_hovered: false },
-            false,
-        );
+        let closed = inline_selector(&theme, button::Status::Active, false, false);
+        let opened = inline_selector(&theme, button::Status::Active, false, true);
 
         assert_eq!(closed.border.width, 1.0);
         assert_eq!(opened.border.width, EMPHASIS_WIDTH);
@@ -804,7 +796,7 @@ mod tests {
     #[test]
     fn logical_focus_is_visible_on_non_focusable_iced_controls() {
         let theme = Theme::Dark;
-        let selector = selector(&theme, pick_list::Status::Active, true);
+        let selector = inline_selector(&theme, button::Status::Active, true, false);
         let primary = primary_button(&theme, button::Status::Active, true);
         let secondary = secondary_button(&theme, button::Status::Active, true);
 

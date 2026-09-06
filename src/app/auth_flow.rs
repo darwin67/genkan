@@ -93,7 +93,10 @@ impl App {
             return Task::none();
         };
         match self.apply_auth_transition(transition) {
-            AuthEffect::Prompt { .. } => self.focus_input(),
+            AuthEffect::Prompt { .. } => {
+                self.authentication_layout = Some(super::view::ScreenLayout::Flow);
+                self.focus_input()
+            }
             AuthEffect::Acknowledge { error, message } => {
                 self.set_auth_notice(message, error);
                 let Some(client) = self.client.clone() else {
@@ -114,6 +117,9 @@ impl App {
 
     pub(super) fn apply_auth_transition(&mut self, transition: AuthTransition) -> AuthEffect {
         self.phase = transition.phase;
+        if self.phase != Phase::WaitingForInput {
+            self.authentication_layout = None;
+        }
         transition.effect
     }
 

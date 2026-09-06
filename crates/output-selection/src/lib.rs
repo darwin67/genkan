@@ -67,4 +67,21 @@ mod tests {
         assert_eq!(select([(7, None)], None), Some(7));
         assert_eq!(select::<u32>([], None), None);
     }
+
+    #[test]
+    fn discovery_order_does_not_change_named_selection() {
+        let first = [(1, Some("DP-2")), (2, Some("eDP-1")), (3, Some("DP-1"))];
+        let reversed = [(3, Some("DP-1")), (2, Some("eDP-1")), (1, Some("DP-2"))];
+
+        assert_eq!(select(first, None), Some(3));
+        assert_eq!(select(reversed, None), Some(3));
+    }
+
+    #[test]
+    fn named_fallback_precedes_unnamed_outputs() {
+        let outputs = [(1, None), (2, Some("eDP-1"))];
+
+        assert_eq!(select(outputs, None), Some(2));
+        assert_eq!(select(outputs, Some("DP-1")), Some(2));
+    }
 }

@@ -18,6 +18,7 @@ use super::{App, Message, PowerState};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Fixture {
     Selected,
+    SessionMenu,
     SecretPrompt,
     Users,
     DuplicateNames,
@@ -58,17 +59,33 @@ pub(super) fn build(
     username: Option<String>,
     display_name: Option<String>,
     wallpaper_settings: wallpaper::Settings,
+    output_monitor: Option<crate::outputs::Monitor>,
 ) -> (App, Task<Message>) {
     let input_id = Id::new("authentication-input");
     let state = State::new(fixture, username, display_name);
-    let selected_session = state.session.clone();
-    let sessions = state.session.into_iter().collect();
+    let mut selected_session = state.session.clone();
+    let mut sessions = state.session.into_iter().collect::<Vec<_>>();
+    if fixture == Fixture::SessionMenu {
+        let shared_prefix = "SessionWithACommonUnbrokenPrefix".repeat(12);
+        sessions[0].name = format!("{shared_prefix}Selected");
+        sessions[0].session_id = format!("{shared_prefix}preview");
+        selected_session = Some(sessions[0].clone());
+        sessions.push(Session {
+            name: format!("{shared_prefix}Alternate"),
+            command: vec!["alternate-session".into()],
+            session_id: format!("{shared_prefix}alternate"),
+            desktop_names: vec!["Alternate".into()],
+        });
+    }
     let (username, display_name) = state
         .selected
         .as_ref()
         .map(|account| (account.username.clone(), account.display_name.clone()))
         .unwrap_or_else(|| (String::new(), "Select a user".into()));
     let power_state = state.power_state;
+    let authentication_region = output_monitor
+        .as_ref()
+        .and_then(crate::outputs::Monitor::region);
     let confirming_power = matches!(power_state, PowerState::Confirming(_));
     let conversation = Conversation::for_preview(
         state.input,
@@ -100,8 +117,7 @@ pub(super) fn build(
         client: None,
         sessions,
         selected_session,
-        session_menu_open: false,
-        session_selector_key: 0,
+        session_menu_open: fixture == Fixture::SessionMenu,
         wallpaper: wallpaper::State::start(wallpaper_settings),
         started_at: Instant::now(),
         now: preview_now(),
@@ -109,11 +125,17 @@ pub(super) fn build(
         selection_session_cancelled: false,
         closing: None,
         preview: true,
-        authentication_region: None,
+        output_monitor,
+        authentication_region,
+        window_size: None,
+        authentication_layout: (state.phase == Phase::WaitingForInput)
+            .then_some(super::view::ScreenLayout::Flow),
     };
     let base_focus = app.focus_order().first().copied();
     app.power_state = power_state;
-    let task = if confirming_power {
+    let task = if fixture == Fixture::SessionMenu {
+        app.set_focus(FocusTarget::Session)
+    } else if confirming_power {
         app.focus_before_modal = base_focus;
         app.set_focus(FocusTarget::DialogCancel)
     } else if app.phase == Phase::WaitingForInput {
@@ -153,7 +175,7 @@ impl State {
         };
 
         match fixture {
-            Fixture::Selected | Fixture::SecretPrompt => {}
+            Fixture::Selected | Fixture::SessionMenu | Fixture::SecretPrompt => {}
             Fixture::Users => state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")])),
             Fixture::DuplicateNames => state.select_accounts(accounts([
                 ("alex", "Alex Morgan"),
@@ -289,6 +311,7 @@ mod tests {
                 override_path: None,
                 animate: false,
             },
+            None,
         )
     }
 
@@ -343,6 +366,7 @@ mod tests {
                 override_path: Some(path.clone()),
                 animate: true,
             },
+            None,
         );
 
         assert!(app.preview);
@@ -431,6 +455,11 @@ mod tests {
 
         let (secret, _) = build_fixture(Fixture::SecretPrompt);
         assert!(secret.conversation.is_secret());
+        assert_eq!(
+            secret.authentication_layout,
+            Some(crate::app::view::ScreenLayout::Flow),
+            "preview prompts must exercise the production layout latch"
+        );
 
         let (consecutive, _) = build_fixture(Fixture::ConsecutiveMessages);
         assert_eq!(
@@ -481,5 +510,20 @@ mod tests {
             power.focus_before_modal,
             Some(FocusTarget::AuthenticationInput)
         );
+    }
+
+    #[test]
+    fn session_menu_fixture_uses_an_inline_multi_session_list() {
+        let (app, _) = build_fixture(Fixture::SessionMenu);
+
+        assert!(app.session_menu_open);
+        assert_eq!(app.sessions.len(), 2);
+        assert!(app.sessions.iter().all(|session| session.name.len() > 256));
+        assert_eq!(
+            app.sessions[0].name.trim_end_matches("Selected"),
+            app.sessions[1].name.trim_end_matches("Alternate")
+        );
+        assert_ne!(app.sessions[0].session_id, app.sessions[1].session_id);
+        assert!(app.can_select_session());
     }
 }
