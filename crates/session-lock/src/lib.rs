@@ -128,7 +128,14 @@ pub enum Input {
 }
 
 pub trait Presentation {
+    /// Receives latency-sensitive presentation changes. This is polled every
+    /// dispatch and must own authentication progress.
     fn receive_latest(&mut self) -> Refresh;
+    /// Receives media updates that may be deferred while a single output's
+    /// latency-sensitive redraw is blocked.
+    fn receive_deferred(&mut self) -> Refresh {
+        Refresh::Unchanged
+    }
     fn frame(&self) -> Option<PresentationFrame>;
     fn lock_confirmed(&mut self) {}
     /// Applies user input and reports whether overlay pixels changed.

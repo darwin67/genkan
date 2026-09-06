@@ -5,6 +5,7 @@ use std::time::Duration;
 #[cfg(feature = "lock-test")]
 use std::time::Instant;
 
+use bytes::Bytes;
 use calloop::EventLoop;
 use calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
@@ -67,8 +68,15 @@ struct Surface {
     scale: i32,
     geometry_generation: u64,
     buffers: Vec<SurfaceBuffer>,
+    overlay_cache: Option<CachedOverlay>,
     redraw: RedrawState,
     first_presented: bool,
+}
+
+struct CachedOverlay {
+    source: RgbaFrame,
+    size: (u32, u32),
+    frame: RgbaFrame,
 }
 
 struct SurfaceBuffer {
@@ -79,10 +87,52 @@ struct SurfaceBuffer {
     pool: SlotPool,
 }
 
+impl Surface {
+    fn scaled_overlay(
+        &mut self,
+        frame: Option<&PresentationFrame>,
+        width: u32,
+        height: u32,
+    ) -> Option<RgbaFrame> {
+        let frame = frame?;
+        let target = overlay_geometry(frame, width, height)?.target;
+        let size = (target.width, target.height);
+        if self
+            .overlay_cache
+            .as_ref()
+            .is_none_or(|cache| !cache.matches(&frame.overlay, size))
+        {
+            self.overlay_cache = Some(CachedOverlay {
+                source: frame.overlay.clone(),
+                size,
+                frame: scale_overlay(&frame.overlay, target.width, target.height),
+            });
+        }
+        self.overlay_cache.as_ref().map(|cache| cache.frame.clone())
+    }
+}
+
+impl CachedOverlay {
+    fn matches(&self, source: &RgbaFrame, size: (u32, u32)) -> bool {
+        self.size == size
+            && self.source.dimensions() == source.dimensions()
+            && self.source.pixels.len() == source.pixels.len()
+            && self.source.pixels.as_ptr() == source.pixels.as_ptr()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RedrawKind {
     Overlay,
     Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayProgress {
+    None,
+    Partial,
+    Full,
+    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +161,14 @@ impl RedrawState {
         self.geometry_pending = true;
     }
 
+    fn request_media(&mut self) -> bool {
+        if self.redraw_pending == Some(RedrawKind::Overlay) {
+            false
+        } else {
+            self.request(RedrawKind::Full)
+        }
+    }
+
     fn should_render(&self, current_buffer_count: usize, reusable: bool) -> bool {
         self.redraw_pending.is_some()
             && (self.geometry_pending
@@ -129,6 +187,77 @@ impl RedrawState {
 
     fn frame_done(&mut self) {
         self.frame_pending = false;
+    }
+}
+
+fn overlay_progress(
+    redraw: &RedrawState,
+    buffer_count: usize,
+    reusable: bool,
+    current_background_reusable: bool,
+    include_pending_full: bool,
+) -> OverlayProgress {
+    match redraw.redraw_pending {
+        Some(RedrawKind::Overlay) => {}
+        Some(RedrawKind::Full) if include_pending_full => {
+            return if redraw.should_render(buffer_count, reusable) {
+                OverlayProgress::Full
+            } else {
+                OverlayProgress::Blocked
+            };
+        }
+        Some(RedrawKind::Full) | None => return OverlayProgress::None,
+    }
+    if !redraw.should_render(buffer_count, reusable) {
+        return OverlayProgress::Blocked;
+    }
+    if redraw.geometry_pending || !current_background_reusable {
+        OverlayProgress::Full
+    } else {
+        OverlayProgress::Partial
+    }
+}
+
+#[derive(Default)]
+struct OverlayProgressSummary {
+    partial: bool,
+    full: bool,
+    blocked: bool,
+    unblocked: bool,
+}
+
+fn should_poll_deferred(priority: Refresh, progress: &OverlayProgressSummary) -> bool {
+    match priority {
+        Refresh::Unchanged => {
+            if progress.blocked {
+                progress.unblocked
+            } else {
+                !progress.partial || progress.full
+            }
+        }
+        Refresh::Overlay => progress.full || (progress.blocked && progress.unblocked),
+        Refresh::Frame | Refresh::Failed => false,
+    }
+}
+
+fn should_allow_overlay_full(poll_deferred: bool, progress: &OverlayProgressSummary) -> bool {
+    poll_deferred || progress.full
+}
+
+fn select_reusable_buffer(
+    requested: RedrawKind,
+    background_generation: u64,
+    reusable: &[(usize, u64)],
+) -> Option<usize> {
+    if requested == RedrawKind::Overlay {
+        reusable
+            .iter()
+            .find_map(|(index, generation)| {
+                (*generation == background_generation).then_some(*index)
+            })
+            .or_else(|| reusable.first().map(|(index, _)| *index))
+    } else {
+        reusable.first().map(|(index, _)| *index)
     }
 }
 
@@ -254,7 +383,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
             runtime.fail(error);
             break;
         }
-        let refresh = refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state);
+        let priority = refresh_priority(runtime.presentation.as_mut(), &mut runtime.state);
         if runtime.presentation.take_authorization() {
             let action = runtime
                 .state
@@ -264,31 +393,26 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         if runtime.terminate {
             break;
         }
-        match refresh {
-            Refresh::Unchanged => {}
-            Refresh::Frame => {
-                record_full_frame(
-                    &mut runtime.presentation_geometry,
-                    &mut runtime.background_generation,
-                    frame_geometry(runtime.presentation.frame().as_ref()),
-                );
-                runtime.redraw_all(&qh, RedrawKind::Full);
+        runtime.apply_refresh(&qh, priority);
+        let progress = match runtime.commit_partial_overlays(&qh) {
+            Ok(progress) => progress,
+            Err(error) => {
+                runtime.fail(error);
+                break;
             }
-            Refresh::Overlay => {
-                let kind = runtime.classify_overlay_redraw();
-                runtime.redraw_all(&qh, kind);
-            }
-            Refresh::Failed => {
-                eprintln!("genkan lock: presentation failed; retaining opaque fallback");
-                record_full_frame(
-                    &mut runtime.presentation_geometry,
-                    &mut runtime.background_generation,
-                    frame_geometry(runtime.presentation.frame().as_ref()),
-                );
-                runtime.redraw_all(&qh, RedrawKind::Full);
-            }
+        };
+        // A media frame may be adopted once every input update can either be
+        // included in one coalesced full repaint or has already been committed
+        // as a partial repaint. A callback- or buffer-blocked output retains
+        // overlay priority across dispatch iterations.
+        let poll_deferred = should_poll_deferred(priority, &progress);
+        if poll_deferred {
+            let refresh = refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state);
+            runtime.apply_refresh(&qh, refresh);
         }
-        if let Err(error) = runtime.maintain_surfaces(&qh) {
+        if let Err(error) =
+            runtime.maintain_surfaces(&qh, should_allow_overlay_full(poll_deferred, &progress))
+        {
             runtime.fail(error);
             break;
         }
@@ -339,6 +463,7 @@ impl Runtime {
             scale: 1,
             geometry_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
+            overlay_cache: None,
             redraw: RedrawState {
                 redraw_pending: Some(RedrawKind::Full),
                 ..RedrawState::default()
@@ -350,7 +475,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn redraw_all(&mut self, qh: &QueueHandle<Self>, kind: RedrawKind) {
+    fn redraw_media(&mut self, qh: &QueueHandle<Self>) {
         if self.terminate {
             return;
         }
@@ -359,7 +484,7 @@ impl Runtime {
             .iter_mut()
             .enumerate()
             .filter_map(|(index, surface)| {
-                (surface.size.is_some() && surface.redraw.request(kind)).then_some(index)
+                (surface.size.is_some() && surface.redraw.request_media()).then_some(index)
             })
             .collect::<Vec<_>>();
         for index in configured {
@@ -370,7 +495,11 @@ impl Runtime {
         }
     }
 
-    fn maintain_surfaces(&mut self, qh: &QueueHandle<Self>) -> Result<(), Error> {
+    fn maintain_surfaces(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        allow_overlay_full: bool,
+    ) -> Result<(), Error> {
         let mut ready_to_redraw = Vec::new();
         for (index, surface) in self.surfaces.iter_mut().enumerate() {
             let Some((width, height)) = surface.size else {
@@ -386,12 +515,25 @@ impl Runtime {
                 item.size == configured_size
                     && item.geometry_generation == surface.geometry_generation
             });
-            let reusable = surface.buffers.iter_mut().any(|item| {
-                item.size == configured_size && item.pool.canvas(&item.buffer).is_some()
-            });
+            let mut reusable = false;
+            let mut current = false;
+            for buffer in &mut surface.buffers {
+                if buffer.size == configured_size && buffer.pool.canvas(&buffer.buffer).is_some() {
+                    reusable = true;
+                    current |= buffer.background_generation == self.background_generation;
+                }
+            }
+            let progress = overlay_progress(
+                &surface.redraw,
+                surface.buffers.len(),
+                reusable,
+                current,
+                false,
+            );
             if surface
                 .redraw
                 .should_render(surface.buffers.len(), reusable)
+                && (allow_overlay_full || progress != OverlayProgress::Full)
             {
                 ready_to_redraw.push(index);
             }
@@ -400,6 +542,87 @@ impl Runtime {
             self.render(index, qh)?;
         }
         Ok(())
+    }
+
+    fn commit_partial_overlays(
+        &mut self,
+        qh: &QueueHandle<Self>,
+    ) -> Result<OverlayProgressSummary, Error> {
+        let mut partial = Vec::new();
+        let mut summary = OverlayProgressSummary::default();
+        for (index, surface) in self.surfaces.iter_mut().enumerate() {
+            let Some((width, height)) = surface.size else {
+                continue;
+            };
+            let configured_size = buffer_size(
+                width,
+                height,
+                surface.scale.max(1) as u32,
+                wl_output::Transform::Normal,
+            )?;
+            surface.buffers.retain(|buffer| {
+                buffer.size == configured_size
+                    && buffer.geometry_generation == surface.geometry_generation
+            });
+            let mut reusable = false;
+            let mut current = false;
+            for buffer in &mut surface.buffers {
+                if buffer.pool.canvas(&buffer.buffer).is_some() {
+                    reusable = true;
+                    current |= buffer.background_generation == self.background_generation;
+                }
+            }
+            match overlay_progress(
+                &surface.redraw,
+                surface.buffers.len(),
+                reusable,
+                current,
+                true,
+            ) {
+                OverlayProgress::None => summary.unblocked = true,
+                OverlayProgress::Partial => {
+                    summary.unblocked = true;
+                    summary.partial = true;
+                    partial.push(index);
+                }
+                OverlayProgress::Full => {
+                    summary.unblocked = true;
+                    summary.full = true;
+                }
+                OverlayProgress::Blocked => summary.blocked = true,
+            }
+        }
+        for index in partial {
+            self.render(index, qh)?;
+        }
+        Ok(summary)
+    }
+
+    fn apply_refresh(&mut self, qh: &QueueHandle<Self>, refresh: Refresh) {
+        match refresh {
+            Refresh::Unchanged => {}
+            Refresh::Frame => {
+                record_full_frame(
+                    &mut self.presentation_geometry,
+                    &mut self.background_generation,
+                    frame_geometry(self.presentation.frame().as_ref()),
+                );
+                self.redraw_media(qh);
+            }
+            Refresh::Overlay => {
+                let kind = self.classify_overlay_redraw();
+                self.redraw_all_surfaces(kind);
+            }
+            Refresh::Failed => {
+                eprintln!("genkan lock: presentation failed; retaining opaque fallback");
+                record_full_frame(
+                    &mut self.presentation_geometry,
+                    &mut self.background_generation,
+                    frame_geometry(self.presentation.frame().as_ref()),
+                );
+                self.redraw_media(qh);
+            }
+        }
     }
 
     fn render(&mut self, index: usize, qh: &QueueHandle<Self>) -> Result<(), Error> {
@@ -430,13 +653,22 @@ impl Runtime {
         let frame = self.presentation.frame();
         let background_generation = self.background_generation;
         let surface = &mut self.surfaces[index];
+        let scaled_overlay = surface.scaled_overlay(frame.as_ref(), buffer_width, buffer_height);
         surface.buffers.retain(|item| {
             item.size == (buffer_width, buffer_height)
                 && item.geometry_generation == geometry_generation
         });
-        let reusable = surface.buffers.iter_mut().position(|item| {
-            item.size == (buffer_width, buffer_height) && item.pool.canvas(&item.buffer).is_some()
-        });
+        let reusable = surface
+            .buffers
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                (item.size == (buffer_width, buffer_height)
+                    && item.pool.canvas(&item.buffer).is_some())
+                .then_some((index, item.background_generation))
+            })
+            .collect::<Vec<_>>();
+        let reusable = select_reusable_buffer(requested_redraw, background_generation, &reusable);
         let mut damaged = Region::full(buffer_width, buffer_height);
         let buffer_index = if let Some(buffer_index) = reusable {
             let SurfaceBuffer {
@@ -459,9 +691,22 @@ impl Runtime {
                 buffer_height,
             );
             if !full_redraw {
-                draw_opaque_region(canvas, buffer_width, buffer_height, frame.as_ref(), damaged);
+                draw_opaque_region_cached(
+                    canvas,
+                    buffer_width,
+                    buffer_height,
+                    frame.as_ref(),
+                    scaled_overlay.as_ref(),
+                    damaged,
+                );
             } else {
-                draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
+                draw_opaque_cached(
+                    canvas,
+                    buffer_width,
+                    buffer_height,
+                    frame.as_ref(),
+                    scaled_overlay.as_ref(),
+                );
                 *rendered_background = background_generation;
             }
             buffer_index
@@ -483,7 +728,13 @@ impl Runtime {
                 .map_err(|error| {
                     Error::Runtime(format!("could not allocate lock buffer: {error}"))
                 })?;
-            draw_opaque(canvas, buffer_width, buffer_height, frame.as_ref());
+            draw_opaque_cached(
+                canvas,
+                buffer_width,
+                buffer_height,
+                frame.as_ref(),
+                scaled_overlay.as_ref(),
+            );
             surface.buffers.push(SurfaceBuffer {
                 size: (buffer_width, buffer_height),
                 geometry_generation,
@@ -1054,9 +1305,27 @@ fn buffer_size(
 }
 
 fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&PresentationFrame>) {
-    draw_opaque_region(target, width, height, frame, Region::full(width, height));
+    draw_opaque_cached(target, width, height, frame, None);
 }
 
+fn draw_opaque_cached(
+    target: &mut [u8],
+    width: u32,
+    height: u32,
+    frame: Option<&PresentationFrame>,
+    scaled_overlay: Option<&RgbaFrame>,
+) {
+    draw_opaque_region_cached(
+        target,
+        width,
+        height,
+        frame,
+        scaled_overlay,
+        Region::full(width, height),
+    );
+}
+
+#[cfg(test)]
 fn draw_opaque_region(
     target: &mut [u8],
     width: u32,
@@ -1064,57 +1333,293 @@ fn draw_opaque_region(
     frame: Option<&PresentationFrame>,
     region: Region,
 ) {
+    draw_opaque_region_cached(target, width, height, frame, None, region);
+}
+
+fn draw_opaque_region_cached(
+    target: &mut [u8],
+    width: u32,
+    height: u32,
+    frame: Option<&PresentationFrame>,
+    scaled_overlay: Option<&RgbaFrame>,
+    region: Region,
+) {
     let overlay_geometry = frame.and_then(|frame| overlay_geometry(frame, width, height));
-    let background_geometry = frame.and_then(|frame| {
-        let background = frame.background.as_ref()?;
-        let geometry = cover_geometry(background.width, background.height, width, height)?;
-        Some((background, geometry))
-    });
+    let background = BackgroundSampler::new(
+        frame.and_then(|frame| frame.background.as_ref()),
+        width,
+        height,
+    );
     let end_x = region.x.saturating_add(region.width).min(width);
     let end_y = region.y.saturating_add(region.height).min(height);
     for y in region.y..end_y {
+        let source_row = background.source_row(y);
         for x in region.x..end_x {
-            let background = background_geometry
-                .as_ref()
-                .and_then(|(background, geometry)| {
-                    frame_pixel(
-                        background,
-                        source_coordinate(x, geometry.0, geometry.2, background.width),
-                        source_coordinate(y, geometry.1, geometry.3, background.height),
-                    )
-                })
-                .unwrap_or(FALLBACK_RGB);
-            let overlay = frame
-                .zip(overlay_geometry.as_ref())
-                .and_then(|(frame, geometry)| geometry.sample(frame, x, y));
-            let [red, green, blue] =
-                overlay.map_or(background, |overlay| blend_rgb(background, overlay));
+            let [red, green, blue] = background.pixel(source_row, x);
+            let offset = ((y as usize * width as usize) + x as usize) * 4;
+            target[offset..offset + 4].copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
+        }
+    }
+
+    let Some((frame, geometry)) = frame.zip(overlay_geometry.as_ref()) else {
+        return;
+    };
+    let Some(overlay_region) = intersect(region, geometry.target) else {
+        return;
+    };
+    if let Some(overlay) = scaled_overlay {
+        for y in overlay_region.y..overlay_region.y + overlay_region.height {
+            let source_row = background.source_row(y);
+            let overlay_y = y - geometry.target.y;
+            for x in overlay_region.x..overlay_region.x + overlay_region.width {
+                let overlay_x = x - geometry.target.x;
+                let offset = (overlay_y as usize * overlay.width as usize + overlay_x as usize) * 4;
+                let overlay = <[u8; 4]>::try_from(&overlay.pixels[offset..offset + 4]).unwrap();
+                if overlay[3] == 0 {
+                    continue;
+                }
+                let background = background.pixel(source_row, x);
+                let [red, green, blue] = blend_rgb(background, overlay);
+                let offset = ((y as usize * width as usize) + x as usize) * 4;
+                target[offset..offset + 4].copy_from_slice(&[
+                    dim(blue),
+                    dim(green),
+                    dim(red),
+                    u8::MAX,
+                ]);
+            }
+        }
+        return;
+    }
+    let horizontal = filtered_axis(frame.overlay.width, geometry.target.width);
+    let vertical = filtered_axis(frame.overlay.height, geometry.target.height);
+    for y in overlay_region.y..overlay_region.y + overlay_region.height {
+        let source_row = background.source_row(y);
+        let vertical_samples = vertical.coordinate((y - geometry.target.y) as usize);
+        for x in overlay_region.x..overlay_region.x + overlay_region.width {
+            let horizontal_samples = horizontal.coordinate((x - geometry.target.x) as usize);
+            let overlay = filtered_pixel(&frame.overlay, horizontal_samples, vertical_samples);
+            if overlay[3] == 0 {
+                continue;
+            }
+            let background = background.pixel(source_row, x);
+            let [red, green, blue] = blend_rgb(background, overlay);
             let offset = ((y as usize * width as usize) + x as usize) * 4;
             target[offset..offset + 4].copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct OverlayGeometry {
-    canvas_x: u32,
-    canvas_y: u32,
-    canvas_width: u32,
-    canvas_height: u32,
-    target: Region,
+struct BackgroundSampler<'a> {
+    frame: Option<&'a RgbaFrame>,
+    columns: Vec<usize>,
+    crop_y: u128,
+    scaled_height: u128,
 }
 
-impl OverlayGeometry {
-    fn sample(&self, frame: &PresentationFrame, x: u32, y: u32) -> Option<[u8; 4]> {
-        let canvas_x = x.checked_sub(self.canvas_x)?;
-        let canvas_y = y.checked_sub(self.canvas_y)?;
-        let source_x = u64::from(canvas_x) * u64::from(frame.width) / u64::from(self.canvas_width);
-        let source_y =
-            u64::from(canvas_y) * u64::from(frame.height) / u64::from(self.canvas_height);
-        let overlay_x = u32::try_from(source_x).ok()?.checked_sub(frame.overlay_x)?;
-        let overlay_y = u32::try_from(source_y).ok()?.checked_sub(frame.overlay_y)?;
-        frame_pixel_rgba(&frame.overlay, overlay_x, overlay_y)
+impl<'a> BackgroundSampler<'a> {
+    fn new(frame: Option<&'a RgbaFrame>, width: u32, height: u32) -> Self {
+        let Some(frame) = frame else {
+            return Self {
+                frame: None,
+                columns: Vec::new(),
+                crop_y: 0,
+                scaled_height: 1,
+            };
+        };
+        let Some((crop_x, crop_y, scaled_width, scaled_height)) =
+            cover_geometry(frame.width, frame.height, width, height)
+        else {
+            return Self {
+                frame: None,
+                columns: Vec::new(),
+                crop_y: 0,
+                scaled_height: 1,
+            };
+        };
+        let columns = (0..width)
+            .map(|x| {
+                usize::try_from(source_coordinate(x, crop_x, scaled_width, frame.width)).unwrap()
+                    * 4
+            })
+            .collect();
+        Self {
+            frame: Some(frame),
+            columns,
+            crop_y,
+            scaled_height,
+        }
     }
+
+    fn source_row(&self, y: u32) -> Option<usize> {
+        let frame = self.frame?;
+        Some(
+            usize::try_from(source_coordinate(
+                y,
+                self.crop_y,
+                self.scaled_height,
+                frame.height,
+            ))
+            .unwrap()
+                * frame.width as usize
+                * 4,
+        )
+    }
+
+    fn pixel(&self, source_row: Option<usize>, x: u32) -> [u8; 3] {
+        let Some((frame, source_row)) = self.frame.zip(source_row) else {
+            return FALLBACK_RGB;
+        };
+        let offset = source_row + self.columns[x as usize];
+        [
+            frame.pixels[offset],
+            frame.pixels[offset + 1],
+            frame.pixels[offset + 2],
+        ]
+    }
+}
+
+const FILTER_SCALE: u64 = 65_536;
+
+#[derive(Clone, Copy)]
+struct WeightedSample {
+    index: u32,
+    weight: u64,
+}
+
+struct FilteredAxis {
+    offsets: Vec<usize>,
+    samples: Vec<WeightedSample>,
+}
+
+impl FilteredAxis {
+    fn coordinate(&self, position: usize) -> &[WeightedSample] {
+        &self.samples[self.offsets[position]..self.offsets[position + 1]]
+    }
+}
+
+fn filtered_axis(source: u32, target: u32) -> FilteredAxis {
+    let mut offsets = Vec::with_capacity(target as usize + 1);
+    let mut samples = Vec::new();
+    for position in 0..target {
+        offsets.push(samples.len());
+        if source <= target {
+            let denominator = u64::from(target) * 2;
+            let centered = (u64::from(position) * 2 + 1)
+                .saturating_mul(u64::from(source))
+                .saturating_sub(u64::from(target));
+            let lower = (centered / denominator).min(u64::from(source - 1)) as u32;
+            let upper = lower.saturating_add(1).min(source - 1);
+            let upper_weight = if lower == upper {
+                0
+            } else {
+                (centered % denominator) * FILTER_SCALE / denominator
+            };
+            samples.push(WeightedSample {
+                index: lower,
+                weight: FILTER_SCALE - upper_weight,
+            });
+            if upper != lower && upper_weight != 0 {
+                samples.push(WeightedSample {
+                    index: upper,
+                    weight: upper_weight,
+                });
+            }
+        } else {
+            let start = u64::from(position) * u64::from(source) * FILTER_SCALE / u64::from(target);
+            let end =
+                u64::from(position + 1) * u64::from(source) * FILTER_SCALE / u64::from(target);
+            let span = end - start;
+            let first = start / FILTER_SCALE;
+            let last = (end - 1) / FILTER_SCALE;
+            for index in first..=last {
+                let sample_start = index * FILTER_SCALE;
+                let overlap_start = start.max(sample_start);
+                let overlap_end = end.min(sample_start + FILTER_SCALE);
+                let normalized_start = ((overlap_start - start) * FILTER_SCALE + span / 2) / span;
+                let normalized_end = ((overlap_end - start) * FILTER_SCALE + span / 2) / span;
+                let weight = normalized_end - normalized_start;
+                if weight != 0 {
+                    samples.push(WeightedSample {
+                        index: index as u32,
+                        weight,
+                    });
+                }
+            }
+        }
+    }
+    offsets.push(samples.len());
+    FilteredAxis { offsets, samples }
+}
+
+fn filtered_pixel(
+    frame: &RgbaFrame,
+    horizontal: &[WeightedSample],
+    vertical: &[WeightedSample],
+) -> [u8; 4] {
+    let mut alpha_weight = 0_u64;
+    let mut channels = [0_u64; 3];
+    for y in vertical {
+        for x in horizontal {
+            let offset = (y.index as usize * frame.width as usize + x.index as usize) * 4;
+            let weight = x.weight * y.weight;
+            let alpha = u64::from(frame.pixels[offset + 3]);
+            alpha_weight += alpha * weight;
+            for (channel, result) in channels.iter_mut().enumerate() {
+                *result += u64::from(frame.pixels[offset + channel]) * alpha * weight;
+            }
+        }
+    }
+    if alpha_weight == 0 {
+        return [0; 4];
+    }
+    let total_weight = FILTER_SCALE * FILTER_SCALE;
+    [
+        (channels[0] / alpha_weight) as u8,
+        (channels[1] / alpha_weight) as u8,
+        (channels[2] / alpha_weight) as u8,
+        ((alpha_weight + total_weight / 2) / total_weight) as u8,
+    ]
+}
+
+fn scale_overlay(frame: &RgbaFrame, width: u32, height: u32) -> RgbaFrame {
+    if frame.dimensions() == (width, height) {
+        return frame.clone();
+    }
+    let horizontal = filtered_axis(frame.width, width);
+    let vertical = filtered_axis(frame.height, height);
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height as usize {
+        let vertical = vertical.coordinate(y);
+        for x in 0..width as usize {
+            pixels.extend_from_slice(&filtered_pixel(frame, horizontal.coordinate(x), vertical));
+        }
+    }
+    RgbaFrame::new(width, height, Bytes::from(pixels)).expect("scaled overlay has valid dimensions")
+}
+
+fn intersect(first: Region, second: Region) -> Option<Region> {
+    let left = first.x.max(second.x);
+    let top = first.y.max(second.y);
+    let right = first
+        .x
+        .saturating_add(first.width)
+        .min(second.x.saturating_add(second.width));
+    let bottom = first
+        .y
+        .saturating_add(first.height)
+        .min(second.y.saturating_add(second.height));
+    (left < right && top < bottom).then_some(Region {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OverlayGeometry {
+    target: Region,
 }
 
 fn overlay_region(frame: Option<&PresentationFrame>, width: u32, height: u32) -> Option<Region> {
@@ -1169,10 +1674,6 @@ fn overlay_geometry(frame: &PresentationFrame, width: u32, height: u32) -> Optio
             u128::from(source_height),
         )?;
     Some(OverlayGeometry {
-        canvas_x,
-        canvas_y,
-        canvas_width,
-        canvas_height,
         target: Region {
             x: left,
             y: top,
@@ -1284,6 +1785,7 @@ fn source_coordinate(position: u32, crop: u128, scaled: u128, source: u32) -> u3
         as u32
 }
 
+#[cfg(test)]
 fn frame_pixel(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 3]> {
     if source_x >= frame.width || source_y >= frame.height {
         return None;
@@ -1295,22 +1797,6 @@ fn frame_pixel(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 3
         .and_then(|offset| usize::try_from(offset).ok())?;
     let pixel = frame.pixels.get(offset..offset.checked_add(3)?)?;
     Some([pixel[0], pixel[1], pixel[2]])
-}
-
-fn frame_pixel_rgba(frame: &RgbaFrame, source_x: u32, source_y: u32) -> Option<[u8; 4]> {
-    if source_x >= frame.width || source_y >= frame.height {
-        return None;
-    }
-    let offset = u64::from(source_y)
-        .checked_mul(u64::from(frame.width))?
-        .checked_add(u64::from(source_x))?
-        .checked_mul(4)
-        .and_then(|offset| usize::try_from(offset).ok())?;
-    frame
-        .pixels
-        .get(offset..offset.checked_add(4)?)?
-        .try_into()
-        .ok()
 }
 
 fn blend_rgb(background: [u8; 3], foreground: [u8; 4]) -> [u8; 3] {
@@ -1325,12 +1811,22 @@ fn dim(value: u8) -> u8 {
     ((u16::from(value) * DIM_NUMERATOR) / DIM_DENOMINATOR) as u8
 }
 
-fn refresh_presentation(presentation: &mut dyn Presentation, state: &mut State) -> Refresh {
+fn refresh_priority(presentation: &mut dyn Presentation, state: &mut State) -> Refresh {
     let refresh = presentation.receive_latest();
+    record_presentation_failure(refresh, state);
+    refresh
+}
+
+fn refresh_presentation(presentation: &mut dyn Presentation, state: &mut State) -> Refresh {
+    let refresh = presentation.receive_deferred();
+    record_presentation_failure(refresh, state);
+    refresh
+}
+
+fn record_presentation_failure(refresh: Refresh, state: &mut State) {
     if refresh == Refresh::Failed {
         let _ = state.update(Event::PresentationFailed);
     }
-    refresh
 }
 
 fn lock_confirmation_action(state: &mut State, blocked: bool) -> Action {
@@ -1421,12 +1917,56 @@ mod tests {
         }
     }
 
+    struct PollingPresentation {
+        latest_calls: usize,
+        deferred_calls: usize,
+    }
+
+    impl Presentation for PollingPresentation {
+        fn receive_latest(&mut self) -> Refresh {
+            self.latest_calls += 1;
+            Refresh::Overlay
+        }
+
+        fn receive_deferred(&mut self) -> Refresh {
+            self.deferred_calls += 1;
+            Refresh::Frame
+        }
+
+        fn frame(&self) -> Option<PresentationFrame> {
+            None
+        }
+    }
+
     fn state() -> State {
         State::new(super::super::Identity::new(
             1000,
             "alice".into(),
             "Alice".into(),
         ))
+    }
+
+    #[test]
+    fn latency_sensitive_polling_remains_independent_from_deferred_media() {
+        let mut presentation = PollingPresentation {
+            latest_calls: 0,
+            deferred_calls: 0,
+        };
+        let mut state = state();
+
+        assert_eq!(
+            refresh_priority(&mut presentation, &mut state),
+            Refresh::Overlay
+        );
+        assert_eq!(presentation.latest_calls, 1);
+        assert_eq!(presentation.deferred_calls, 0);
+
+        assert_eq!(
+            refresh_presentation(&mut presentation, &mut state),
+            Refresh::Frame
+        );
+        assert_eq!(presentation.latest_calls, 1);
+        assert_eq!(presentation.deferred_calls, 1);
     }
 
     #[test]
@@ -1462,6 +2002,108 @@ mod tests {
         redraw.committed(true);
         redraw.frame_done();
         assert!(!redraw.should_render(2, true));
+    }
+
+    #[test]
+    fn deferred_frames_wait_for_blocked_input_and_coalesce_required_full_repaints() {
+        let mut callback_blocked = RedrawState::default();
+        callback_blocked.request(RedrawKind::Full);
+        callback_blocked.committed(true);
+        callback_blocked.request(RedrawKind::Overlay);
+        assert_eq!(
+            overlay_progress(&callback_blocked, 2, true, true, false),
+            OverlayProgress::Blocked
+        );
+
+        let mut buffer_blocked = RedrawState::default();
+        buffer_blocked.request(RedrawKind::Overlay);
+        assert_eq!(
+            overlay_progress(&buffer_blocked, BUFFER_COUNT, false, false, false),
+            OverlayProgress::Blocked
+        );
+
+        let mut ready = RedrawState::default();
+        ready.request(RedrawKind::Overlay);
+        assert_eq!(
+            overlay_progress(&ready, 2, true, true, false),
+            OverlayProgress::Partial
+        );
+        assert_eq!(
+            overlay_progress(&ready, 2, true, false, false),
+            OverlayProgress::Full
+        );
+
+        let mut pending_full = RedrawState::default();
+        pending_full.request(RedrawKind::Full);
+        assert_eq!(
+            overlay_progress(&pending_full, 2, true, true, true),
+            OverlayProgress::Full
+        );
+        assert_eq!(
+            overlay_progress(&pending_full, 2, true, true, false),
+            OverlayProgress::None
+        );
+
+        assert!(!should_poll_deferred(
+            Refresh::Overlay,
+            &OverlayProgressSummary {
+                blocked: true,
+                ..OverlayProgressSummary::default()
+            }
+        ));
+        assert!(!should_poll_deferred(
+            Refresh::Overlay,
+            &OverlayProgressSummary {
+                partial: true,
+                ..OverlayProgressSummary::default()
+            }
+        ));
+        assert!(should_poll_deferred(
+            Refresh::Overlay,
+            &OverlayProgressSummary {
+                full: true,
+                ..OverlayProgressSummary::default()
+            }
+        ));
+        let mixed = OverlayProgressSummary {
+            full: true,
+            blocked: true,
+            ..OverlayProgressSummary::default()
+        };
+        assert!(should_poll_deferred(Refresh::Overlay, &mixed));
+        assert!(should_allow_overlay_full(false, &mixed));
+
+        let visible_updated = OverlayProgressSummary {
+            partial: true,
+            blocked: true,
+            unblocked: true,
+            ..OverlayProgressSummary::default()
+        };
+        assert!(should_poll_deferred(Refresh::Unchanged, &visible_updated));
+        assert!(should_poll_deferred(
+            Refresh::Unchanged,
+            &OverlayProgressSummary {
+                full: true,
+                ..OverlayProgressSummary::default()
+            }
+        ));
+        assert!(should_poll_deferred(
+            Refresh::Unchanged,
+            &OverlayProgressSummary {
+                blocked: true,
+                unblocked: true,
+                ..OverlayProgressSummary::default()
+            }
+        ));
+
+        let mut media_blocked = RedrawState::default();
+        media_blocked.request(RedrawKind::Overlay);
+        assert!(!media_blocked.request_media());
+        assert_eq!(
+            media_blocked.redraw_pending,
+            Some(RedrawKind::Overlay),
+            "media must not overwrite a blocked output's priority update"
+        );
     }
 
     #[test]
@@ -1504,6 +2146,24 @@ mod tests {
     }
 
     #[test]
+    fn overlay_redraw_prefers_a_reusable_current_background() {
+        let reusable = [(0, 6), (1, 7)];
+
+        assert_eq!(
+            select_reusable_buffer(RedrawKind::Overlay, 7, &reusable),
+            Some(1)
+        );
+        assert_eq!(
+            select_reusable_buffer(RedrawKind::Full, 7, &reusable),
+            Some(0)
+        );
+        assert_eq!(
+            select_reusable_buffer(RedrawKind::Overlay, 8, &reusable),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn rendering_forces_opaque_argb_and_dims_wallpaper() {
         let background = RgbaFrame {
             width: 1,
@@ -1532,6 +2192,88 @@ mod tests {
         draw_opaque(&mut target, 2, 1, Some(&frame));
 
         assert_eq!(target, [0, 0, 80, 255, 160, 0, 0, 255]);
+    }
+
+    #[test]
+    fn scaled_overlays_are_filtered_instead_of_pixel_doubled() {
+        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 255])).unwrap();
+        let overlay =
+            RgbaFrame::new(2, 1, Bytes::from_static(&[255, 0, 0, 255, 0, 0, 255, 255])).unwrap();
+        let frame = PresentationFrame::new(2, 1, Some(background), overlay, 0, 0).unwrap();
+        let mut target = [0; 32];
+
+        draw_opaque(&mut target, 4, 2, Some(&frame));
+
+        assert_eq!(target[0..4], [0, 0, 204, 255]);
+        assert_eq!(target[4..8], [50, 0, 152, 255]);
+        assert_eq!(target[8..12], [152, 0, 50, 255]);
+        assert_eq!(target[12..16], [204, 0, 0, 255]);
+    }
+
+    #[test]
+    fn filtered_transparency_does_not_add_dark_edge_fringe() {
+        let overlay =
+            RgbaFrame::new(2, 1, Bytes::from_static(&[0, 0, 0, 0, 255, 255, 255, 255])).unwrap();
+        let horizontal = filtered_axis(2, 4);
+        let vertical = filtered_axis(1, 1);
+
+        let edge = filtered_pixel(&overlay, horizontal.coordinate(1), vertical.coordinate(0));
+
+        assert_eq!(&edge[..3], &[255, 255, 255]);
+        assert!(edge[3] > 0 && edge[3] < u8::MAX);
+    }
+
+    #[test]
+    fn minification_preserves_thin_feature_coverage() {
+        let overlay = RgbaFrame::new(
+            3,
+            1,
+            Bytes::from_static(&[255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0]),
+        )
+        .unwrap();
+        let horizontal = filtered_axis(3, 1);
+        let vertical = filtered_axis(1, 1);
+
+        assert_eq!(
+            filtered_pixel(&overlay, horizontal.coordinate(0), vertical.coordinate(0)),
+            [255, 255, 255, 85]
+        );
+    }
+
+    #[test]
+    fn cached_scaled_overlay_matches_direct_filtered_rendering() {
+        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[80, 60, 40, 255])).unwrap();
+        let overlay = RgbaFrame::new(
+            3,
+            1,
+            Bytes::from_static(&[255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0]),
+        )
+        .unwrap();
+        let frame = PresentationFrame::new(3, 1, Some(background), overlay, 0, 0).unwrap();
+        let scaled = scale_overlay(&frame.overlay, 1, 1);
+        let mut direct = [0; 4];
+        let mut cached = [0; 4];
+
+        draw_opaque(&mut direct, 1, 1, Some(&frame));
+        draw_opaque_cached(&mut cached, 1, 1, Some(&frame), Some(&scaled));
+
+        assert_eq!(cached, direct);
+    }
+
+    #[test]
+    fn scaled_overlay_cache_tracks_source_allocation_and_target_size() {
+        let source = RgbaFrame::new(1, 1, Bytes::from(vec![1, 2, 3, 4])).unwrap();
+        let same_source = source.clone();
+        let replacement = RgbaFrame::new(1, 1, Bytes::from(vec![1, 2, 3, 4])).unwrap();
+        let cache = CachedOverlay {
+            source,
+            size: (2, 2),
+            frame: RgbaFrame::new(2, 2, Bytes::from(vec![0; 16])).unwrap(),
+        };
+
+        assert!(cache.matches(&same_source, (2, 2)));
+        assert!(!cache.matches(&replacement, (2, 2)));
+        assert!(!cache.matches(&same_source, (3, 2)));
     }
 
     #[test]
@@ -1785,7 +2527,7 @@ mod tests {
             let mut state = state();
             assert_eq!(state.update(Event::LockConfirmed), Action::ReportReady);
 
-            assert_eq!(refresh_presentation(&mut presentation, &mut state), refresh);
+            assert_eq!(refresh_priority(&mut presentation, &mut state), refresh);
             let mut target = [0; 4];
             draw_opaque(&mut target, 1, 1, presentation.frame().as_ref());
 
