@@ -8,7 +8,9 @@ pkgs.runCommand "genkan-session-lock-smoke"
   {
     nativeBuildInputs = with pkgs; [
       coreutils
+      grim
       gnugrep
+      imagemagick
       python3
       sway
       wlrctl
@@ -23,6 +25,12 @@ pkgs.runCommand "genkan-session-lock-smoke"
     production_log=$(mktemp)
     ready=$(mktemp)
     observer=$(mktemp)
+    background_capture=$(mktemp --suffix=.png)
+    authentication_capture=$(mktemp --suffix=.png)
+    dimmed_background=$(mktemp --suffix=.png)
+    wallpaper_reference=$(mktemp --suffix=.png)
+    classifier_background=$(mktemp --suffix=.png)
+    classifier_authentication=$(mktemp --suffix=.png)
     report_failure() {
       status=$?
       echo "session-lock smoke failed at line $1" >&2
@@ -33,6 +41,39 @@ pkgs.runCommand "genkan-session-lock-smoke"
         fi
       done
       exit "$status"
+    }
+    assert_authentication_capture() {
+      local background=$1
+      local authentication=$2
+      local outside_difference
+      local inside_difference
+      local inside_variation
+      local background_brightness
+      local authentication_brightness
+      magick "$background" -evaluate multiply 0.8 "$dimmed_background"
+      outside_difference=$(magick "$dimmed_background" "$authentication" \
+        -compose difference -composite -crop 800x100+0+0 -colorspace gray -format '%[fx:mean]' info:)
+      inside_difference=$(magick "$dimmed_background" "$authentication" \
+        -compose difference -composite -crop 313x250+244+175 -colorspace gray -format '%[fx:mean]' info:)
+      inside_variation=$(magick "$dimmed_background" "$authentication" \
+        -compose difference -composite -crop 313x250+244+175 -colorspace gray \
+        -format '%[fx:standard_deviation]' info:)
+      background_brightness=$(magick "$background" -colorspace gray -format '%[fx:mean]' info:)
+      authentication_brightness=$(magick "$authentication" -colorspace gray -format '%[fx:mean]' info:)
+      awk -v outside="$outside_difference" -v inside="$inside_difference" -v variation="$inside_variation" \
+        -v background="$background_brightness" -v authentication="$authentication_brightness" \
+        'BEGIN { exit !(background > 0.005 && authentication > 0.005 && outside < 0.01 && inside > 0.005 && variation > 0.005) }'
+    }
+    assert_wallpaper_capture() {
+      local capture=$1
+      local difference
+      difference=$(magick "$wallpaper_reference" "$capture" -compose difference -composite \
+        -colorspace gray -format '%[fx:mean]' info:)
+      awk -v difference="$difference" 'BEGIN { exit !(difference < 0.002) }'
+    }
+    assert_role_split() {
+      assert_wallpaper_capture "$1" &&
+        assert_authentication_capture "$wallpaper_reference" "$2"
     }
     trap 'report_failure $LINENO' ERR
     daemon_one=
@@ -47,12 +88,36 @@ pkgs.runCommand "genkan-session-lock-smoke"
         kill "$sway_pid" 2>/dev/null || true
         wait "$sway_pid" 2>/dev/null || true
       fi
-      rm -rf "$runtime" "$config" "$log" "$lock_log" "$production_log" "$ready" "$observer"
+      rm -rf "$runtime" "$config" "$log" "$lock_log" "$production_log" "$ready" "$observer" \
+        "$background_capture" "$authentication_capture" "$dimmed_background" "$wallpaper_reference" \
+        "$classifier_background" "$classifier_authentication"
       [[ -z "$daemon_one" ]] || rm -f "$daemon_one"
       [[ -z "$daemon_two" ]] || rm -f "$daemon_two"
       [[ -z "$before_sleep" ]] || rm -f "$before_sleep"
     }
     trap cleanup EXIT
+    magick -size 800x600 xc:'rgb(5,9,24)' "$wallpaper_reference"
+    magick -size 800x600 xc:black "$classifier_background"
+    magick -size 800x600 xc:black "$classifier_authentication"
+    if assert_role_split "$classifier_background" "$classifier_authentication"; then
+      echo "authentication classifier accepted blank frames" >&2
+      exit 1
+    fi
+    magick -size 800x600 xc:'rgb(50%,50%,50%)' "$classifier_background"
+    magick -size 800x600 xc:'rgb(41%,41%,41%)' "$classifier_authentication"
+    if assert_role_split "$classifier_background" "$classifier_authentication"; then
+      echo "authentication classifier accepted a uniform brightness change" >&2
+      exit 1
+    fi
+    magick -size 800x600 xc:'rgb(4%,4%,4%)' \
+      -fill 'rgb(20%,20%,20%)' -draw 'rectangle 244,175 399,424' \
+      -fill 'rgb(80%,80%,80%)' -draw 'rectangle 400,175 556,424' \
+      "$classifier_background"
+    cp "$classifier_background" "$classifier_authentication"
+    if assert_role_split "$classifier_background" "$classifier_authentication"; then
+      echo "authentication classifier accepted duplicated localized overlays" >&2
+      exit 1
+    fi
     chmod 700 "$runtime"
     test -x ${productionGenkan}/libexec/genkan-lock-auth
     test ! -e ${productionGenkan}/bin/genkan-lock-auth
@@ -139,6 +204,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
     PY
     for test_option in \
       '--test-unlock-after-ready' \
+      '--test-unlock-delay-ms 25000' \
       '--test-observer-fd 4' \
       '--test-panic-after-ready' \
       '--test-renderer-failure-after-ready' \
@@ -191,7 +257,9 @@ pkgs.runCommand "genkan-session-lock-smoke"
       XDG_RUNTIME_DIR="$runtime" \
       timeout 30s ${genkan}/bin/genkan lock \
         --reduce-motion \
+        --authentication-output HEADLESS-2 \
         --test-unlock-after-ready \
+        --test-unlock-delay-ms 25000 \
         --test-observer-fd 4 \
         --ready-fd 3 \
         3>"$ready" 4>"$observer" 2>"$lock_log" &
@@ -208,6 +276,36 @@ pkgs.runCommand "genkan-session-lock-smoke"
       exit 1
     fi
     grep -Fxq LOCKED "$observer"
+    for _ in $(seq 1 300); do
+      [[ $(grep -Fc 'committed first opaque buffer for output' "$lock_log") -ge 2 ]] && break
+      sleep 0.01
+    done
+    for _ in $(seq 1 300); do
+      grep -Fq 'committed authentication role for output HEADLESS-2' "$lock_log" && break
+      sleep 0.01
+    done
+    if ! grep -Fq 'committed authentication role for output HEADLESS-2' "$lock_log"; then
+      echo "explicit authentication role was not committed" >&2
+      cat "$lock_log" >&2
+      exit 1
+    fi
+    role_split_visible=false
+    for _ in $(seq 1 100); do
+      XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") \
+        grim -o HEADLESS-1 "$background_capture"
+      XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") \
+        grim -o HEADLESS-2 "$authentication_capture"
+      if assert_role_split "$background_capture" "$authentication_capture"; then
+        role_split_visible=true
+        break
+      fi
+      sleep 0.02
+    done
+    if [[ "$role_split_visible" != true ]]; then
+      echo "explicit authentication output did not render the authentication region" >&2
+      cat "$lock_log" >&2
+      exit 1
+    fi
     initial_geometry=$(grep -Fc GEOMETRY "$observer")
     XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") \
       swaymsg -s "$ipc" output HEADLESS-2 scale 2 >/dev/null
@@ -220,6 +318,8 @@ pkgs.runCommand "genkan-session-lock-smoke"
       cat "$log" "$lock_log" "$observer" >&2
       exit 1
     fi
+    XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") \
+      swaymsg -s "$ipc" output HEADLESS-2 scale 1 >/dev/null
     initial_keyboard=$(grep -Fc KEYBOARD "$observer" || true)
     initial_pointer=$(grep -Fc POINTER "$observer" || true)
     XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") wtype -s 50 x
@@ -280,6 +380,49 @@ pkgs.runCommand "genkan-session-lock-smoke"
       exit 1
     fi
 
+    removed_before=$(grep -Fc 'removed surface for output' "$lock_log")
+    XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-2 disable >/dev/null
+    fallback_visible=false
+    for _ in $(seq 1 100); do
+      XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") \
+        grim -o HEADLESS-1 "$authentication_capture"
+      if assert_role_split "$background_capture" "$authentication_capture"; then
+        fallback_visible=true
+        break
+      fi
+      sleep 0.02
+    done
+    if [[ "$fallback_visible" != true ]] ||
+       [[ $(grep -Fc 'removed surface for output' "$lock_log") -le $removed_before ]]; then
+      echo "authentication did not migrate when the selected output disappeared" >&2
+      exit 1
+    fi
+    XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-2 enable >/dev/null
+    preferred_visible=false
+    for _ in $(seq 1 100); do
+      XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") \
+        grim -o HEADLESS-1 "$background_capture"
+      XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=$(basename "$socket") \
+        grim -o HEADLESS-2 "$authentication_capture"
+      if assert_role_split "$background_capture" "$authentication_capture"; then
+        preferred_visible=true
+        break
+      fi
+      sleep 0.02
+    done
+    if [[ "$preferred_visible" != true ]]; then
+      echo "authentication did not return to the restored preferred output" >&2
+      exit 1
+    fi
+    wallpaper_commit=$(grep -nF 'committed wallpaper role for output HEADLESS-1' "$lock_log" \
+      | tail -n 1 | cut -d: -f1)
+    authentication_commit=$(grep -nF 'committed authentication role for output HEADLESS-2' "$lock_log" \
+      | tail -n 1 | cut -d: -f1)
+    if [[ -z "$wallpaper_commit" || -z "$authentication_commit" ]] ||
+       [[ "$wallpaper_commit" -ge "$authentication_commit" ]]; then
+      echo "preferred output was promoted before the old authentication frame retired" >&2
+      exit 1
+    fi
     if ! wait "$lock_pid"; then
       echo "foreground lock did not complete its test unlock" >&2
       cat "$log" "$lock_log" >&2
