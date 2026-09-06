@@ -64,6 +64,7 @@ pub(crate) struct Config {
     pub(crate) username: Option<String>,
     pub(crate) display_name: Option<String>,
     pub(crate) preview: Option<PreviewFixture>,
+    pub(crate) authentication_region: Option<crate::outputs::Region>,
     pub(crate) wallpaper: wallpaper::Settings,
 }
 
@@ -102,6 +103,7 @@ pub(crate) struct App {
     selection_session_cancelled: bool,
     closing: Option<Closing>,
     preview: bool,
+    authentication_region: Option<crate::outputs::Region>,
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +207,7 @@ impl App {
             selection_session_cancelled: false,
             closing: None,
             preview: false,
+            authentication_region: config.authentication_region,
         };
         let task = match startup {
             StartupMode::ConfiguredIdentity => {
@@ -833,6 +836,7 @@ mod tests {
             selection_session_cancelled: false,
             closing: None,
             preview: false,
+            authentication_region: None,
         }
     }
 

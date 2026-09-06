@@ -109,6 +109,7 @@ pub(super) fn build(
         selection_session_cancelled: false,
         closing: None,
         preview: true,
+        authentication_region: None,
     };
     let base_focus = app.focus_order().first().copied();
     app.power_state = power_state;

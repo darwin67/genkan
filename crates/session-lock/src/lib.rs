@@ -166,6 +166,7 @@ pub struct Config {
     identity: Identity,
     presentation: Box<dyn Presentation>,
     ready_fds: Vec<OwnedFd>,
+    authentication_output: Option<String>,
     #[cfg(feature = "lock-test")]
     test_unlock_after_ready: bool,
     #[cfg(feature = "lock-test")]
@@ -190,6 +191,7 @@ impl Config {
             identity,
             presentation: Box::new(presentation),
             ready_fds: ready_fd.into_iter().collect(),
+            authentication_output: None,
             #[cfg(feature = "lock-test")]
             test_unlock_after_ready: false,
             #[cfg(feature = "lock-test")]
@@ -205,6 +207,11 @@ impl Config {
 
     pub fn with_additional_ready_fd(mut self, ready_fd: OwnedFd) -> Self {
         self.ready_fds.push(ready_fd);
+        self
+    }
+
+    pub fn with_authentication_output(mut self, output: Option<String>) -> Self {
+        self.authentication_output = output;
         self
     }
 

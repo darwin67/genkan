@@ -1,0 +1,9 @@
+[package]
+name = "genkan-output-selection"
+version = "0.1.0"
+edition = "2021"
+description = "Output selection policy shared by Genkan login and lock backends"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"

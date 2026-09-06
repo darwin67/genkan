@@ -3,6 +3,7 @@ mod app;
 mod background;
 mod conversation;
 mod locker;
+mod outputs;
 mod power;
 mod sessions;
 mod theme;
@@ -72,6 +73,9 @@ struct LoginArguments {
     /// Enable real wallpaper playback while keeping preview services simulated.
     #[arg(long, requires = "preview", conflicts_with = "reduce_motion")]
     animated_preview: bool,
+    /// Present authentication on this output when it is available.
+    #[arg(long, value_parser = parse_output_name, conflicts_with = "windowed")]
+    authentication_output: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -107,6 +111,9 @@ struct LockArguments {
     /// Show the selected poster without starting the video decoder.
     #[arg(long, visible_alias = "static-wallpaper")]
     reduce_motion: bool,
+    /// Present authentication on this output when it is available.
+    #[arg(long, value_parser = parse_output_name, conflicts_with = "preview")]
+    authentication_output: Option<String>,
     #[cfg(feature = "lock-test")]
     #[arg(long, hide = true, conflicts_with = "preview")]
     test_unlock_after_ready: bool,
@@ -170,6 +177,14 @@ fn parse_ready_fd(value: &str) -> Result<std::os::fd::RawFd, String> {
     }
 }
 
+fn parse_output_name(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        Err("output name must contain 1–256 non-control characters".into())
+    } else {
+        Ok(value.into())
+    }
+}
+
 fn parse_wallpaper_file(value: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
     if !path.is_absolute() {
@@ -214,6 +229,9 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         return Ok(());
     }
     let windowed = arguments.windowed;
+    let authentication_region = (!windowed)
+        .then(|| outputs::authentication_region(arguments.authentication_output.as_deref()))
+        .flatten();
     let animate_wallpaper = animate_wallpaper(
         arguments.preview.is_some(),
         arguments.reduce_motion,
@@ -227,6 +245,7 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         username: arguments.username,
         display_name: arguments.display_name,
         preview: arguments.preview,
+        authentication_region,
         wallpaper: wallpaper::Settings {
             catalog: arguments.wallpaper,
             override_path: arguments.wallpaper_file,
@@ -250,6 +269,7 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
 
 fn lock_config(arguments: LockArguments) -> locker::Config {
     locker::Config {
+        authentication_output: arguments.authentication_output,
         wallpaper: wallpaper::Settings {
             catalog: arguments.wallpaper,
             override_path: arguments.wallpaper_file,
@@ -321,6 +341,10 @@ fn daemon_child_arguments(arguments: &LockArguments) -> Result<Vec<CString>, std
     }
     if arguments.reduce_motion {
         child.push(CString::new("--reduce-motion").expect("static argument"));
+    }
+    if let Some(output) = &arguments.authentication_output {
+        child.push(CString::new("--authentication-output").expect("static argument"));
+        child.push(CString::new(output.as_str()).expect("validated output name contains no NUL"));
     }
     #[cfg(feature = "lock-test")]
     if arguments.test_unlock_after_ready {
@@ -473,6 +497,8 @@ mod tests {
             "--wallpaper",
             "sequoia-night",
             "--reduce-motion",
+            "--authentication-output",
+            "DP-2",
         ])
         .unwrap();
         let child = daemon_child_arguments(&arguments)
@@ -489,7 +515,9 @@ mod tests {
                 "3",
                 "--wallpaper",
                 "sequoia-night",
-                "--reduce-motion"
+                "--reduce-motion",
+                "--authentication-output",
+                "DP-2"
             ]
         );
         assert!(!child.iter().any(|argument| argument == "--daemonize"));
@@ -524,6 +552,34 @@ mod tests {
         assert_eq!(arguments.wallpaper_file, None);
         assert!(!arguments.reduce_motion);
         assert!(!arguments.animated_preview);
+    }
+
+    #[test]
+    fn authentication_output_is_validated_and_scoped_to_fullscreen_modes() {
+        assert_eq!(
+            try_parse_login(["genkan", "--authentication-output", "DP-2"])
+                .unwrap()
+                .authentication_output
+                .as_deref(),
+            Some("DP-2")
+        );
+        assert_eq!(
+            try_parse_lock(["genkan", "--authentication-output", "eDP-1"])
+                .unwrap()
+                .authentication_output
+                .as_deref(),
+            Some("eDP-1")
+        );
+        assert!(
+            try_parse_login(["genkan", "--windowed", "--authentication-output", "DP-2"]).is_err()
+        );
+        assert!(
+            try_parse_lock(["genkan", "--preview", "--authentication-output", "DP-2"]).is_err()
+        );
+        for invalid in ["", "DP-2\n"] {
+            assert!(try_parse_login(["genkan", "--authentication-output", invalid]).is_err());
+            assert!(try_parse_lock(["genkan", "--authentication-output", invalid]).is_err());
+        }
     }
 
     #[test]

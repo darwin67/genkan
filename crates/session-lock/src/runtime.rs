@@ -63,12 +63,14 @@ pub enum Error {
 
 struct Surface {
     output: wl_output::WlOutput,
+    output_name: Option<String>,
     lock_surface: SessionLockSurface,
     size: Option<(u32, u32)>,
     scale: i32,
     geometry_generation: u64,
     buffers: Vec<SurfaceBuffer>,
     overlay_cache: Option<CachedOverlay>,
+    authentication: bool,
     redraw: RedrawState,
     first_presented: bool,
 }
@@ -94,6 +96,10 @@ impl Surface {
         width: u32,
         height: u32,
     ) -> Option<RgbaFrame> {
+        if !self.authentication {
+            self.overlay_cache = None;
+            return None;
+        }
         let frame = frame?;
         let target = overlay_geometry(frame, width, height)?.target;
         let size = (target.width, target.height);
@@ -278,6 +284,7 @@ struct Runtime {
     presentation: Box<dyn Presentation>,
     presentation_geometry: Option<FrameGeometry>,
     background_generation: u64,
+    authentication_output: Option<String>,
     ready: ReadySignal,
     failure: Option<Error>,
     terminate: bool,
@@ -324,6 +331,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         presentation: config.presentation,
         presentation_geometry,
         background_generation: 1,
+        authentication_output: config.authentication_output,
         ready,
         failure: None,
         terminate: false,
@@ -456,20 +464,24 @@ impl Runtime {
             "genkan lock: created lock surface for output {}",
             output.id().protocol_id()
         );
+        let output_name = self.output_state.info(&output).and_then(|info| info.name);
         self.surfaces.push(Surface {
             output,
+            output_name,
             lock_surface,
             size: None,
             scale: 1,
             geometry_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
             overlay_cache: None,
+            authentication: false,
             redraw: RedrawState {
                 redraw_pending: Some(RedrawKind::Full),
                 ..RedrawState::default()
             },
             first_presented: false,
         });
+        self.refresh_authentication_output();
         #[cfg(feature = "lock-test")]
         self.test_observer.record(TestEvent::OutputAdded);
         Ok(())
@@ -653,6 +665,7 @@ impl Runtime {
         let frame = self.presentation.frame();
         let background_generation = self.background_generation;
         let surface = &mut self.surfaces[index];
+        let authentication = surface.authentication;
         let scaled_overlay = surface.scaled_overlay(frame.as_ref(), buffer_width, buffer_height);
         surface.buffers.retain(|item| {
             item.size == (buffer_width, buffer_height)
@@ -697,6 +710,7 @@ impl Runtime {
                     buffer_height,
                     frame.as_ref(),
                     scaled_overlay.as_ref(),
+                    authentication,
                     damaged,
                 );
             } else {
@@ -706,6 +720,7 @@ impl Runtime {
                     buffer_height,
                     frame.as_ref(),
                     scaled_overlay.as_ref(),
+                    authentication,
                 );
                 *rendered_background = background_generation;
             }
@@ -734,6 +749,7 @@ impl Runtime {
                 buffer_height,
                 frame.as_ref(),
                 scaled_overlay.as_ref(),
+                authentication,
             );
             surface.buffers.push(SurfaceBuffer {
                 size: (buffer_width, buffer_height),
@@ -837,8 +853,28 @@ impl Runtime {
 
     fn redraw_all_surfaces(&mut self, kind: RedrawKind) {
         for surface in &mut self.surfaces {
-            if surface.size.is_some() {
+            if surface.size.is_some() && (kind == RedrawKind::Full || surface.authentication) {
                 surface.redraw.request(kind);
+            }
+        }
+    }
+
+    fn refresh_authentication_output(&mut self) {
+        let selected = genkan_output_selection::select(
+            self.surfaces
+                .iter()
+                .enumerate()
+                .map(|(index, surface)| (index, surface.output_name.as_deref())),
+            self.authentication_output.as_deref(),
+        );
+        for (index, surface) in self.surfaces.iter_mut().enumerate() {
+            let authentication = selected == Some(index);
+            if surface.authentication != authentication {
+                surface.authentication = authentication;
+                surface.overlay_cache = None;
+                if surface.size.is_some() {
+                    surface.redraw.request(RedrawKind::Full);
+                }
             }
         }
     }
@@ -1022,8 +1058,17 @@ impl OutputHandler for Runtime {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        let name = self.output_state.info(&output).and_then(|info| info.name);
+        if let Some(surface) = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.output == output)
+        {
+            surface.output_name = name;
+        }
+        self.refresh_authentication_output();
     }
 
     fn output_destroyed(
@@ -1033,6 +1078,7 @@ impl OutputHandler for Runtime {
         output: wl_output::WlOutput,
     ) {
         self.surfaces.retain(|surface| surface.output != output);
+        self.refresh_authentication_output();
         #[cfg(feature = "lock-test")]
         self.test_observer.record(TestEvent::OutputRemoved);
         eprintln!(
@@ -1305,7 +1351,7 @@ fn buffer_size(
 }
 
 fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&PresentationFrame>) {
-    draw_opaque_cached(target, width, height, frame, None);
+    draw_opaque_cached(target, width, height, frame, None, true);
 }
 
 fn draw_opaque_cached(
@@ -1314,6 +1360,7 @@ fn draw_opaque_cached(
     height: u32,
     frame: Option<&PresentationFrame>,
     scaled_overlay: Option<&RgbaFrame>,
+    authentication: bool,
 ) {
     draw_opaque_region_cached(
         target,
@@ -1321,6 +1368,7 @@ fn draw_opaque_cached(
         height,
         frame,
         scaled_overlay,
+        authentication,
         Region::full(width, height),
     );
 }
@@ -1333,7 +1381,7 @@ fn draw_opaque_region(
     frame: Option<&PresentationFrame>,
     region: Region,
 ) {
-    draw_opaque_region_cached(target, width, height, frame, None, region);
+    draw_opaque_region_cached(target, width, height, frame, None, true, region);
 }
 
 fn draw_opaque_region_cached(
@@ -1342,6 +1390,7 @@ fn draw_opaque_region_cached(
     height: u32,
     frame: Option<&PresentationFrame>,
     scaled_overlay: Option<&RgbaFrame>,
+    authentication: bool,
     region: Region,
 ) {
     let overlay_geometry = frame.and_then(|frame| overlay_geometry(frame, width, height));
@@ -1357,11 +1406,19 @@ fn draw_opaque_region_cached(
         for x in region.x..end_x {
             let [red, green, blue] = background.pixel(source_row, x);
             let offset = ((y as usize * width as usize) + x as usize) * 4;
-            target[offset..offset + 4].copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
+            let pixel = if authentication {
+                [dim(blue), dim(green), dim(red), u8::MAX]
+            } else {
+                [blue, green, red, u8::MAX]
+            };
+            target[offset..offset + 4].copy_from_slice(&pixel);
         }
     }
 
-    let Some((frame, geometry)) = frame.zip(overlay_geometry.as_ref()) else {
+    let Some((frame, geometry)) = frame
+        .filter(|_| authentication)
+        .zip(overlay_geometry.as_ref())
+    else {
         return;
     };
     let Some(overlay_region) = intersect(region, geometry.target) else {
@@ -2195,6 +2252,18 @@ mod tests {
     }
 
     #[test]
+    fn background_only_surface_keeps_wallpaper_bright_and_omits_overlay() {
+        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[100, 150, 200, 255])).unwrap();
+        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[255, 255, 255, 255])).unwrap();
+        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
+        let mut target = [0; 4];
+
+        draw_opaque_cached(&mut target, 1, 1, Some(&frame), None, false);
+
+        assert_eq!(target, [200, 150, 100, 255]);
+    }
+
+    #[test]
     fn scaled_overlays_are_filtered_instead_of_pixel_doubled() {
         let background = RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 255])).unwrap();
         let overlay =
@@ -2255,7 +2324,7 @@ mod tests {
         let mut cached = [0; 4];
 
         draw_opaque(&mut direct, 1, 1, Some(&frame));
-        draw_opaque_cached(&mut cached, 1, 1, Some(&frame), Some(&scaled));
+        draw_opaque_cached(&mut cached, 1, 1, Some(&frame), Some(&scaled), true);
 
         assert_eq!(cached, direct);
     }

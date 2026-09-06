@@ -112,8 +112,30 @@ impl App {
             .wallpaper
             .view()
             .unwrap_or_else(|| background::Background::new(self.background_elapsed()).view());
-        let content = responsive(move |size| self.content(size));
-        stack![background, background::dimming(), content].into()
+        let foreground = responsive(move |size| self.positioned_foreground(size));
+        stack![background, foreground].into()
+    }
+
+    fn positioned_foreground(&self, size: Size) -> Element<'_, Message> {
+        let Some(region) = self.authentication_region else {
+            return stack![background::dimming(), self.content(size)].into();
+        };
+        let region = region.scale_to(size.width, size.height);
+        column![
+            Space::new().height(region.y),
+            row![
+                Space::new().width(region.x),
+                container(stack![
+                    background::dimming(),
+                    self.content(Size::new(region.width, region.height))
+                ])
+                .width(region.width)
+                .height(region.height)
+            ]
+        ]
+        .width(Fill)
+        .height(Fill)
+        .into()
     }
 
     fn content(&self, size: Size) -> Element<'_, Message> {
