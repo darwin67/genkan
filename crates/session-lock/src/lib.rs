@@ -170,6 +170,8 @@ pub struct Config {
     #[cfg(feature = "lock-test")]
     test_unlock_after_ready: bool,
     #[cfg(feature = "lock-test")]
+    test_unlock_delay: Duration,
+    #[cfg(feature = "lock-test")]
     test_observer: Option<OwnedFd>,
     #[cfg(feature = "lock-test")]
     test_panic_after_ready: bool,
@@ -195,6 +197,8 @@ impl Config {
             #[cfg(feature = "lock-test")]
             test_unlock_after_ready: false,
             #[cfg(feature = "lock-test")]
+            test_unlock_delay: Duration::from_secs(5),
+            #[cfg(feature = "lock-test")]
             test_observer: None,
             #[cfg(feature = "lock-test")]
             test_panic_after_ready: false,
@@ -218,6 +222,12 @@ impl Config {
     #[cfg(feature = "lock-test")]
     pub fn with_test_unlock_after_ready(mut self, enabled: bool) -> Self {
         self.test_unlock_after_ready = enabled;
+        self
+    }
+
+    #[cfg(feature = "lock-test")]
+    pub fn with_test_unlock_delay(mut self, delay: Duration) -> Self {
+        self.test_unlock_delay = delay;
         self
     }
 

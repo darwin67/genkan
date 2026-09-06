@@ -118,6 +118,9 @@ struct LockArguments {
     #[arg(long, hide = true, conflicts_with = "preview")]
     test_unlock_after_ready: bool,
     #[cfg(feature = "lock-test")]
+    #[arg(long, hide = true, conflicts_with = "preview")]
+    test_unlock_delay_ms: Option<u64>,
+    #[cfg(feature = "lock-test")]
     #[arg(
         long,
         hide = true,
@@ -229,9 +232,15 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         return Ok(());
     }
     let windowed = arguments.windowed;
-    let authentication_region = (!windowed)
-        .then(|| outputs::authentication_region(arguments.authentication_output.as_deref()))
-        .flatten();
+    let output_monitor = if windowed {
+        None
+    } else {
+        outputs::Monitor::connect(arguments.authentication_output)
+            .inspect_err(|error| {
+                eprintln!("genkan login: could not monitor output layout: {error}")
+            })
+            .ok()
+    };
     let animate_wallpaper = animate_wallpaper(
         arguments.preview.is_some(),
         arguments.reduce_motion,
@@ -245,7 +254,7 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         username: arguments.username,
         display_name: arguments.display_name,
         preview: arguments.preview,
-        authentication_region,
+        output_monitor,
         wallpaper: wallpaper::Settings {
             catalog: arguments.wallpaper,
             override_path: arguments.wallpaper_file,
@@ -278,6 +287,8 @@ fn lock_config(arguments: LockArguments) -> locker::Config {
         ready_fd: arguments.ready_fd,
         #[cfg(feature = "lock-test")]
         test_unlock_after_ready: arguments.test_unlock_after_ready,
+        #[cfg(feature = "lock-test")]
+        test_unlock_delay_ms: arguments.test_unlock_delay_ms,
         #[cfg(feature = "lock-test")]
         test_observer_fd: arguments.test_observer_fd,
         #[cfg(feature = "lock-test")]
@@ -349,6 +360,11 @@ fn daemon_child_arguments(arguments: &LockArguments) -> Result<Vec<CString>, std
     #[cfg(feature = "lock-test")]
     if arguments.test_unlock_after_ready {
         child.push(CString::new("--test-unlock-after-ready").expect("static argument"));
+    }
+    #[cfg(feature = "lock-test")]
+    if let Some(delay) = arguments.test_unlock_delay_ms {
+        child.push(CString::new("--test-unlock-delay-ms").expect("static argument"));
+        child.push(CString::new(delay.to_string()).expect("integer contains no NUL"));
     }
     #[cfg(feature = "lock-test")]
     if let Some(delay) = arguments.test_ready_delay_ms {
@@ -453,7 +469,11 @@ mod tests {
             ] {
                 assert!(Arguments::try_parse_from(["genkan", "lock", option]).is_err());
             }
-            for option in ["--test-observer-fd", "--test-ready-delay-ms"] {
+            for option in [
+                "--test-observer-fd",
+                "--test-ready-delay-ms",
+                "--test-unlock-delay-ms",
+            ] {
                 assert!(Arguments::try_parse_from(["genkan", "lock", option, "7"]).is_err());
             }
         }
@@ -471,6 +491,12 @@ mod tests {
                     .unwrap()
                     .test_ready_delay_ms,
                 Some(2000)
+            );
+            assert_eq!(
+                try_parse_lock(["genkan", "--test-unlock-delay-ms", "25000"])
+                    .unwrap()
+                    .test_unlock_delay_ms,
+                Some(25_000)
             );
         }
     }
@@ -617,8 +643,9 @@ mod tests {
                     .to_owned()
             })
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 17);
+        assert_eq!(names.len(), 18);
         assert!(names.contains(&"selected".to_owned()));
+        assert!(names.contains(&"session-menu".to_owned()));
         assert!(names.contains(&"power-confirmation".to_owned()));
     }
 

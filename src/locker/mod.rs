@@ -43,6 +43,8 @@ pub(crate) struct Config {
     #[cfg(feature = "lock-test")]
     pub(crate) test_unlock_after_ready: bool,
     #[cfg(feature = "lock-test")]
+    pub(crate) test_unlock_delay_ms: Option<u64>,
+    #[cfg(feature = "lock-test")]
     pub(crate) test_observer_fd: Option<RawFd>,
     #[cfg(feature = "lock-test")]
     pub(crate) test_panic_after_ready: bool,
@@ -459,6 +461,9 @@ pub(crate) fn run(config: Config) -> Result<(), Error> {
     #[cfg(feature = "lock-test")]
     let runtime = runtime
         .with_test_unlock_after_ready(config.test_unlock_after_ready)
+        .with_test_unlock_delay(std::time::Duration::from_millis(
+            config.test_unlock_delay_ms.unwrap_or(5_000),
+        ))
         .with_test_observer(observer_fd)
         .with_test_panic_after_ready(config.test_panic_after_ready)
         .with_test_renderer_failure_after_ready(config.test_renderer_failure_after_ready)
