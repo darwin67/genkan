@@ -16,7 +16,6 @@ pkgs.runCommand "genkan-session-lock-smoke"
     ];
   }
   ''
-    trap 'echo "session-lock smoke failed at line $LINENO" >&2' ERR
     runtime=$(mktemp -d)
     config=$(mktemp)
     log=$(mktemp)
@@ -24,6 +23,18 @@ pkgs.runCommand "genkan-session-lock-smoke"
     production_log=$(mktemp)
     ready=$(mktemp)
     observer=$(mktemp)
+    report_failure() {
+      status=$?
+      echo "session-lock smoke failed at line $1" >&2
+      for diagnostic in "$log" "$lock_log" "$observer"; do
+        if [[ -s "$diagnostic" ]]; then
+          echo "--- $diagnostic ---" >&2
+          cat "$diagnostic" >&2
+        fi
+      done
+      exit "$status"
+    }
+    trap 'report_failure $LINENO' ERR
     daemon_one=
     daemon_two=
     before_sleep=
