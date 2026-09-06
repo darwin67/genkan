@@ -60,7 +60,9 @@ the full desktop while Genkan places authentication on one output. By default
 it deterministically chooses the first connector name other than `eDP-1`, then
 falls back to `eDP-1` when no other named output is available. To prefer a
 particular connector, add `--authentication-output DP-2` after `genkan login`;
-if that connector is absent, the same default fallback still applies.
+if that connector is absent, the same default fallback still applies. Genkan
+re-evaluates this placement when outputs are connected, removed, rearranged, or
+rescaled while the greeter is running.
 
 To install the session locker and define its dedicated PAM service using the
 host's normal authentication policy, import and enable the opt-in module:
