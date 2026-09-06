@@ -55,6 +55,13 @@ systemd.services.greetd.environment.XDG_DATA_DIRS =
 systemd.services.greetd.restartIfChanged = false;
 ```
 
+On a multi-monitor layout, the Cage window continues to render wallpaper over
+the full desktop while Genkan places authentication on one output. By default
+it deterministically chooses the first connector name other than `eDP-1`, then
+falls back to `eDP-1` when no other named output is available. To prefer a
+particular connector, add `--authentication-output DP-2` after `genkan login`;
+if that connector is absent, the same default fallback still applies.
+
 To install the session locker and define its dedicated PAM service using the
 host's normal authentication policy, import and enable the opt-in module:
 
@@ -88,6 +95,13 @@ The confirmed foreground child remains the lock owner while the system sleeps
 and after it resumes. Resume does not start a second authentication attempt or
 unlock the session; the existing PAM conversation continues only when the user
 interacts with the lock screen.
+
+The lock covers every output but presents the dimmed authentication interface
+on only one; all remaining outputs show unobstructed wallpaper. It uses the
+same external-output-first, `eDP-1` fallback policy as login. Pass
+`--authentication-output DP-2` to select a preferred connector. The preference
+is preserved by `--daemonize`, and the lock moves authentication to the normal
+fallback if the chosen output disappears.
 
 The login and lock screens use the same translucent authentication-field
 material and light outline over the selected wallpaper. Login adds a stronger
