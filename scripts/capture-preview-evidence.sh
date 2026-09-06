@@ -175,6 +175,7 @@ EOF
 
 # Reference states at the default review size.
 capture account-selection 1280 800 users
+capture session-menu 1280 800 session-menu
 capture secret-prompt 1280 800 secret-prompt
 capture visible-prompt 1280 800 visible-prompt
 capture authentication-failure 1280 800 authentication-failure
