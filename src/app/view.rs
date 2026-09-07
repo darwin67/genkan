@@ -16,7 +16,6 @@ use super::account_tile as tile_widget;
 use super::auth_flow::Phase;
 use super::focus::Target as FocusTarget;
 use super::modal as modal_widget;
-use super::resettable;
 use super::{App, Message, PowerState};
 
 const ACCOUNT_TILE_WIDTH: f32 = 148.0;
@@ -93,7 +92,7 @@ const FLOW_CONTROL_ORDER: [FlowControl; 3] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScreenLayout {
+pub(super) enum ScreenLayout {
     Wide,
     Flow,
 }
@@ -112,8 +111,29 @@ impl App {
             .wallpaper
             .view()
             .unwrap_or_else(|| background::Background::new(self.background_elapsed()).view());
-        let content = responsive(move |size| self.content(size));
-        stack![background, background::dimming(), content].into()
+        let foreground = responsive(move |size| self.positioned_foreground(size));
+        stack![background, foreground].into()
+    }
+
+    fn positioned_foreground(&self, size: Size) -> Element<'_, Message> {
+        let region = authentication_region_or_full(self.authentication_region, size);
+        let region = region.scale_to(size.width, size.height);
+        column![
+            Space::new().height(region.y),
+            row![
+                Space::new().width(region.x),
+                container(stack![
+                    background::dimming(),
+                    self.content(Size::new(region.width, region.height))
+                ])
+                .width(region.width)
+                .height(region.height)
+                .clip(true)
+            ]
+        ]
+        .width(Fill)
+        .height(Fill)
+        .into()
     }
 
     fn content(&self, size: Size) -> Element<'_, Message> {
@@ -174,11 +194,12 @@ impl App {
     }
 
     fn main_content(&self, size: Size) -> Element<'_, Message> {
-        let layout = if self.requires_flow_layout() {
-            ScreenLayout::Flow
-        } else {
-            screen_layout(size)
-        };
+        let layout = effective_screen_layout(
+            self.requires_flow_layout(),
+            self.phase,
+            self.authentication_layout,
+            size,
+        );
         match layout {
             ScreenLayout::Wide => {
                 let center = container(
@@ -561,20 +582,34 @@ impl App {
 
     fn session_selector(&self) -> Element<'_, Message> {
         let selector: Element<'_, Message> = if self.can_select_session() {
-            let pick_list = iced::widget::pick_list(
-                self.sessions.as_slice(),
-                self.selected_session.as_ref(),
-                Message::SelectSession,
-            )
-            .on_open(Message::SessionMenuOpened)
-            .on_close(Message::SessionMenuClosed)
+            let label = self
+                .selected_session
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "Select a session".into());
+            button(row![
+                text(label)
+                    .width(Fill)
+                    .height(Length::Fixed(20.0))
+                    .wrapping(Wrapping::WordOrGlyph),
+                text("⌄")
+            ])
+            .on_press(if self.session_menu_open {
+                Message::SessionMenuClosed
+            } else {
+                Message::SessionMenuOpened
+            })
             .padding([9, 14])
             .style(|theme, status| {
-                theme::selector(theme, status, self.is_focused(FocusTarget::Session))
+                theme::inline_selector(
+                    theme,
+                    status,
+                    self.is_focused(FocusTarget::Session),
+                    self.session_menu_open,
+                )
             })
-            .menu_style(theme::selector_menu)
-            .width(Length::Fixed(210.0));
-            resettable::reset(self.session_selector_key, pick_list)
+            .width(Length::Fixed(210.0))
+            .into()
         } else {
             container(
                 text(
@@ -609,9 +644,40 @@ impl App {
             } else {
                 Space::new().height(0).into()
             };
+        let menu: Element<'_, Message> = if self.session_menu_open && self.can_select_session() {
+            let options = self.sessions.iter().fold(column![], |options, session| {
+                let selected = self.selected_session.as_ref() == Some(session);
+                options.push(
+                    button(
+                        text(format!("{} — {}", session.session_id, session.name))
+                            .width(Fill)
+                            .wrapping(Wrapping::WordOrGlyph),
+                    )
+                    .on_press(Message::SelectSession(session.clone()))
+                    .padding([7, 12])
+                    .width(Fill)
+                    .style(move |theme, status| {
+                        theme::inline_selector_option(theme, status, selected)
+                    }),
+                )
+            });
+            container(
+                scrollable(options)
+                    .height(Length::Fixed(160.0))
+                    .style(theme::scrollbar),
+            )
+            .width(Length::Fixed(210.0))
+            .height(Length::Fixed(160.0))
+            .clip(true)
+            .style(theme::inline_selector_menu)
+            .into()
+        } else {
+            Space::new().height(0).into()
+        };
         column![
             text("Session").size(13).color(theme::secondary_text()),
             selector,
+            menu,
             notice(self.session_message.as_deref(), true),
             retry,
         ]
@@ -742,6 +808,20 @@ fn dynamic_text_requires_flow(value: &str) -> bool {
     value.contains(['\n', '\r']) || !value.is_ascii() || value.chars().count() > 80
 }
 
+fn authentication_region_or_full(
+    region: Option<crate::outputs::Region>,
+    size: Size,
+) -> crate::outputs::Region {
+    region.unwrap_or(crate::outputs::Region {
+        x: 0.0,
+        y: 0.0,
+        width: size.width,
+        height: size.height,
+        layout_width: size.width.max(1.0),
+        layout_height: size.height.max(1.0),
+    })
+}
+
 fn avatar<'a>(name: &str, diameter: f32, text_size: u16) -> Element<'a, Message> {
     container(
         text(initials(name))
@@ -761,11 +841,26 @@ fn account_grid_columns(width: f32) -> usize {
         .clamp(1, MAX_ACCOUNT_COLUMNS)
 }
 
-fn screen_layout(size: Size) -> ScreenLayout {
+pub(super) fn screen_layout(size: Size) -> ScreenLayout {
     if size.width >= WIDE_MIN_WIDTH && size.height >= WIDE_MIN_HEIGHT {
         ScreenLayout::Wide
     } else {
         ScreenLayout::Flow
+    }
+}
+
+fn effective_screen_layout(
+    requires_flow: bool,
+    phase: Phase,
+    authentication_layout: Option<ScreenLayout>,
+    size: Size,
+) -> ScreenLayout {
+    if requires_flow {
+        ScreenLayout::Flow
+    } else {
+        authentication_layout
+            .filter(|_| phase == Phase::WaitingForInput)
+            .unwrap_or_else(|| screen_layout(size))
     }
 }
 
@@ -826,6 +921,47 @@ fn initials(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_output_geometry_uses_the_full_window_positioning_region() {
+        let size = Size::new(800.0, 600.0);
+        let region = authentication_region_or_full(None, size);
+
+        assert_eq!(region.x, 0.0);
+        assert_eq!(region.y, 0.0);
+        assert_eq!(region.width, size.width);
+        assert_eq!(region.height, size.height);
+        assert_eq!(region.scale_to(size.width, size.height), region);
+    }
+
+    #[test]
+    fn active_prompt_uses_a_stable_scrollable_layout_across_resizes() {
+        let compact = Size::new(640.0, 480.0);
+        let wide = Size::new(1920.0, 1080.0);
+
+        assert_eq!(
+            effective_screen_layout(
+                false,
+                Phase::WaitingForInput,
+                Some(ScreenLayout::Flow),
+                compact
+            ),
+            ScreenLayout::Flow
+        );
+        assert_eq!(
+            effective_screen_layout(
+                false,
+                Phase::Authenticating,
+                Some(ScreenLayout::Flow),
+                compact
+            ),
+            ScreenLayout::Flow
+        );
+        assert_eq!(
+            effective_screen_layout(true, Phase::WaitingForInput, Some(ScreenLayout::Flow), wide),
+            ScreenLayout::Flow
+        );
+    }
 
     #[test]
     fn account_selector_is_disabled_until_cancellation_succeeds() {

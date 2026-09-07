@@ -6,8 +6,8 @@ description = "A small graphical greetd frontend for Wayland"
 license = "MIT"
 
 [workspace]
-members = ["crates/lock-auth", "crates/session-lock"]
-default-members = [".", "crates/lock-auth", "crates/session-lock"]
+members = ["crates/lock-auth", "crates/output-selection", "crates/session-lock"]
+default-members = [".", "crates/lock-auth", "crates/output-selection", "crates/session-lock"]
 resolver = "2"
 
 [features]
@@ -31,7 +31,9 @@ gui = [
     "dep:libc",
     "dep:rclip-desktop-entry",
     "dep:rustix",
+    "dep:smithay-client-toolkit",
     "dep:unicode-general-category",
+    "dep:wayland-client",
     "dep:zeroize",
     "dep:zbus",
 ]
@@ -51,6 +53,7 @@ bytes = { version = "1.10.1", optional = true }
 chrono = { version = "0.4.38", default-features = false, features = ["clock"], optional = true }
 clap = { version = "4.5.23", features = ["derive"] }
 cosmic-text = { version = "0.15.0", optional = true }
+genkan-output-selection = { path = "crates/output-selection" }
 genkan-session-lock = { path = "crates/session-lock", optional = true }
 genkan-lock-auth = { path = "crates/lock-auth", optional = true }
 greetd_ipc = { version = "0.10.3", features = ["tokio-codec"] }
@@ -63,9 +66,11 @@ iced_runtime = { version = "0.14.0", optional = true }
 libc = { version = "=0.2.189", optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
 rustix = { version = "1.1.4", features = ["fs", "process"], optional = true }
+smithay-client-toolkit = { version = "=0.20.0", default-features = false, optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "time"] }
 unicode-general-category = { version = "1.1.0", optional = true }
+wayland-client = { version = "=0.31.15", optional = true }
 zeroize = { version = "=1.9.0", optional = true }
 zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }
 

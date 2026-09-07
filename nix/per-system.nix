@@ -251,6 +251,10 @@ in
       inherit pkgs;
       genkan = package;
     };
+    login-output-smoke = import ./tests/login-output-smoke.nix {
+      inherit pkgs;
+      genkan = package;
+    };
     preview-evidence = import ./tests/preview-evidence.nix {
       inherit pkgs;
       genkan = package;

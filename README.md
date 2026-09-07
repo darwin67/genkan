@@ -90,11 +90,18 @@ The packaged greeter animates Tahoe Beach by default. Operators can select
 `sequoia-sunrise`, `sequoia-morning`, or `sequoia-night`, or use
 `--reduce-motion` to retain the corresponding static poster.
 
+With multiple outputs, Genkan presents authentication on one monitor and keeps
+the others as unobstructed animated wallpaper. It chooses the first available
+connector by name other than `eDP-1`, falling back to `eDP-1`; pass
+`--authentication-output DP-2` to either `login` or `lock` to prefer a specific
+connector instead.
+
 ## Session-lock development status
 
 `genkan lock` establishes and maintains an opaque compositor-owned lock on
-every output and reauthenticates the invoking real-UID account through the
-host's `genkan-lock` PAM service. `genkan lock --daemonize` starts a fresh
+every output, displays authentication on the selected monitor, and
+reauthenticates the invoking real-UID account through the host's `genkan-lock`
+PAM service. `genkan lock --daemonize` starts a fresh
 foreground child and returns only after compositor confirmation, allowing a
 delay-inhibiting idle manager to wait for readiness within logind's configured
 timeout. This is not a suspend veto: command failure or expiry of the delay

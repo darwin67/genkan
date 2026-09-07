@@ -1,15 +1,16 @@
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::OwnedFd;
-use std::time::Duration;
-#[cfg(feature = "lock-test")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use calloop::EventLoop;
 use calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::presentation_time::{
+    PresentTime, PresentationTimeHandler, PresentationTimeState,
+};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::registry_handlers;
 use smithay_client_toolkit::seat::keyboard::{
@@ -31,7 +32,8 @@ use wayland_client::globals::registry_queue_init;
 #[cfg(feature = "lock-test")]
 use wayland_client::protocol::wl_pointer;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_region, wl_seat, wl_shm, wl_surface};
-use wayland_client::{Connection, Proxy, QueueHandle};
+use wayland_client::{Connection, Proxy, QueueHandle, WEnum};
+use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback;
 
 use super::{
     Action, Config, Event, Input, Presentation, PresentationFrame, PreviewError, Refresh,
@@ -46,8 +48,7 @@ const MAX_SURFACE_PIXELS: usize = 16_384 * 16_384;
 const MAX_SURFACE_DIMENSION: u32 = 16_384;
 const BUFFER_COUNT: usize = 2;
 const MAX_BUFFER_BYTES: usize = 256 * 1024 * 1024;
-#[cfg(feature = "lock-test")]
-const TEST_UNLOCK_DELAY: Duration = Duration::from_secs(5);
+const AUTHENTICATION_RETIREMENT_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -63,12 +64,15 @@ pub enum Error {
 
 struct Surface {
     output: wl_output::WlOutput,
+    output_name: Option<String>,
     lock_surface: SessionLockSurface,
     size: Option<(u32, u32)>,
     scale: i32,
     geometry_generation: u64,
+    role_generation: u64,
     buffers: Vec<SurfaceBuffer>,
     overlay_cache: Option<CachedOverlay>,
+    authentication: bool,
     redraw: RedrawState,
     first_presented: bool,
 }
@@ -82,9 +86,48 @@ struct CachedOverlay {
 struct SurfaceBuffer {
     size: (u32, u32),
     geometry_generation: u64,
+    role_generation: u64,
     background_generation: u64,
     buffer: Buffer,
     pool: SlotPool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthenticationRetirement {
+    AwaitingCommit { deadline: Instant },
+    AwaitingPresentation { deadline: Instant },
+}
+
+impl AuthenticationRetirement {
+    fn begin(now: Instant) -> Self {
+        Self::AwaitingCommit {
+            deadline: now + AUTHENTICATION_RETIREMENT_TIMEOUT,
+        }
+    }
+
+    fn committed(&mut self) {
+        if let Self::AwaitingCommit { deadline } = *self {
+            *self = Self::AwaitingPresentation { deadline };
+        }
+    }
+
+    fn discarded(&mut self) {
+        if let Self::AwaitingPresentation { deadline } = *self {
+            *self = Self::AwaitingCommit { deadline };
+        }
+    }
+
+    fn accepts_presentation(self) -> bool {
+        matches!(self, Self::AwaitingPresentation { .. })
+    }
+
+    fn expired(self, now: Instant) -> bool {
+        match self {
+            Self::AwaitingCommit { deadline } | Self::AwaitingPresentation { deadline } => {
+                now >= deadline
+            }
+        }
+    }
 }
 
 impl Surface {
@@ -94,6 +137,10 @@ impl Surface {
         width: u32,
         height: u32,
     ) -> Option<RgbaFrame> {
+        if !self.authentication {
+            self.overlay_cache = None;
+            return None;
+        }
         let frame = frame?;
         let target = overlay_geometry(frame, width, height)?.target;
         let size = (target.width, target.height);
@@ -146,6 +193,7 @@ struct RedrawState {
     frame_pending: bool,
     redraw_pending: Option<RedrawKind>,
     geometry_pending: bool,
+    role_pending: bool,
 }
 
 impl RedrawState {
@@ -159,6 +207,12 @@ impl RedrawState {
     fn request_geometry(&mut self) {
         self.redraw_pending = Some(RedrawKind::Full);
         self.geometry_pending = true;
+    }
+
+    fn request_role_change(&mut self) {
+        self.redraw_pending = Some(RedrawKind::Full);
+        self.geometry_pending = true;
+        self.role_pending = true;
     }
 
     fn request_media(&mut self) -> bool {
@@ -182,6 +236,7 @@ impl RedrawState {
     fn committed(&mut self, requested_frame_callback: bool) {
         self.redraw_pending = None;
         self.geometry_pending = false;
+        self.role_pending = false;
         self.frame_pending |= requested_frame_callback;
     }
 
@@ -265,6 +320,7 @@ struct Runtime {
     conn: Connection,
     compositor: CompositorState,
     output_state: OutputState,
+    presentation_time_state: PresentationTimeState,
     registry_state: RegistryState,
     seat_state: SeatState,
     keyboards: Vec<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
@@ -278,6 +334,10 @@ struct Runtime {
     presentation: Box<dyn Presentation>,
     presentation_geometry: Option<FrameGeometry>,
     background_generation: u64,
+    authentication_output: Option<String>,
+    retiring_authentication: Option<wl_output::WlOutput>,
+    authentication_retirement: Option<AuthenticationRetirement>,
+    authentication_retirement_feedback: Option<wp_presentation_feedback::WpPresentationFeedback>,
     ready: ReadySignal,
     failure: Option<Error>,
     terminate: bool,
@@ -285,6 +345,8 @@ struct Runtime {
     test_unlock_after_ready: bool,
     #[cfg(feature = "lock-test")]
     test_unlock_at: Option<Instant>,
+    #[cfg(feature = "lock-test")]
+    test_unlock_delay: Duration,
     #[cfg(feature = "lock-test")]
     test_observer: TestObserver,
     #[cfg(feature = "lock-test")]
@@ -311,6 +373,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         conn: conn.clone(),
         compositor,
         output_state: OutputState::new(&globals, &qh),
+        presentation_time_state: PresentationTimeState::bind(&globals, &qh),
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         keyboards: Vec::new(),
@@ -324,6 +387,10 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         presentation: config.presentation,
         presentation_geometry,
         background_generation: 1,
+        authentication_output: config.authentication_output,
+        retiring_authentication: None,
+        authentication_retirement: None,
+        authentication_retirement_feedback: None,
         ready,
         failure: None,
         terminate: false,
@@ -331,6 +398,8 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         test_unlock_after_ready: config.test_unlock_after_ready,
         #[cfg(feature = "lock-test")]
         test_unlock_at: None,
+        #[cfg(feature = "lock-test")]
+        test_unlock_delay: config.test_unlock_delay,
         #[cfg(feature = "lock-test")]
         test_observer: TestObserver::new(config.test_observer),
         #[cfg(feature = "lock-test")]
@@ -383,6 +452,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
             runtime.fail(error);
             break;
         }
+        runtime.expire_authentication_retirement();
         let priority = refresh_priority(runtime.presentation.as_mut(), &mut runtime.state);
         if runtime.presentation.take_authorization() {
             let action = runtime
@@ -393,7 +463,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         if runtime.terminate {
             break;
         }
-        runtime.apply_refresh(&qh, priority);
+        runtime.apply_refresh(priority);
         let progress = match runtime.commit_partial_overlays(&qh) {
             Ok(progress) => progress,
             Err(error) => {
@@ -408,7 +478,7 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         let poll_deferred = should_poll_deferred(priority, &progress);
         if poll_deferred {
             let refresh = refresh_presentation(runtime.presentation.as_mut(), &mut runtime.state);
-            runtime.apply_refresh(&qh, refresh);
+            runtime.apply_refresh(refresh);
         }
         if let Err(error) =
             runtime.maintain_surfaces(&qh, should_allow_overlay_full(poll_deferred, &progress))
@@ -456,41 +526,37 @@ impl Runtime {
             "genkan lock: created lock surface for output {}",
             output.id().protocol_id()
         );
+        let output_name = self.output_state.info(&output).and_then(|info| info.name);
         self.surfaces.push(Surface {
             output,
+            output_name,
             lock_surface,
             size: None,
             scale: 1,
             geometry_generation: 0,
+            role_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
             overlay_cache: None,
+            authentication: false,
             redraw: RedrawState {
                 redraw_pending: Some(RedrawKind::Full),
                 ..RedrawState::default()
             },
             first_presented: false,
         });
+        self.refresh_authentication_output();
         #[cfg(feature = "lock-test")]
         self.test_observer.record(TestEvent::OutputAdded);
         Ok(())
     }
 
-    fn redraw_media(&mut self, qh: &QueueHandle<Self>) {
+    fn redraw_media(&mut self) {
         if self.terminate {
             return;
         }
-        let configured = self
-            .surfaces
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(index, surface)| {
-                (surface.size.is_some() && surface.redraw.request_media()).then_some(index)
-            })
-            .collect::<Vec<_>>();
-        for index in configured {
-            if let Err(error) = self.render(index, qh) {
-                self.fail(error);
-                return;
+        for surface in &mut self.surfaces {
+            if surface.size.is_some() {
+                surface.redraw.request_media();
             }
         }
     }
@@ -514,6 +580,7 @@ impl Runtime {
             surface.buffers.retain(|item| {
                 item.size == configured_size
                     && item.geometry_generation == surface.geometry_generation
+                    && item.role_generation == surface.role_generation
             });
             let mut reusable = false;
             let mut current = false;
@@ -538,6 +605,7 @@ impl Runtime {
                 ready_to_redraw.push(index);
             }
         }
+        ready_to_redraw.sort_by_key(|index| self.surfaces[*index].authentication);
         for index in ready_to_redraw {
             self.render(index, qh)?;
         }
@@ -563,6 +631,7 @@ impl Runtime {
             surface.buffers.retain(|buffer| {
                 buffer.size == configured_size
                     && buffer.geometry_generation == surface.geometry_generation
+                    && buffer.role_generation == surface.role_generation
             });
             let mut reusable = false;
             let mut current = false;
@@ -598,7 +667,7 @@ impl Runtime {
         Ok(summary)
     }
 
-    fn apply_refresh(&mut self, qh: &QueueHandle<Self>, refresh: Refresh) {
+    fn apply_refresh(&mut self, refresh: Refresh) {
         match refresh {
             Refresh::Unchanged => {}
             Refresh::Frame => {
@@ -607,7 +676,7 @@ impl Runtime {
                     &mut self.background_generation,
                     frame_geometry(self.presentation.frame().as_ref()),
                 );
-                self.redraw_media(qh);
+                self.redraw_media();
             }
             Refresh::Overlay => {
                 let kind = self.classify_overlay_redraw();
@@ -620,7 +689,7 @@ impl Runtime {
                     &mut self.background_generation,
                     frame_geometry(self.presentation.frame().as_ref()),
                 );
-                self.redraw_media(qh);
+                self.redraw_media();
             }
         }
     }
@@ -647,16 +716,25 @@ impl Runtime {
             ));
         }
         let geometry_generation = surface.geometry_generation;
+        let role_generation = surface.role_generation;
         let requested_redraw = surface.redraw.redraw_pending.unwrap_or(RedrawKind::Full);
         let wl_surface = surface.lock_surface.wl_surface().clone();
+        let output = surface.output.clone();
         let output_id = surface.output.id().protocol_id();
+        let output_name = surface.output_name.clone();
         let frame = self.presentation.frame();
         let background_generation = self.background_generation;
         let surface = &mut self.surfaces[index];
+        let authentication = surface.authentication;
+        let role_change = surface.redraw.role_pending;
+        let retiring = role_change
+            && !authentication
+            && self.retiring_authentication.as_ref() == Some(&output);
         let scaled_overlay = surface.scaled_overlay(frame.as_ref(), buffer_width, buffer_height);
         surface.buffers.retain(|item| {
             item.size == (buffer_width, buffer_height)
                 && item.geometry_generation == geometry_generation
+                && item.role_generation == role_generation
         });
         let reusable = surface
             .buffers
@@ -697,6 +775,7 @@ impl Runtime {
                     buffer_height,
                     frame.as_ref(),
                     scaled_overlay.as_ref(),
+                    authentication,
                     damaged,
                 );
             } else {
@@ -706,6 +785,7 @@ impl Runtime {
                     buffer_height,
                     frame.as_ref(),
                     scaled_overlay.as_ref(),
+                    authentication,
                 );
                 *rendered_background = background_generation;
             }
@@ -734,16 +814,36 @@ impl Runtime {
                 buffer_height,
                 frame.as_ref(),
                 scaled_overlay.as_ref(),
+                authentication,
             );
             surface.buffers.push(SurfaceBuffer {
                 size: (buffer_width, buffer_height),
                 geometry_generation,
+                role_generation,
                 background_generation,
                 buffer,
                 pool,
             });
             surface.buffers.len() - 1
         };
+        if retiring {
+            match self.presentation_time_state.feedback(&wl_surface, qh) {
+                Ok(feedback) => self.authentication_retirement_feedback = Some(feedback),
+                Err(error) => {
+                    eprintln!(
+                        "genkan lock: cannot safely migrate authentication without presentation feedback: {error}"
+                    );
+                    surface.authentication = true;
+                    surface.overlay_cache = None;
+                    surface.role_generation = surface.role_generation.wrapping_add(1);
+                    surface.redraw.request_role_change();
+                    self.retiring_authentication = None;
+                    self.authentication_retirement = None;
+                    self.authentication_retirement_feedback = None;
+                    return Ok(());
+                }
+            }
+        }
         surface.buffers[buffer_index]
             .buffer
             .attach_to(&wl_surface)
@@ -766,6 +866,22 @@ impl Runtime {
         }
         wl_surface.commit();
         surface.redraw.committed(request_frame_callback);
+        if retiring {
+            if let Some(retirement) = &mut self.authentication_retirement {
+                retirement.committed();
+            }
+        }
+        if role_change {
+            eprintln!(
+                "genkan lock: committed {} role for output {}",
+                if authentication {
+                    "authentication"
+                } else {
+                    "wallpaper"
+                },
+                output_name.as_deref().unwrap_or("<unnamed>")
+            );
+        }
         if !surface.first_presented {
             eprintln!("genkan lock: committed first opaque buffer for output {output_id}");
             surface.first_presented = true;
@@ -798,7 +914,7 @@ impl Runtime {
                 }
                 #[cfg(feature = "lock-test")]
                 if self.test_unlock_after_ready && !self.terminate {
-                    self.test_unlock_at = Some(Instant::now() + TEST_UNLOCK_DELAY);
+                    self.test_unlock_at = Some(Instant::now() + self.test_unlock_delay);
                 }
                 #[cfg(feature = "lock-test")]
                 if self.test_renderer_failure_after_ready && !self.terminate {
@@ -837,9 +953,78 @@ impl Runtime {
 
     fn redraw_all_surfaces(&mut self, kind: RedrawKind) {
         for surface in &mut self.surfaces {
-            if surface.size.is_some() {
+            if surface.size.is_some() && (kind == RedrawKind::Full || surface.authentication) {
                 surface.redraw.request(kind);
             }
+        }
+    }
+
+    fn refresh_authentication_output(&mut self) {
+        let candidates = self
+            .surfaces
+            .iter()
+            .map(|surface| {
+                (
+                    surface.output_name.as_deref(),
+                    surface.size.is_some(),
+                    surface.authentication,
+                )
+            })
+            .collect::<Vec<_>>();
+        let selected =
+            select_authentication_index(&candidates, self.authentication_output.as_deref());
+        if self.retiring_authentication.is_some() {
+            return;
+        }
+        let current = self
+            .surfaces
+            .iter()
+            .position(|surface| surface.authentication);
+        if current == selected {
+            return;
+        }
+        if let Some(current) = current {
+            self.retiring_authentication = Some(self.surfaces[current].output.clone());
+            self.authentication_retirement = Some(AuthenticationRetirement::begin(Instant::now()));
+            self.authentication_retirement_feedback = None;
+            self.set_authentication(current, false);
+        } else if let Some(selected) = selected {
+            self.set_authentication(selected, true);
+        }
+    }
+
+    fn expire_authentication_retirement(&mut self) {
+        if !self
+            .authentication_retirement
+            .is_some_and(|retirement| retirement.expired(Instant::now()))
+        {
+            return;
+        }
+        eprintln!("genkan lock: authentication handoff timed out; restoring the previous output");
+        self.authentication_retirement_feedback = None;
+        self.authentication_retirement = None;
+        let retiring = self.retiring_authentication.take();
+        if let Some(index) = retiring.and_then(|output| {
+            self.surfaces
+                .iter()
+                .position(|surface| surface.output == output && surface.size.is_some())
+        }) {
+            self.set_authentication(index, true);
+        } else {
+            self.refresh_authentication_output();
+        }
+    }
+
+    fn set_authentication(&mut self, index: usize, authentication: bool) {
+        let surface = &mut self.surfaces[index];
+        if surface.authentication == authentication {
+            return;
+        }
+        surface.authentication = authentication;
+        surface.overlay_cache = None;
+        surface.role_generation = surface.role_generation.wrapping_add(1);
+        if surface.size.is_some() {
+            surface.redraw.request_role_change();
         }
     }
 
@@ -885,6 +1070,43 @@ impl Runtime {
     }
 }
 
+fn select_authentication_index(
+    outputs: &[(Option<&str>, bool, bool)],
+    requested: Option<&str>,
+) -> Option<usize> {
+    let select = |candidates: &[(Option<&str>, bool, bool)]| {
+        genkan_output_selection::select(
+            candidates
+                .iter()
+                .enumerate()
+                .map(|(index, (name, _, _))| (index, *name)),
+            requested,
+        )
+    };
+    let desired = select(outputs);
+    if desired.is_some_and(|index| outputs[index].1) {
+        return desired;
+    }
+    outputs
+        .iter()
+        .position(|(_, configured, authentication)| *configured && *authentication)
+        .or_else(|| {
+            let configured = outputs
+                .iter()
+                .map(|(name, configured, authentication)| (*name, *configured, *authentication))
+                .collect::<Vec<_>>();
+            let selected = genkan_output_selection::select(
+                configured
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, configured, _))| *configured)
+                    .map(|(index, (name, _, _))| (index, *name)),
+                requested,
+            );
+            selected
+        })
+}
+
 impl SessionLockHandler for Runtime {
     fn locked(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _lock: SessionLock) {
         let action =
@@ -916,14 +1138,15 @@ impl SessionLockHandler for Runtime {
             self.fail(Error::Runtime("configured an unknown lock surface".into()));
             return;
         };
-        let surface = &mut self.surfaces[index];
-        if surface.size != Some(configure.new_size) {
+        if self.surfaces[index].size != Some(configure.new_size) {
+            let surface = &mut self.surfaces[index];
             surface.size = Some(configure.new_size);
             surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
             surface.redraw.request_geometry();
             #[cfg(feature = "lock-test")]
             self.test_observer.record(TestEvent::Geometry);
         }
+        self.refresh_authentication_output();
     }
 }
 
@@ -1012,6 +1235,15 @@ impl OutputHandler for Runtime {
         output: wl_output::WlOutput,
     ) {
         if self.session_lock.is_some() && !self.terminate {
+            if let Some(surface) = self
+                .surfaces
+                .iter_mut()
+                .find(|surface| surface.output == output)
+            {
+                surface.output_name = self.output_state.info(&output).and_then(|info| info.name);
+                self.refresh_authentication_output();
+                return;
+            }
             if let Err(error) = self.add_surface(output, qh) {
                 self.fail(error);
             }
@@ -1022,8 +1254,17 @@ impl OutputHandler for Runtime {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        let name = self.output_state.info(&output).and_then(|info| info.name);
+        if let Some(surface) = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.output == output)
+        {
+            surface.output_name = name;
+        }
+        self.refresh_authentication_output();
     }
 
     fn output_destroyed(
@@ -1032,13 +1273,73 @@ impl OutputHandler for Runtime {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        if self.retiring_authentication.as_ref() == Some(&output) {
+            self.retiring_authentication = None;
+            self.authentication_retirement = None;
+            self.authentication_retirement_feedback = None;
+        }
         self.surfaces.retain(|surface| surface.output != output);
+        self.refresh_authentication_output();
         #[cfg(feature = "lock-test")]
         self.test_observer.record(TestEvent::OutputRemoved);
         eprintln!(
             "genkan lock: removed surface for output {}",
             output.id().protocol_id()
         );
+    }
+}
+
+impl PresentationTimeHandler for Runtime {
+    fn presentation_time_state(&mut self) -> &mut PresentationTimeState {
+        &mut self.presentation_time_state
+    }
+
+    fn presented(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        feedback: &wp_presentation_feedback::WpPresentationFeedback,
+        _surface: &wl_surface::WlSurface,
+        _outputs: Vec<wl_output::WlOutput>,
+        _time: PresentTime,
+        _refresh: u32,
+        _seq: u64,
+        _flags: WEnum<wp_presentation_feedback::Kind>,
+    ) {
+        if self.authentication_retirement_feedback.as_ref() != Some(feedback)
+            || !self
+                .authentication_retirement
+                .is_some_and(AuthenticationRetirement::accepts_presentation)
+        {
+            return;
+        }
+        self.authentication_retirement_feedback = None;
+        self.authentication_retirement = None;
+        self.retiring_authentication = None;
+        self.refresh_authentication_output();
+    }
+
+    fn discarded(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        feedback: &wp_presentation_feedback::WpPresentationFeedback,
+        surface: &wl_surface::WlSurface,
+    ) {
+        if self.authentication_retirement_feedback.as_ref() != Some(feedback) {
+            return;
+        }
+        self.authentication_retirement_feedback = None;
+        if let Some(retirement) = &mut self.authentication_retirement {
+            retirement.discarded();
+        }
+        if let Some(surface) = self
+            .surfaces
+            .iter_mut()
+            .find(|candidate| candidate.lock_surface.wl_surface() == surface)
+        {
+            surface.redraw.request_role_change();
+        }
     }
 }
 
@@ -1218,6 +1519,7 @@ impl ShmHandler for Runtime {
 
 smithay_client_toolkit::delegate_compositor!(Runtime);
 smithay_client_toolkit::delegate_output!(Runtime);
+smithay_client_toolkit::delegate_presentation_time!(Runtime);
 smithay_client_toolkit::delegate_registry!(Runtime);
 smithay_client_toolkit::delegate_seat!(Runtime);
 smithay_client_toolkit::delegate_keyboard!(Runtime);
@@ -1305,7 +1607,7 @@ fn buffer_size(
 }
 
 fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&PresentationFrame>) {
-    draw_opaque_cached(target, width, height, frame, None);
+    draw_opaque_cached(target, width, height, frame, None, true);
 }
 
 fn draw_opaque_cached(
@@ -1314,6 +1616,7 @@ fn draw_opaque_cached(
     height: u32,
     frame: Option<&PresentationFrame>,
     scaled_overlay: Option<&RgbaFrame>,
+    authentication: bool,
 ) {
     draw_opaque_region_cached(
         target,
@@ -1321,6 +1624,7 @@ fn draw_opaque_cached(
         height,
         frame,
         scaled_overlay,
+        authentication,
         Region::full(width, height),
     );
 }
@@ -1333,7 +1637,7 @@ fn draw_opaque_region(
     frame: Option<&PresentationFrame>,
     region: Region,
 ) {
-    draw_opaque_region_cached(target, width, height, frame, None, region);
+    draw_opaque_region_cached(target, width, height, frame, None, true, region);
 }
 
 fn draw_opaque_region_cached(
@@ -1342,6 +1646,7 @@ fn draw_opaque_region_cached(
     height: u32,
     frame: Option<&PresentationFrame>,
     scaled_overlay: Option<&RgbaFrame>,
+    authentication: bool,
     region: Region,
 ) {
     let overlay_geometry = frame.and_then(|frame| overlay_geometry(frame, width, height));
@@ -1357,11 +1662,19 @@ fn draw_opaque_region_cached(
         for x in region.x..end_x {
             let [red, green, blue] = background.pixel(source_row, x);
             let offset = ((y as usize * width as usize) + x as usize) * 4;
-            target[offset..offset + 4].copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
+            let pixel = if authentication {
+                [dim(blue), dim(green), dim(red), u8::MAX]
+            } else {
+                [blue, green, red, u8::MAX]
+            };
+            target[offset..offset + 4].copy_from_slice(&pixel);
         }
     }
 
-    let Some((frame, geometry)) = frame.zip(overlay_geometry.as_ref()) else {
+    let Some((frame, geometry)) = frame
+        .filter(|_| authentication)
+        .zip(overlay_geometry.as_ref())
+    else {
         return;
     };
     let Some(overlay_region) = intersect(region, geometry.target) else {
@@ -1947,6 +2260,84 @@ mod tests {
     }
 
     #[test]
+    fn authentication_handoff_waits_for_the_preferred_surface_to_be_configured() {
+        let waiting = [(Some("eDP-1"), true, true), (Some("DP-1"), false, false)];
+        assert_eq!(select_authentication_index(&waiting, None), Some(0));
+
+        let ready = [(Some("eDP-1"), true, true), (Some("DP-1"), true, false)];
+        assert_eq!(select_authentication_index(&ready, None), Some(1));
+    }
+
+    #[test]
+    fn authentication_selection_recovers_when_the_owner_disappears() {
+        let outputs = [(Some("DP-1"), false, false), (Some("eDP-1"), true, false)];
+
+        assert_eq!(select_authentication_index(&outputs, None), Some(1));
+        assert_eq!(select_authentication_index(&outputs, Some("DP-1")), Some(1));
+    }
+
+    #[test]
+    fn role_change_repaint_bypasses_an_outstanding_frame_callback() {
+        let mut redraw = RedrawState::default();
+        redraw.request(RedrawKind::Overlay);
+        redraw.committed(true);
+
+        redraw.request_role_change();
+
+        assert!(redraw.should_render(BUFFER_COUNT, false));
+        assert_eq!(redraw.redraw_pending, Some(RedrawKind::Full));
+        assert!(!redraw.request_frame_callback());
+    }
+
+    #[test]
+    fn authentication_handoff_requires_presented_wallpaper_feedback() {
+        let started = Instant::now();
+        let deadline = started + AUTHENTICATION_RETIREMENT_TIMEOUT;
+        let mut retirement = AuthenticationRetirement::begin(started);
+
+        assert!(!retirement.accepts_presentation());
+        retirement.committed();
+        assert!(retirement.accepts_presentation());
+        assert!(!retirement.expired(deadline - Duration::from_millis(1)));
+        assert!(retirement.expired(deadline));
+        retirement.discarded();
+        assert!(
+            !retirement.accepts_presentation(),
+            "a discarded wallpaper commit must keep promotion blocked"
+        );
+        assert!(
+            retirement.expired(deadline),
+            "discarded feedback must retain the original handoff deadline"
+        );
+        for _ in 0..3 {
+            retirement.committed();
+            assert!(retirement.accepts_presentation());
+            assert!(
+                retirement.expired(deadline),
+                "a retry must not extend the original handoff deadline"
+            );
+            retirement.discarded();
+            assert!(retirement.expired(deadline));
+        }
+    }
+
+    #[test]
+    fn frame_callbacks_never_complete_an_authentication_handoff() {
+        let started = Instant::now();
+        let mut retirement = AuthenticationRetirement::begin(started);
+
+        retirement.committed();
+        for _ in 0..3 {
+            assert!(retirement.accepts_presentation());
+            assert!(!retirement.expired(started));
+        }
+
+        retirement.discarded();
+        assert!(!retirement.accepts_presentation());
+        assert!(retirement.expired(started + AUTHENTICATION_RETIREMENT_TIMEOUT));
+    }
+
+    #[test]
     fn latency_sensitive_polling_remains_independent_from_deferred_media() {
         let mut presentation = PollingPresentation {
             latest_calls: 0,
@@ -2195,6 +2586,18 @@ mod tests {
     }
 
     #[test]
+    fn background_only_surface_keeps_wallpaper_bright_and_omits_overlay() {
+        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[100, 150, 200, 255])).unwrap();
+        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[255, 255, 255, 255])).unwrap();
+        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
+        let mut target = [0; 4];
+
+        draw_opaque_cached(&mut target, 1, 1, Some(&frame), None, false);
+
+        assert_eq!(target, [200, 150, 100, 255]);
+    }
+
+    #[test]
     fn scaled_overlays_are_filtered_instead_of_pixel_doubled() {
         let background = RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 255])).unwrap();
         let overlay =
@@ -2255,7 +2658,7 @@ mod tests {
         let mut cached = [0; 4];
 
         draw_opaque(&mut direct, 1, 1, Some(&frame));
-        draw_opaque_cached(&mut cached, 1, 1, Some(&frame), Some(&scaled));
+        draw_opaque_cached(&mut cached, 1, 1, Some(&frame), Some(&scaled), true);
 
         assert_eq!(cached, direct);
     }

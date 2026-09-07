@@ -262,6 +262,14 @@ impl App {
         self.set_focus(Target::AuthenticationInput)
     }
 
+    pub(super) fn reveal_focused_input(&self) -> Task<Message> {
+        if self.focus_target == Some(Target::AuthenticationInput) {
+            account_tile_reveal_input(self.page_scroll_id.clone())
+        } else {
+            Task::none()
+        }
+    }
+
     pub(super) fn blur_input(&mut self) -> Task<Message> {
         self.close_session_menu();
         if self.focus_target == Some(Target::AuthenticationInput) {

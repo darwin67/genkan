@@ -3,7 +3,6 @@ mod auth_flow;
 mod focus;
 mod modal;
 mod preview;
-mod resettable;
 mod view;
 
 use std::time::{Duration, Instant};
@@ -13,7 +12,7 @@ use chrono::Local;
 use focus::{Navigation as FocusNavigation, Target as FocusTarget};
 use greetd_ipc::Request;
 use iced::widget::{operation, scrollable, Id};
-use iced::{event, keyboard, time, window, Subscription, Task};
+use iced::{event, keyboard, time, window, Size, Subscription, Task};
 
 use crate::accounts::{self, Account};
 use crate::conversation::{self, Attempt, Conversation, Status as ConversationStatus};
@@ -64,6 +63,7 @@ pub(crate) struct Config {
     pub(crate) username: Option<String>,
     pub(crate) display_name: Option<String>,
     pub(crate) preview: Option<PreviewFixture>,
+    pub(crate) output_monitor: Option<crate::outputs::Monitor>,
     pub(crate) wallpaper: wallpaper::Settings,
 }
 
@@ -94,7 +94,6 @@ pub(crate) struct App {
     sessions: Vec<Session>,
     selected_session: Option<Session>,
     session_menu_open: bool,
-    session_selector_key: u64,
     wallpaper: wallpaper::State,
     started_at: Instant,
     now: chrono::DateTime<Local>,
@@ -102,6 +101,10 @@ pub(crate) struct App {
     selection_session_cancelled: bool,
     closing: Option<Closing>,
     preview: bool,
+    output_monitor: Option<crate::outputs::Monitor>,
+    authentication_region: Option<crate::outputs::Region>,
+    window_size: Option<Size>,
+    authentication_layout: Option<view::ScreenLayout>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +139,8 @@ pub(crate) enum Message {
     SelectSession(Session),
     SessionMenuOpened,
     SessionMenuClosed,
+    OutputLayoutChanged,
+    WindowResized(Size),
     AskPower(PowerAction),
     CancelPower,
     ConfirmPower(PowerAction),
@@ -154,6 +159,7 @@ impl App {
                 config.username,
                 config.display_name,
                 config.wallpaper,
+                config.output_monitor,
             );
         }
         let sessions = sessions::discover();
@@ -197,7 +203,6 @@ impl App {
             sessions,
             selected_session,
             session_menu_open: false,
-            session_selector_key: 0,
             wallpaper: wallpaper::State::start(config.wallpaper),
             started_at: Instant::now(),
             now: Local::now(),
@@ -205,6 +210,13 @@ impl App {
             selection_session_cancelled: false,
             closing: None,
             preview: false,
+            authentication_region: config
+                .output_monitor
+                .as_ref()
+                .and_then(|monitor| monitor.region()),
+            output_monitor: config.output_monitor,
+            window_size: None,
+            authentication_layout: None,
         };
         let task = match startup {
             StartupMode::ConfiguredIdentity => {
@@ -222,6 +234,11 @@ impl App {
             self.wallpaper
                 .subscription()
                 .map(|()| Message::WallpaperFrameReady),
+            self.output_monitor
+                .as_ref()
+                .map_or_else(Subscription::none, crate::outputs::Monitor::subscription)
+                .map(|()| Message::OutputLayoutChanged),
+            window::resize_events().map(|(_, size)| Message::WindowResized(size)),
             window::close_requests().map(Message::CloseRequested),
             event::listen_with(focus::keyboard_navigation),
             event::listen_with(focus::pointer_focus_sync),
@@ -263,6 +280,7 @@ impl App {
                     Message::Tick
                     | Message::WallpaperFrameReady
                     | Message::WallpaperAllocated(_)
+                    | Message::OutputLayoutChanged
                     | Message::AuthResult { .. }
                     | Message::AccountsResult(_)
                     | Message::CloseRequested(_)
@@ -405,6 +423,18 @@ impl App {
             Message::SessionMenuClosed => {
                 self.session_menu_open = false;
                 Task::none()
+            }
+            Message::OutputLayoutChanged => {
+                self.authentication_region = self
+                    .output_monitor
+                    .as_ref()
+                    .and_then(crate::outputs::Monitor::region);
+                self.close_session_menu();
+                self.reveal_focused_input()
+            }
+            Message::WindowResized(size) => {
+                self.window_size = Some(size);
+                self.reveal_focused_input()
             }
             Message::RetrySession
                 if self.phase == Phase::Failed && self.selected_session.is_none() =>
@@ -610,6 +640,7 @@ impl App {
                 },
             );
             self.phase = Phase::WaitingForInput;
+            self.authentication_layout = Some(view::ScreenLayout::Flow);
             self.preview_message =
                 Some("Preview mode: credentials and power actions are simulated".into());
             self.focus_input()
@@ -650,10 +681,7 @@ impl App {
     }
 
     fn close_session_menu(&mut self) {
-        if self.session_menu_open {
-            self.session_menu_open = false;
-            self.session_selector_key = self.session_selector_key.wrapping_add(1);
-        }
+        self.session_menu_open = false;
     }
 
     fn navigate_page(&self, navigation: PageNavigation) -> Task<Message> {
@@ -825,7 +853,6 @@ mod tests {
             sessions: vec![session()],
             selected_session: Some(session()),
             session_menu_open: false,
-            session_selector_key: 0,
             wallpaper: wallpaper::State::disabled(),
             started_at: Instant::now(),
             now: Local::now(),
@@ -833,6 +860,10 @@ mod tests {
             selection_session_cancelled: false,
             closing: None,
             preview: false,
+            output_monitor: None,
+            authentication_region: None,
+            window_size: None,
+            authentication_layout: None,
         }
     }
 
@@ -1249,21 +1280,17 @@ mod tests {
 
         let _ = app.update(Message::SessionMenuOpened);
         assert!(app.session_menu_open);
-        let key = app.session_selector_key;
 
         let _ = app.update(Message::NavigateFocus(FocusNavigation::Next));
         assert!(!app.session_menu_open);
-        assert_ne!(app.session_selector_key, key);
         assert_eq!(
             app.focus_target,
             Some(FocusTarget::Power(PowerAction::Suspend))
         );
 
         let _ = app.update(Message::SessionMenuOpened);
-        let key = app.session_selector_key;
         let _ = app.update(Message::Escape);
         assert!(!app.session_menu_open);
-        assert_ne!(app.session_selector_key, key);
         assert_eq!(app.focus_target, Some(FocusTarget::Session));
     }
 
@@ -1272,7 +1299,6 @@ mod tests {
         let mut app = app();
         app.phase = Phase::CreatingSession;
         let _ = app.update(Message::SessionMenuOpened);
-        let key = app.session_selector_key;
 
         let _ = app.update(Message::AuthResult {
             attempt: app.conversation.attempt(),
@@ -1286,7 +1312,6 @@ mod tests {
         });
 
         assert!(!app.session_menu_open);
-        assert_ne!(app.session_selector_key, key);
         assert_eq!(app.focus_target, Some(FocusTarget::AuthenticationInput));
     }
 
@@ -1641,6 +1666,29 @@ mod tests {
         assert_eq!(app.power_message.as_deref(), Some("not authorized"));
         assert!(app.power_message_is_error);
         assert_eq!(app.conversation.notice(), Some("Keep this message"));
+    }
+
+    #[test]
+    fn topology_updates_are_not_discarded_during_power_operations() {
+        for power_state in [
+            PowerState::Confirming(PowerAction::PowerOff),
+            PowerState::Executing(PowerAction::Suspend),
+        ] {
+            let mut app = app();
+            app.power_state = power_state;
+            app.authentication_region = Some(crate::outputs::Region {
+                x: 10.0,
+                y: 20.0,
+                width: 800.0,
+                height: 600.0,
+                layout_width: 1600.0,
+                layout_height: 600.0,
+            });
+
+            let _ = app.update(Message::OutputLayoutChanged);
+
+            assert_eq!(app.authentication_region, None);
+        }
     }
 
     #[test]

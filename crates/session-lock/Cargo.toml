@@ -14,6 +14,7 @@ lock-test = []
 bytes = "1.10.1"
 calloop = "=0.14.4"
 calloop-wayland-source = "=0.4.1"
+genkan-output-selection = { path = "../output-selection" }
 smithay-client-toolkit = { version = "=0.20.0", default-features = false, features = ["calloop", "xkbcommon"] }
 thiserror = "2.0.9"
 wayland-client = "=0.31.15"
