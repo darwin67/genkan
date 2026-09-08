@@ -10,7 +10,7 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
 
 - [X] Acquire or reproducibly generate a minimal multi-image HEIC fixture with
   known ~h24~, ~solar~, embedded appearance, and standalone ~apr~ metadata.
-- [ ] Acquire an independently authored fixture, verify its image order,
+- [X] Acquire an independently authored fixture, verify its image order,
   metadata indices, and distinguishable pixels through macOS ImageIO, and
   record that evidence separately from Genkan's parser assumptions.
 - [X] Record fixture provenance, hash, top-level image ordering, dimensions,
