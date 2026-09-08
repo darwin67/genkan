@@ -14,6 +14,7 @@ on:
       - "nix/**"
       - "rfd/**"
       - "scripts/**"
+      - "tests/**"
       - "cliff.toml"
       - ".github/workflows/ci.yml"
       - ".github/workflows/commits.yml"
@@ -30,6 +31,7 @@ on:
       - "nix/**"
       - "rfd/**"
       - "scripts/**"
+      - "tests/**"
       - "cliff.toml"
       - ".github/workflows/ci.yml"
       - ".github/workflows/commits.yml"
@@ -112,6 +114,60 @@ jobs:
 
       - run: nix develop --command make test
       - run: nix develop --command make check-rfds
+
+  dynamic-heic-imageio:
+    name: Dynamic HEIC ImageIO
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify the synthetic fixture with ImageIO
+        run: |
+          swift tests/fixtures/dynamic-heic/verify-imageio.swift \
+            tests/fixtures/dynamic-heic/synthetic-all-properties.heic \
+            > "$RUNNER_TEMP/synthetic-imageio.json"
+      - name: Check out the independent HEIC author
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: mczachurski/wallpapper
+          ref: 64d6e2b2088c990e0e7ea0deff8710bca93233fa
+          path: external/wallpapper
+          persist-credentials: false
+      - name: Author and verify the independent fixture
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/wallpapper-fixture"
+          swift tests/fixtures/dynamic-heic/generate-png-inputs.swift "$fixture"
+          cat > "$fixture/config.json" <<'JSON'
+          [
+            {"fileName":"00-red.png","isPrimary":true,"isForLight":true,"time":"00:00:00"},
+            {"fileName":"06-green.png","time":"06:00:00"},
+            {"fileName":"12-blue.png","time":"12:00:00"},
+            {"fileName":"18-white.png","isForDark":true,"time":"18:00:00"}
+          ]
+          JSON
+          swift build --package-path external/wallpapper \
+            --configuration release --arch arm64 --arch x86_64
+          external/wallpapper/.build/apple/Products/Release/wallpapper \
+            -i "$fixture/config.json" -o "$fixture/imageio-wallpapper-h24.heic" -q 1.0
+          external/wallpapper/.build/apple/Products/Release/wallpapper \
+            -e "$fixture/imageio-wallpapper-h24.heic" \
+            > "$fixture/wallpapper-extraction.txt"
+          swift tests/fixtures/dynamic-heic/verify-imageio.swift \
+            "$fixture/imageio-wallpapper-h24.heic" h24 \
+            > "$fixture/imageio-verification.json"
+          shasum -a 256 "$fixture/imageio-wallpapper-h24.heic" \
+            > "$fixture/sha256.txt"
+      - name: Preserve ImageIO evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dynamic-heic-imageio-evidence
+          path: |
+            ${{ runner.temp }}/synthetic-imageio.json
+            ${{ runner.temp }}/wallpapper-fixture/imageio-wallpapper-h24.heic
+            ${{ runner.temp }}/wallpapper-fixture/imageio-verification.json
+            ${{ runner.temp }}/wallpapper-fixture/sha256.txt
+            ${{ runner.temp }}/wallpapper-fixture/wallpapper-extraction.txt
+          if-no-files-found: error
 
   greetd-e2e:
     name: greetd E2E

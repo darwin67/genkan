@@ -8,19 +8,19 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
 
 * Phase 1: Establish fixtures and format model
 
-- [ ] Acquire or reproducibly generate a minimal multi-image HEIC fixture with
+- [X] Acquire or reproducibly generate a minimal multi-image HEIC fixture with
   known ~h24~, ~solar~, embedded appearance, and standalone ~apr~ metadata.
 - [ ] Acquire an independently authored fixture, verify its image order,
   metadata indices, and distinguishable pixels through macOS ImageIO, and
   record that evidence separately from Genkan's parser assumptions.
-- [ ] Record fixture provenance, hash, top-level image ordering, dimensions,
+- [X] Record fixture provenance, hash, top-level image ordering, dimensions,
   metadata structure, and decoded reference pixels.
-- [ ] Specify the Apple namespace URI, namespace-equivalent XMP forms,
+- [X] Specify the Apple namespace URI, namespace-equivalent XMP forms,
   zero-based indices, standalone ~apr~ versus embedded ~ap~, duplicate-property
   rejection, and solar/time/appearance precedence in format-model tests.
-- [ ] Define typed time, solar, appearance, schedule-point, and image-reference
+- [X] Define typed time, solar, appearance, schedule-point, and image-reference
   models without coupling them to iced, layer-shell, or GeoClue.
-- [ ] Add deterministic clock and location inputs for tests and previews.
+- [X] Add deterministic clock and location inputs for tests and previews.
 
 * Phase 2: Parse and decode dynamic HEIC
 

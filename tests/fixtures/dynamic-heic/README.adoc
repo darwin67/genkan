@@ -1,0 +1,53 @@
+= Dynamic HEIC format fixture
+
+`synthetic-all-properties.heic` is a four-image, 8 by 8 HEIC used to establish
+the RFD 4 format contract before adding the production parser. Its images are
+solid red, green, blue, and white in zero-based top-level collection order.
+Only image 0 is primary and carries XMP metadata.
+
+The fixture is generated entirely from `generate.c`; it contains no third-party
+artwork. The generator uses libheif 1.23.1 with its x265 encoder in lossless
+mode. Build it with a C compiler and libheif development files:
+
+[source,sh]
+----
+cc $(pkg-config --cflags libheif) generate.c \
+  $(pkg-config --libs libheif) -o generate
+./generate synthetic-all-properties.heic
+----
+
+The primary image's namespace-aware XMP properties contain Base64 binary
+property lists with this decoded structure:
+
+[source,text]
+----
+h24  { ap = { d = 3, l = 0 },
+       ti = [{i=0,t=0.0}, {i=1,t=0.25}, {i=2,t=0.5}, {i=3,t=0.75}] }
+solar { ap = { d = 3, l = 0 },
+        si = [{i=0,a=-20,z=0}, {i=1,a=15,z=90},
+              {i=2,a=55,z=180}, {i=3,a=10,z=270}] }
+apr   { d = 3, l = 0 }
+----
+
+Fixture record:
+
+* generator: `generate.c` in this directory;
+* source artwork: programmatic solid colors, authored for Genkan under the
+  repository license;
+* byte size: 1,904 bytes;
+* SHA-256:
+  `1c38aa9d81234a69873d24a81eec13ca94a5fae0f9fabe0cf034f87f31255f00`;
+* top-level order: red, green, blue, white; HEIF item IDs 1, 2, 3, 4;
+* dimensions: 8 by 8 for every image;
+* metadata: XMP MIME item 5 associated only with primary image 1;
+* libheif/ImageMagick reference center pixels: red `(254,0,0,255)`, green
+  `(0,255,1,255)`, blue `(0,0,254,255)`, and white `(255,255,255,255)`; the
+  ImageIO verifier compares them with the intended colors using a tolerance of
+  two channel values for decoder color conversion.
+
+`verify-imageio.swift` is an independent macOS ImageIO verifier. It checks the
+collection order through decoded pixels, dimensions, and Apple metadata
+placement and emits the observations as JSON. Its output must be recorded here
+before this fixture can serve as the independently ImageIO-verified
+compatibility fixture; Linux libheif evidence alone is not represented as that
+verification.
