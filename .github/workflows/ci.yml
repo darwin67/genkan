@@ -14,6 +14,7 @@ on:
       - "nix/**"
       - "rfd/**"
       - "scripts/**"
+      - "tests/**"
       - "cliff.toml"
       - ".github/workflows/ci.yml"
       - ".github/workflows/commits.yml"
@@ -30,6 +31,7 @@ on:
       - "nix/**"
       - "rfd/**"
       - "scripts/**"
+      - "tests/**"
       - "cliff.toml"
       - ".github/workflows/ci.yml"
       - ".github/workflows/commits.yml"
@@ -112,6 +114,29 @@ jobs:
 
       - run: nix develop --command make test
       - run: nix develop --command make check-rfds
+
+  dynamic-heic-imageio:
+    name: Dynamic HEIC ImageIO
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Type-check fixture tools
+        run: |
+          swiftc -typecheck tests/fixtures/dynamic-heic/verify-imageio.swift
+          swiftc -typecheck tests/fixtures/dynamic-heic/generate-png-inputs.swift
+      - name: Verify the synthetic fixture with ImageIO
+        run: |
+          swift tests/fixtures/dynamic-heic/verify-imageio.swift \
+            tests/fixtures/dynamic-heic/synthetic-all-properties.heic \
+            > "$RUNNER_TEMP/synthetic-imageio.json"
+          cat "$RUNNER_TEMP/synthetic-imageio.json"
+      - name: Verify the independently authored fixture with ImageIO
+        run: |
+          swift tests/fixtures/dynamic-heic/verify-imageio.swift \
+            tests/fixtures/dynamic-heic/imageio-wallpapper-h24.heic h24 \
+            > "$RUNNER_TEMP/wallpapper-imageio.json"
+          cat "$RUNNER_TEMP/wallpapper-imageio.json"
 
   greetd-e2e:
     name: greetd E2E

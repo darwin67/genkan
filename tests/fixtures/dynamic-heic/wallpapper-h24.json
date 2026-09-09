@@ -1,0 +1,21 @@
+[
+  {
+    "fileName": "00-red.png",
+    "isPrimary": true,
+    "isForLight": true,
+    "time": "00:00:00"
+  },
+  {
+    "fileName": "06-green.png",
+    "time": "06:00:00"
+  },
+  {
+    "fileName": "12-blue.png",
+    "time": "12:00:00"
+  },
+  {
+    "fileName": "18-white.png",
+    "isForDark": true,
+    "time": "18:00:00"
+  }
+]

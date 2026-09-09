@@ -1,0 +1,159 @@
+#+TITLE: RFD 0004 implementation checklist
+#+STARTUP: showall
+
+Implements [[file:README.adoc][RFD 4: Dynamic HEIC desktop wallpaper]].
+
+The phases are ordered. Preserve the existing MOV login and lock wallpaper
+behavior while establishing the reusable dynamic-wallpaper boundary.
+
+* Phase 1: Establish fixtures and format model
+
+- [X] Acquire or reproducibly generate a minimal multi-image HEIC fixture with
+  known ~h24~, ~solar~, embedded appearance, and standalone ~apr~ metadata.
+- [X] Acquire an independently authored fixture, verify its image order,
+  metadata indices, and distinguishable pixels through macOS ImageIO, and
+  record that evidence separately from Genkan's parser assumptions.
+- [X] Record fixture provenance, hash, top-level image ordering, dimensions,
+  metadata structure, and decoded reference pixels.
+- [X] Specify the Apple namespace URI and namespace-expanded property matching,
+  verify decoded standalone ~apr~ versus embedded ~ap~ shapes and zero-based
+  indices against ImageIO, and cover conflicting-duplicate and
+  solar/time/appearance precedence in format-model tests.
+- [X] Define typed time, solar, appearance, schedule-point, and image-reference
+  models without coupling them to iced, layer-shell, or GeoClue.
+- [X] Add deterministic clock and location inputs for tests and previews.
+
+* Phase 2: Parse and decode dynamic HEIC
+
+- [ ] Add pinned ~libheif~ runtime and build dependencies with a verified HEVC
+  decode backend on x86_64-linux and aarch64-linux.
+- [ ] Add maintained Rust ~libheif~, XML, Base64, and binary-property-list
+  dependencies using the minimum feature set required for decode.
+- [ ] Open only absolute regular local files through a stable descriptor and
+  reject URIs, FIFOs, devices, and pathname replacement while documenting that
+  the file owner can still modify the bound inode in place.
+- [ ] Create the libheif context, apply source, item, tile, dimension, metadata,
+  nesting, decoded-memory, and working-memory limits before parsing, and retain
+  a descriptor-owning ~Read + Seek~ reader for lazy decode.
+- [ ] Capture one ordered top-level item-ID vector, resolve every metadata index
+  through it without compaction after handle failure, and inspect all
+  primary-image XMP MIME metadata blocks.
+- [ ] Parse Apple ~h24~, ~solar~, and ~apr~ properties while ignoring unrelated
+  metadata and unknown future keys.
+- [ ] Bound Base64, XML, and property-list expansion during parsing, then
+  validate value counts, image indices, finite numeric domains, dimensions,
+  decoded lengths, and arithmetic before frame allocation.
+- [ ] Decode a selected item to packed RGBA without invoking a shell or external
+  conversion command.
+- [ ] Convert supported color profiles and embedded orientation to opaque SDR
+  sRGB RGBA8; reject or fall back from unsupported HDR and color metadata.
+- [ ] Test malformed containers and metadata against the limits before adding a
+  desktop or authentication presentation consumer.
+
+* Phase 3: Implement ~h24~ scheduling and transitions
+
+- [ ] Compute ~t_now~ from local wall-clock seconds divided by 86,400, require
+  ~0 <= t < 1~, use ~t <= t_now~ selection, and define empty, duplicate, and
+  exact-boundary behavior in tests.
+- [ ] Recompute after time-zone, daylight-saving, clock, suspend, and resume
+  changes rather than replaying skipped times, including repeated-hour tests.
+- [ ] Wake at relevant schedule boundaries, resynchronize at least every 60
+  seconds, and avoid an unnecessary static-frame redraw loop.
+- [ ] Implement a two-second boundary-starting dissolve, immediate switch after
+  a late decode or unequal dimensions, and immediate reselection after clock
+  discontinuity.
+- [ ] Attach a request-generation token to decode completion so stale work
+  cannot replace a frame selected after a clock or schedule change.
+- [ ] Bound both decoded endpoints, displayed or pending blend, renderer-owned
+  buffers, and decoder working memory; release obsolete roles promptly.
+- [ ] Keep reduced-motion HEIC scheduling active while disabling dissolves;
+  preserve the existing fixed-poster meaning for reduced-motion MOV playback.
+- [ ] Use appearance metadata as an explicit static preference and fallback
+  without depending on a desktop-environment theme API.
+- [ ] Add all schedule, transition, stale-work, resource, and failure regression
+  tests in this phase rather than deferring them to final verification.
+
+* Phase 4: Add the layer-shell desktop runtime
+
+- [ ] Add ~genkan wallpaper --file~ as a dedicated logged-in-user state machine
+  with no greetd, PAM, lock, session-selection, or power behavior.
+- [ ] Require wlr layer-shell and fail without opening an ordinary fallback
+  window when the compositor does not support it.
+- [ ] Add a dedicated Smithay Client Toolkit layer-shell runtime with a bounded
+  shared-memory renderer; share neutral RGBA helpers rather than the lock
+  runtime or authentication presentation.
+- [ ] Create one explicit-output background surface with all-edge anchors,
+  exclusive zone ~-1~, keyboard interactivity ~none~, and an empty input region
+  for every output.
+- [ ] Perform the initial bufferless commit, acknowledge configure before
+  attachment, reuse buffers only after release, and pace animation through
+  compositor frame callbacks.
+- [ ] Handle output addition, removal, logical size, transform, and mixed scale
+  without restarting the shared scheduler or decoder.
+- [ ] Render aspect-preserving cover independently on laptop, 1080p, 4K,
+  ultrawide, portrait, and mixed-output layouts.
+- [ ] Verify the desktop wallpaper remains an ordinary occluded client while
+  ~genkan lock~ owns compositor session-lock surfaces.
+- [ ] Document compositor autostart as the initial activation mechanism without
+  wrapping validated session commands, installing a generic UID-wide user
+  service, or delaying desktop startup.
+- [ ] Add headless layer-shell protocol, multi-output, input-region, buffer,
+  rendering, memory, and failure tests in this phase.
+
+* Phase 5: Add optional desktop GeoClue solar selection
+
+- [ ] Add one high-level Genkan desktop solar enablement path without exposing
+  provider, application-authorization, service URL, or coordinate settings.
+- [ ] Request only city-level location through the logged-in user's GeoClue
+  agent after the initial wallpaper frame is available and never block desktop
+  startup or wallpaper surface configuration.
+- [ ] Map each authored altitude and azimuth vector to the nearest point on a
+  one-minute sampled and locally refined 24-hour trajectory, with explicit
+  azimuth convention, angular-distance, tie, duplicate-time, and polar tests.
+- [ ] Feed mapped times through the Phase 3 scheduler and recalculate at local
+  midnight or after a meaningful location change.
+- [ ] Keep a successful location in process memory, refresh no more often than
+  every six hours, and exclude coordinates, network observations, metadata, and
+  raw service errors from diagnostics.
+- [ ] Fall back to a valid ~h24~ schedule and then an appearance or primary
+  static frame after denial, timeout, unavailable service, or coarse accuracy;
+  do not invalidate a retained location merely because the network disconnects.
+- [ ] Extend the NixOS module so solar enablement provisions GeoClue and the
+  user-session agent authorization without mirroring raw GeoClue settings or
+  automatically activating a compositor process.
+- [ ] Verify the application and agent authorization contract against the real
+  pinned GeoClue daemon in addition to deterministic mocked-location tests.
+- [ ] Keep login and lock location requests out of the initial implementation;
+  do not clear the host-wide agent whitelist or use ~system=true~ as a bypass.
+
+* Phase 6: Reuse HEIC in login and lock
+
+- [ ] Place dynamic HEIC behind the existing wallpaper state without regressing
+  packaged MOV catalog playback, posters, reduced motion, or generated fallback.
+- [ ] Keep login, lock, and desktop top-level lifecycle and side effects
+  separate while sharing only parser, scheduler, decoder, and frame types.
+- [ ] Preserve the greeter's authentication-region dimming and leave the desktop
+  wallpaper unobstructed.
+- [ ] Ensure HEIC parsing, scheduling, decoding, blending, and decorative-frame
+  failures cannot affect authentication, session start, lock readiness,
+  failed-authentication recovery, or unlock authority.
+- [ ] Preserve RFD 3's fatal handling for mandatory lock-surface, configure,
+  buffer, and renderer failures: abort without issuing ~unlock_and_destroy~.
+- [ ] Verify that login and lock make no GeoClue request and that reduced-motion
+  HEIC continues time scheduling without a dissolve.
+
+* Phase 7: Packaging, documentation, and verification
+
+- [ ] Extend the wallpaper manifest for immutable HEIC assets with provenance,
+  rights, hashes, byte size, item structure, and schedule metadata.
+- [ ] Package HEIC assets as pinned fixed-output sources with no runtime media
+  download and document local-file behavior separately.
+- [ ] Document the high-level solar opt-in, GeoClue's possible network use,
+  supported compositors, competing wallpaper managers, reduced motion, and
+  all fallback behavior.
+- [ ] Add headless layer-shell multi-output and session-lock coexistence smoke
+  tests with distinct pixel evidence and no live GeoClue dependency.
+- [ ] Capture and inspect representative time transition, portrait, ultrawide,
+  mixed-scale, and locked presentation evidence.
+- [ ] Run ~make verify~, ~make e2e~, the session-lock VM, and applicable physical
+  graphics checks on supported AMD and NVIDIA hosts.

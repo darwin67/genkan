@@ -1,0 +1,109 @@
+= Dynamic HEIC format fixture
+
+`synthetic-all-properties.heic` is a four-image, 8 by 8 HEIC used to establish
+the RFD 4 format contract before adding the production parser. Its images are
+solid red, green, blue, and white in zero-based top-level collection order.
+Only image 0 is primary and carries XMP metadata.
+
+The fixture is generated entirely from `generate.c`; it contains no third-party
+artwork. The generator uses libheif 1.23.1 with its x265 encoder in lossless
+mode, explicitly selects the encoder whose stable libheif ID is `x265`, and
+fails rather than silently selecting another HEVC encoder. Build it with a C
+compiler and libheif development files:
+
+[source,sh]
+----
+cc $(pkg-config --cflags libheif) generate.c \
+  $(pkg-config --libs libheif) -o generate
+./generate synthetic-all-properties.heic
+----
+
+The checked-in file and its SHA-256 are the canonical byte fixture. Rebuilding
+with the recorded libheif version and x265 encoder is expected to reproduce its
+image and metadata content, but byte-identical output also depends on the exact
+x265 version and build configuration, which were not captured when the fixture
+was first authored. A rebuilt file with a different hash must therefore be
+reviewed and revalidated rather than treated as a byte-for-byte reproduction.
+
+The primary image's namespace-aware XMP properties contain Base64 binary
+property lists with this decoded structure:
+
+[source,text]
+----
+h24  { ap = { d = 3, l = 0 },
+       ti = [{i=0,t=0.0}, {i=1,t=0.25}, {i=2,t=0.5}, {i=3,t=0.75}] }
+solar { ap = { d = 3, l = 0 },
+        si = [{i=0,a=-20,z=0}, {i=1,a=15,z=90},
+              {i=2,a=55,z=180}, {i=3,a=10,z=270}] }
+apr   { d = 3, l = 0 }
+----
+
+Fixture record:
+
+* generator: `generate.c` in this directory;
+* source artwork: programmatic solid colors, authored for Genkan under the
+  repository license;
+* byte size: 1,904 bytes;
+* SHA-256:
+  `1c38aa9d81234a69873d24a81eec13ca94a5fae0f9fabe0cf034f87f31255f00`;
+* top-level order: red, green, blue, white; HEIF item IDs 1, 2, 3, 4;
+* dimensions: 8 by 8 for every image;
+* metadata: XMP MIME item 5 associated only with primary image 1;
+* libheif/ImageMagick reference center pixels: red `(254,0,0,255)`, green
+  `(0,255,1,255)`, blue `(0,0,254,255)`, and white `(255,255,255,255)`; the
+  ImageIO verifier compares them with the intended colors using a tolerance of
+  two channel values for decoder color conversion.
+
+`verify-imageio.swift` independently checks this fixture's SHA-256, sRGB frame
+pixels, metadata namespace and placement, Base64 encoding, binary property-list
+format, exact schedule and appearance schemas, indices, and values with macOS
+ImageIO.
+The check in
+link:https://github.com/darwin67/genkan/actions/runs/34258316408[GitHub Actions
+run 34258316408] observed four images in the expected order, dimensions and
+metadata placement. Its center pixels were
+`(255,0,0,255)`, `(0,255,1,255)`, `(0,0,255,255)`, and `(255,255,255,255)`.
+
+== Independently authored compatibility fixture
+
+`imageio-wallpapper-h24.heic` was authored on macOS by
+link:https://github.com/mczachurski/wallpapper/tree/64d6e2b2088c990e0e7ea0deff8710bca93233fa[`mczachurski/wallpapper`
+at commit `64d6e2b`], independently of Genkan's format model and prospective
+parser. That generator is MIT licensed. The input PNGs were programmatic solid
+colors produced by `generate-png-inputs.swift`, using `wallpapper-h24.json` as
+the authoring configuration. After checking out the pinned author, reproduce it
+on macOS with:
+
+[source,sh]
+----
+swift generate-png-inputs.swift "$TMPDIR/wallpapper-fixture"
+cp wallpapper-h24.json "$TMPDIR/wallpapper-fixture/"
+swift build --package-path /path/to/wallpapper \
+  --configuration release --arch arm64 --arch x86_64
+/path/to/wallpapper/.build/apple/Products/Release/wallpapper \
+  -i "$TMPDIR/wallpapper-fixture/wallpapper-h24.json" \
+  -o imageio-wallpapper-h24.heic -q 1.0
+----
+
+The PNG files and JSON must share a directory because `wallpapper` resolves
+image paths relative to its configuration file.
+
+Fixture record:
+
+* byte size: 4,300 bytes;
+* SHA-256:
+  `2f82da28545f7d26eb79132d918f1b969d50b29044351ce3732197283e41474f`;
+* top-level collection order: red, green, blue, white;
+* HEIF item IDs in collection order: 1, 3, 4, 5, demonstrating that metadata
+  positions are not HEIF item IDs;
+* dimensions: 8 by 8 for every image;
+* metadata: XMP MIME item 2 associated only with primary image 1;
+* decoded `h24`: `{i=0,t=0.0}`, `{i=1,t=0.25}`, `{i=2,t=0.5}`,
+  `{i=3,t=0.75}` with embedded appearance `{l=0,d=3}`;
+* macOS ImageIO center pixels: `(254,0,0,255)`, `(0,254,0,255)`,
+  `(0,0,254,255)`, and `(255,255,255,255)`.
+
+The independent author and `verify-imageio.swift` produced and verified this
+evidence in the linked GitHub Actions run. The macOS CI job continues checking
+both fixtures so later byte or metadata changes cannot silently invalidate the
+recorded evidence.

@@ -1,0 +1,433 @@
+:authors: Darwin D. Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/darwin67/genkan/pull/32
+:labels: wallpaper, heic, desktop, wayland, geoclue, solar
+
+= RFD 4 Dynamic HEIC desktop wallpaper
+
+== Goal
+
+Extend Genkan's wallpaper presentation into the logged-in Wayland desktop and
+support macOS-style dynamic HEIC wallpapers whose still images change with the
+local time of day. Solar-position schedules are an optional enhancement. A user
+who opts into solar behavior does not need to discover, configure, or supply
+geographic coordinates to Genkan.
+
+This work adds a desktop wallpaper runtime; it does not keep the greetd process
+alive after login or make the greeter own any part of the selected desktop
+session. The HEIC schedule and decode implementation is reusable by the login
+and lock presentations, but desktop ownership remains a separate process and
+Wayland role.
+
+Implementation progress is tracked in
+link:IMPLEMENTATION.org[the implementation checklist].
+
+== Context
+
+RFD 2 added continuous HEVC MOV wallpaper playback to the login and lock
+presentations. The current wallpaper state decodes a bounded latest RGBA frame,
+hands it to iced or the session-lock renderer, scales it to cover each output,
+and retains the displayed frame after a presentation failure. Those frame and
+failure boundaries remain useful, but a dynamic HEIC is not a video and should
+not be passed through the MOV playback pipeline.
+
+A macOS dynamic HEIC is a HEIF container with multiple top-level still images.
+XMP metadata associated with its primary image carries an Apple-namespaced,
+Base64-encoded binary property list. Relevant schedule properties are:
+
+* `apple_desktop:h24`, a sequence of image indices and normalized local times;
+* `apple_desktop:solar`, a sequence of image indices and authored solar
+  altitude and azimuth values; and
+* `apple_desktop:apr`, a light and dark appearance pair.
+
+The compact property-list keys commonly used by compatible files are `ti` for
+the time sequence, `si` for the solar sequence, `ap` for an embedded appearance
+pair, `i` for an image index, `t` for a fraction of the local civil day, `a` for
+solar altitude, and `z` for solar azimuth. Indices address positions in the
+ordered top-level image collection; they are not HEIF item identifiers.
+
+The Apple namespace URI is `http://ns.apple.com/namespace/1.0/`. Parsing is
+namespace-aware rather than dependent on the literal `apple_desktop` prefix and
+accepts equivalent XMP attribute and element forms. A standalone `apr` property
+contains `{d,l}` at its property-list root; `ap` is the equivalent pair nested
+inside a time or solar property. Image positions are zero-based. Identical
+decoded duplicates are idempotent. Conflicting duplicate Apple properties
+permanently make that property unusable, even if a later duplicate matches the
+first value; unrelated valid properties remain available. Unknown namespaces
+and keys are ignored.
+
+Schedule precedence is explicit. A usable solar schedule is selected only when
+desktop solar behavior is enabled and location is available; otherwise a valid
+`h24` schedule is used. An explicit static light or dark preference suppresses
+dynamic scheduling and selects the corresponding appearance image. Appearance
+metadata otherwise provides fallback after dynamic scheduling is unavailable.
+That fallback uses standalone `apr`, then embedded `h24.ap`, then embedded
+`solar.ap`. An automatic preference selects the fallback's light image; an
+explicit light or dark preference selects the corresponding image from the
+same ordered fallback search.
+
+The format describes still variants and schedule points. It does not require a
+particular Genkan animation between points. Smooth transition policy therefore
+belongs to Genkan and must be deterministic independently of undocumented
+macOS implementation details.
+
+The existing `genkan login` process cannot become the desktop wallpaper
+service. greetd starts the selected session only after the greeter exits, and
+the desktop has a different Wayland connection, user identity, output
+lifecycle, and failure boundary. Similarly, `genkan lock` temporarily owns
+security-sensitive session-lock surfaces and must not remain the desktop
+background owner after unlock.
+
+Wayland has no universal set-wallpaper protocol. A client can provide a
+wallpaper on compositors supporting the wlr layer-shell protocol; GNOME, KDE,
+and other desktop shells may instead require shell-specific settings APIs. The
+first implementation follows Genkan's existing niri and wlroots-oriented
+deployment rather than presenting a compositor-independent claim.
+
+== Decision
+
+Genkan will add an explicit long-running desktop command:
+
+[source,sh]
+----
+genkan wallpaper --file /absolute/path/to/wallpaper.heic
+----
+
+The command runs as the logged-in user, connects to that user's compositor,
+creates a non-interactive background-layer surface for every output, and keeps
+the selected wallpaper synchronized with local time. It does not authenticate,
+contact greetd or PAM, select a session, request power operations, or acquire a
+session lock.
+
+The initial desktop backend requires wlr layer-shell and is supported on the
+compositors for which that protocol behavior is verified. Unsupported
+compositors fail with a bounded diagnostic rather than opening an ordinary
+window above desktop content. Shell-specific GNOME and KDE integrations are
+deferred.
+
+Time scheduling through `h24` is the required dynamic behavior. Solar
+scheduling is optional and uses GeoClue when the user enables the solar feature.
+Genkan exposes the wallpaper feature choice, not GeoClue's provider URLs,
+application authorization fields, requested source, or raw coordinates. NixOS
+integration translates the high-level choice into the required GeoClue service
+and application authorization. The initial solar implementation belongs only
+to the logged-in desktop command, where a user-session GeoClue authorization
+agent exists. Login and lock support `h24` and static appearance selection but
+do not request location.
+
+Dynamic HEIC support will also fit behind the existing shared wallpaper state
+so login and lock can adopt the same selected frames without duplicating
+parsing or schedule rules. That reuse does not merge the desktop, greeter, and
+locker top-level state machines.
+
+[source,text]
+----
+                 shared dynamic-wallpaper engine
+          HEIF reader, metadata, schedule, RGBA frames
+                              |
+              +---------------+---------------+
+              |               |               |
+              v               v               v
+       genkan wallpaper  genkan login    genkan lock
+       layer-shell       iced window     session-lock surfaces
+       logged-in user    greeter user    logged-in user
+----
+
+== HEIC reader and validation
+
+Genkan will use `libheif` through maintained Rust bindings to enumerate
+top-level image items, inspect metadata, and decode selected items to RGBA. It
+will not invoke ImageMagick, `heif-convert`, a shell, or an external wallpaper
+process. The Rust `plist` crate will decode the binary property list after
+bounded Base64 decoding, and a namespace-aware XML reader will inspect XMP.
+
+The reader captures one ordered top-level item-ID vector and resolves every
+metadata image position through it. A failed or unsupported image handle does
+not compact that vector and silently retarget later positions. Compatibility is
+verified with at least one independently authored HEIC whose image order and
+pixels were confirmed through macOS ImageIO, not only with a fixture written by
+Genkan's own assumptions.
+
+Before container parsing, Genkan creates a libheif context with explicit
+security limits and supplies a descriptor-owning `Read + Seek` reader retained
+for lazy image decoding. The reader then inspects all XMP MIME metadata blocks
+associated with the primary image and ignores unrelated or unknown metadata. It
+validates the selected Apple property before publishing a schedule:
+
+* every referenced image position exists in the top-level image collection;
+* image count, dimensions, decoded byte size, metadata size, and nested value
+  count remain below explicit limits;
+* times and solar values are finite and within their defined domains;
+* decoded dimensions and pixel lengths agree without integer overflow; and
+* duplicate schedule points, missing optional keys, and unknown future keys
+  have deterministic behavior and cannot cause a panic.
+
+Limits cover source bytes, item and tile counts, dimensions, aggregate decoded
+working memory, metadata bytes, XML and property-list nesting, and expanded
+object counts before an untrusted declaration can drive allocation. Validation
+after deserialization remains a semantic check rather than the allocation
+limit.
+
+The source path must be an existing absolute regular file. It is bound and
+opened by descriptor so later pathname replacement cannot substitute a FIFO,
+device, remote URI, or different file. This binding does not prevent the owner
+from modifying the same inode in place; such mutation may stop future decoding
+but cannot redirect the reader to another object. A malformed, changing, or
+unsupported HEIC is a presentation failure, never an authentication or unlock
+decision.
+
+The implementation will not eagerly decode every image. At 3840 by 2160, one
+RGBA8 frame occupies about 31.6 MiB; retaining sixteen decoded variants would
+consume about 506 MiB before renderer and decoder working memory. A
+precomposited dissolve may temporarily require its two decoded endpoints, one
+displayed or pending blended frame, and one renderer-owned buffer. These roles
+and decoder working memory are bounded explicitly; the implementation does not
+describe a blended frame as replacing either source endpoint before it can do
+so. An unused endpoint is discarded when the request generation, schedule, or
+output state changes.
+
+== Time schedule
+
+An `h24` entry's `t` value is interpreted as a fraction of the local wall clock:
+`t_now = (hour * 3600 + minute * 60 + second) / 86400`. Local noon is therefore
+always `0.5`, including on a 23-hour or 25-hour daylight-saving day. Valid
+entries satisfy `0 <= t < 1`; `t = 1`, an empty sequence, and non-finite values
+make the schedule unusable. If several entries have the same `t`, their
+metadata order is retained and the last entry wins at that boundary. Genkan
+obtains local fields, time zone, and daylight-saving offset from the operating
+system. No geographic position is needed.
+
+Entries are ordered by normalized time and treated as a circular sequence. The
+last entry whose `t <= t_now` is the current image; the next entry is the
+transition target. Selection wraps across local midnight. Skipped wall-clock
+times are not replayed during a spring transition, and the repeated autumn hour
+is selected again from its current wall-clock fields. A clock jump, time-zone
+change, daylight-saving transition, suspend, or resume causes an immediate
+selection from current civil time rather than replaying elapsed transitions.
+
+The scheduler wakes at the next relevant boundary and also performs a bounded
+periodic resynchronization so an external clock change cannot leave a stale
+frame for more than 60 seconds. It does not redraw once per second while the
+same static frame remains selected.
+
+The default transition is a two-second dissolve that starts at the schedule
+boundary and finishes on the selected image. It publishes through the same
+bounded latest-frame handoff used by the existing wallpaper state. If the next
+image is not decoded within that two-second window, Genkan retains the previous
+frame and switches immediately when the decode completes. A request-generation
+token prevents an obsolete decode from replacing the frame after reselection.
+Clock discontinuities snap to the newly selected frame without a dissolve, and
+images with unequal decoded dimensions switch immediately. Reduced-motion HEIC
+continues scheduling and decoding but always changes immediately at a boundary;
+it does not become a fixed poster as reduced-motion MOV playback does.
+Continuous interpolation over an entire schedule interval is deferred until
+visual and resource evidence demonstrates that it is preferable to a bounded
+transition.
+
+== Optional solar schedule
+
+Solar behavior is opt-in. Enabling it permits Genkan to request approximate
+location from GeoClue and causes NixOS integration to enable and authorize the
+corresponding GeoClue application identity. Genkan does not expose a location
+provider selector, GeoClue configuration passthrough, latitude or longitude
+fields, or geolocation-service URL.
+
+City-level accuracy is sufficient for sunrise, sunset, and the visual solar
+path. Genkan requests no greater accuracy, does not write the returned location
+to disk, and never includes coordinates, nearby network identifiers, or raw
+GeoClue errors in ordinary diagnostics. The documentation states that GeoClue
+may use a network geolocation provider and that enabling solar behavior can
+therefore result in location-related network requests according to host policy.
+
+The wallpaper appears before location resolution completes. Location lookup
+must not delay desktop startup or wallpaper surface configuration. For the
+current date and location, Genkan samples the actual 24-hour solar trajectory at
+one-minute wall-clock intervals and performs a bounded refinement around each
+nearest sample. Altitude and azimuth are converted to unit vectors, with
+azimuth measured clockwise from north, and spherical angular distance is used
+to map every authored `si` point to the nearest position on that day's actual
+trajectory. Azimuth distinguishes morning from evening. An exact distance tie
+uses the earlier wall-clock point; authored points mapping to the same time keep
+metadata order and the last one wins. The resulting times use the `h24`
+selection and transition rules. This compatibility algorithm is recalculated
+at local midnight and after a meaningful location change; Genkan does not claim
+bit-for-bit equivalence with Apple's private implementation.
+
+GeoClue denial, timeout, an unavailable service, or a result coarser than city
+accuracy produces a visual fallback rather than a daemon failure. If the file
+also contains a valid `h24` schedule, Genkan uses it. Otherwise it displays the
+declared appearance or primary static frame. A successful location is retained
+in memory for the process lifetime and refreshed no more often than every six
+hours; later network loss does not invalidate it. Polar-day and polar-night
+dates still use their computed 24-hour trajectory. Genkan does not invent
+coordinates from the time-zone name or silently map solar azimuth directly to
+clock time.
+
+The desktop command is an ordinary logged-in application and uses the
+internally arranged user-session GeoClue agent path. Application allow-listing
+or `system=true` is not treated as an agentless authorization mechanism.
+Pre-login and lock solar selection are deferred; neither requests location in
+the first implementation. The implementation verifies authorization against
+the real pinned GeoClue daemon because a mocked location interface cannot prove
+the agent contract.
+
+== Appearance metadata
+
+Standalone `apr` metadata and an appearance pair embedded in a time or solar
+property are parsed and validated. The first implementation uses them as static
+fallback choices and supports an explicit light or dark wallpaper preference.
+Automatic synchronization with GNOME, KDE, or another desktop shell's theme is
+not required for time-of-day support and is deferred until a portable signal is
+identified.
+
+== Desktop rendering and output lifecycle
+
+The desktop command owns a dedicated Smithay Client Toolkit layer-shell runtime
+and an initially shared-memory renderer. It shares neutral frame and pixel
+helpers with login and lock, not the lock runtime or its authentication
+presentation. The engine publishes opaque, orientation-correct SDR RGBA8 in
+sRGB. Embedded transforms are applied during decode; supported color profiles
+are converted to sRGB, alpha is composited over opaque black, and unsupported
+HDR or color metadata falls back rather than being displayed with unspecified
+color.
+
+The runtime creates one background-layer surface for each explicit advertised
+output, anchors all four edges, sets exclusive zone `-1`, requests keyboard
+interactivity `none`, and installs an empty input region. It performs the
+initial bufferless commit, acknowledges configure, and only then attaches a
+buffer. Shared-memory buffers are bounded per output and reused only after
+release; transition rendering is paced by compositor frame callbacks rather
+than an unconstrained timer.
+
+The surface redraws after configure, scale, transform, and logical-size changes.
+Added outputs receive a surface using the current selected frame; removed
+outputs release their local surface and buffers without stopping the scheduler
+for remaining outputs.
+
+Each output applies aspect-preserving cover semantics independently: scale
+until the output is filled, center the image, and crop overflow. Mixed scale,
+orientation, aspect ratio, and resolution therefore do not distort the image
+or force all outputs to share one rendered buffer size. Output geometry is a
+rendering concern only and does not participate in time or solar selection.
+
+The desktop process does not add the greeter's authentication-region dimming
+layer. Wallpaper artwork is unobstructed unless an independent desktop shell or
+the active Genkan locker places content above it. When `genkan lock` acquires
+the compositor lock, the desktop wallpaper process remains an ordinary client
+behind the compositor-owned lock surfaces and cannot affect lock visibility or
+input isolation.
+
+== Process and deployment integration
+
+The initial wallpaper command is started through documented compositor
+autostart, which supplies the exact Wayland session environment and ties the
+process to compositor lifetime. Genkan does not initially install a generic
+systemd user service: one UID-wide user manager may outlive or serve multiple
+Wayland sessions and does not inherently identify the intended compositor.
+Genkan will not modify a validated desktop entry to wrap the selected session
+in a shell, start the wallpaper from the pre-authentication greeter, or make
+desktop startup depend on wallpaper readiness.
+
+The NixOS module provisions the package and exposes Genkan-level wallpaper and
+solar choices without claiming to activate a particular user's compositor
+process. When desktop solar is enabled, the module enables GeoClue and installs
+the exact application identity and agent authorization required by Genkan. Raw
+`services.geoclue2` settings remain host configuration owned and are neither
+mirrored nor passed through Genkan's option surface. Hosts with an existing
+GeoClue policy can still use normal Nix module merging to refine that service
+independently. Runtime solar selection remains separately and explicitly
+enabled in the Genkan wallpaper invocation; provisioning location access alone
+does not cause a request.
+
+The module must not globally replace a desktop environment's wallpaper manager
+without an explicit Genkan wallpaper enablement. It documents the initially
+supported layer-shell compositors and any compositor-specific requirement to
+disable or avoid a competing wallpaper process.
+
+Packaged dynamic HEIC assets follow RFD 2's immutable asset model: provenance,
+rights, byte size, cryptographic hash, media structure, schedule metadata, and
+delivery URL are recorded in the wallpaper manifest; Nix fetches them as
+fixed-output sources; and the running wallpaper process never downloads media.
+An administrative or user-owned local file remains supported without becoming
+a URI or content-download mechanism.
+
+== Failure and security boundaries
+
+Wallpaper content is decorative. Failure to connect to GeoClue, parse a
+schedule, decode or blend an HEIC image, or allocate a decorative frame retains
+the last valid content or selects the static fallback. It must not terminate a
+login or lock screen, release a session lock, affect PAM, or prevent greetd from
+starting a selected session.
+
+This recoverability does not weaken RFD 3. Failure of a mandatory lock surface,
+its compositor configure lifecycle, a required lock buffer, or the lock
+renderer remains a fatal availability failure. The locker aborts without
+sending `unlock_and_destroy`; the compositor retains fail-closed recovery
+ownership. A decorative HEIC failure may replace its pixels with an opaque
+solid background only while the mandatory lock rendering path remains valid.
+
+The desktop command may terminate when its compositor lacks the required
+wallpaper protocol or the Wayland connection is permanently lost. A per-output
+surface or allocation failure removes or freezes only the affected presentation
+where practical. Decode failure retains the last displayed valid frame; failure
+before one is available uses the primary image or generated background in login
+and lock consumers. Diagnostics are bounded, single-line, and exclude
+user-controlled metadata contents.
+
+HEIF parsing occurs in a worker isolated from interaction and Wayland dispatch.
+Frame and notification queues are bounded. Decoder retries and GeoClue retries
+use bounded delays and cannot create a busy loop. Wallpaper metadata never
+becomes a command, path, desktop identifier, D-Bus destination, log format, or
+shell input.
+
+== Verification
+
+The implementation must provide deterministic evidence for:
+
+* parsing valid `h24`, `solar`, and `apr` metadata from an independently
+  ImageIO-verified fixture and preserving top-level image ordering independently
+  of HEIF item identifiers;
+* rejecting malformed Base64, XML, property lists, image indices, dimensions,
+  numeric values, and excessive resource declarations without panic or
+  unbounded allocation;
+* correct local-time selection before, at, and after each boundary, across
+  midnight, daylight-saving changes, time-zone changes, suspend, and clock
+  jumps;
+* reduced-motion switching and normal bounded crossfades without blank,
+  stretched, stale, or partially allocated frames;
+* solar selection from a deterministic injected location and date, including
+  nearest-trajectory mapping, ties, duplicate mapped times, GeoClue timeout,
+  denial, coarse accuracy, polar conditions, retained location, and fallback;
+* proof that ordinary `h24` operation makes no GeoClue request and that solar
+  enablement requests only city-level accuracy, including an authorization
+  integration test against the pinned GeoClue daemon and user-session agent;
+* layer-shell output addition, removal, resize, transform, mixed scale, and
+  compositor rejection with exclusive zone `-1`, no input region, correct
+  configure acknowledgement, release-aware buffers, and callback-paced frames;
+* aspect-preserving cover rendering on laptop, 1080p, 4K, ultrawide, portrait,
+  and mixed-output layouts;
+* stable memory while changing repeatedly between high-resolution HEIC items;
+* coexistence with the session locker, including complete wallpaper occlusion
+  while locked and restoration after explicit authenticated unlock; and
+* package construction and headless compositor smoke checks on x86_64-linux and
+  aarch64-linux.
+
+Schedule and solar tests use injected clocks and locations. Graphics tests use
+a small committed or reproducibly generated HEIC fixture plus an independently
+authored, ImageIO-verified compatibility fixture with visibly distinct frames
+and known metadata, so ordinary CI never waits for real time or contacts a live
+location provider. A separate bounded integration check proves the real
+GeoClue authorization path. Representative desktop transitions and
+multi-output states are captured and visually inspected in addition to protocol
+and pixel checks.
+
+== Deferred work
+
+The first implementation does not include GNOME Shell, KDE Plasma, or
+X11-specific wallpaper adapters; automatic desktop light/dark preference
+discovery; direct HDR output; HEIC authoring; remote wallpaper downloads;
+per-output source selection; parallax; weather-dependent schedules; pre-login
+or lock-screen solar location requests; generic systemd user activation; or
+exact reproduction of undocumented macOS solar interpolation. Each requires a
+separate compatibility, security, and resource decision after the common HEIC
+engine and layer-shell desktop path are verified.

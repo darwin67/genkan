@@ -16,6 +16,9 @@ authoritative merely because it exists; its `state` says how it should be read.
 
 |link:0003/README.adoc[3: Secure session locking across suspend and resume]
 |Lock-before-suspend lifecycle, existing-session reauthentication, and secure Wayland unlock
+
+|link:0004/README.adoc[4: Dynamic HEIC desktop wallpaper]
+|Time-of-day HEIC scheduling, optional GeoClue solar selection, and Wayland desktop rendering
 |===
 
 == Source format
