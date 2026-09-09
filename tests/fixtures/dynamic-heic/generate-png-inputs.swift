@@ -17,14 +17,17 @@ let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
 for (name, components) in colors {
-    guard let context = CGContext(
+    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+          let context = CGContext(
         data: nil,
         width: 8,
         height: 8,
         bitsPerComponent: 8,
         bytesPerRow: 32,
-        space: CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        space: colorSpace,
+        bitmapInfo: CGBitmapInfo.byteOrder32Big.union(
+            CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        ).rawValue
     ) else {
         fatalError("could not create image context")
     }

@@ -15,9 +15,10 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
   record that evidence separately from Genkan's parser assumptions.
 - [X] Record fixture provenance, hash, top-level image ordering, dimensions,
   metadata structure, and decoded reference pixels.
-- [X] Specify the Apple namespace URI, namespace-equivalent XMP forms,
-  zero-based indices, standalone ~apr~ versus embedded ~ap~, duplicate-property
-  rejection, and solar/time/appearance precedence in format-model tests.
+- [X] Specify the Apple namespace URI and namespace-expanded property matching,
+  verify decoded standalone ~apr~ versus embedded ~ap~ shapes and zero-based
+  indices against ImageIO, and cover conflicting-duplicate and
+  solar/time/appearance precedence in format-model tests.
 - [X] Define typed time, solar, appearance, schedule-point, and image-reference
   models without coupling them to iced, layer-shell, or GeoClue.
 - [X] Add deterministic clock and location inputs for tests and previews.

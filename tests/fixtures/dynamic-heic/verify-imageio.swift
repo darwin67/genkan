@@ -40,13 +40,28 @@ func dictionary(_ value: Any, keys: Set<String>) -> [String: Any] {
     return dictionary
 }
 
-func integer(_ value: Any?) -> Int {
-    guard let value = value as? NSNumber else {
-        fatalError("expected an integer")
+func exactInteger(_ value: Any?) -> Int? {
+    guard let value = value as? NSNumber,
+          CFGetTypeID(value) != CFBooleanGetTypeID() else {
+        return nil
     }
-    precondition(CFGetTypeID(value) != CFBooleanGetTypeID())
-    return value.intValue
+    let integerEncodings = Set(["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"])
+    guard integerEncodings.contains(String(cString: value.objCType)) else {
+        return nil
+    }
+    return Int(value.stringValue)
 }
+
+func integer(_ value: Any?) -> Int {
+    guard let value = exactInteger(value) else {
+        fatalError("expected an exactly representable integer")
+    }
+    return value
+}
+
+precondition(exactInteger(NSNumber(value: 3)) == 3)
+precondition(exactInteger(NSNumber(value: 0.5)) == nil)
+precondition(exactInteger(NSNumber(value: UInt64.max)) == nil)
 
 func double(_ value: Any?) -> Double {
     guard let value = value as? NSNumber else {
@@ -139,7 +154,9 @@ for index in 0..<expectedPixels.count {
         for property in allProperties {
             let path = "apple_desktop:\(property)" as CFString
             if let tag = CGImageMetadataCopyTagWithPath(metadata, nil, path) {
-                precondition(CGImageMetadataTagCopyNamespace(tag) as String == appleDesktopNamespace)
+                precondition(
+                    (CGImageMetadataTagCopyNamespace(tag) as String?) == appleDesktopNamespace
+                )
                 guard let encoded = CGImageMetadataTagCopyValue(tag) as? String,
                       let data = Data(base64Encoded: encoded) else {
                     fatalError("\(property) must contain Base64 data")

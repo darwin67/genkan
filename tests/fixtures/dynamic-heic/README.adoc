@@ -7,7 +7,9 @@ Only image 0 is primary and carries XMP metadata.
 
 The fixture is generated entirely from `generate.c`; it contains no third-party
 artwork. The generator uses libheif 1.23.1 with its x265 encoder in lossless
-mode. Build it with a C compiler and libheif development files:
+mode, explicitly selects the encoder whose stable libheif ID is `x265`, and
+fails rather than silently selecting another HEVC encoder. Build it with a C
+compiler and libheif development files:
 
 [source,sh]
 ----
@@ -15,6 +17,13 @@ cc $(pkg-config --cflags libheif) generate.c \
   $(pkg-config --libs libheif) -o generate
 ./generate synthetic-all-properties.heic
 ----
+
+The checked-in file and its SHA-256 are the canonical byte fixture. Rebuilding
+with the recorded libheif version and x265 encoder is expected to reproduce its
+image and metadata content, but byte-identical output also depends on the exact
+x265 version and build configuration, which were not captured when the fixture
+was first authored. A rebuilt file with a different hash must therefore be
+reviewed and revalidated rather than treated as a byte-for-byte reproduction.
 
 The primary image's namespace-aware XMP properties contain Base64 binary
 property lists with this decoded structure:
@@ -45,7 +54,10 @@ Fixture record:
   ImageIO verifier compares them with the intended colors using a tolerance of
   two channel values for decoder color conversion.
 
-`verify-imageio.swift` independently checks this fixture with macOS ImageIO.
+`verify-imageio.swift` independently checks this fixture's SHA-256, sRGB frame
+pixels, metadata namespace and placement, Base64 encoding, binary property-list
+format, exact schedule and appearance schemas, indices, and values with macOS
+ImageIO.
 The check in
 link:https://github.com/darwin67/genkan/actions/runs/34258316408[GitHub Actions
 run 34258316408] observed four images in the expected order, dimensions and

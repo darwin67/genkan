@@ -39,6 +39,32 @@ impl ImageReference {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeifItemId(u32);
+
+impl HeifItemId {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopLevelImages(Vec<HeifItemId>);
+
+impl TopLevelImages {
+    pub fn new(item_ids: Vec<HeifItemId>) -> Self {
+        Self(item_ids)
+    }
+
+    pub fn resolve(&self, reference: ImageReference) -> Option<HeifItemId> {
+        self.0.get(reference.position()).copied()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NormalizedTime(f64);
 
@@ -143,9 +169,26 @@ impl PropertyValue {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Metadata {
-    time: Option<Schedule<TimePoint>>,
-    solar: Option<Schedule<SolarPoint>>,
-    appearance: Option<Appearance>,
+    time: PropertyState<Schedule<TimePoint>>,
+    solar: PropertyState<Schedule<SolarPoint>>,
+    appearance: PropertyState<Appearance>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+enum PropertyState<T> {
+    #[default]
+    Missing,
+    Valid(T),
+    Conflicted,
+}
+
+impl<T> PropertyState<T> {
+    const fn value(&self) -> Option<&T> {
+        match self {
+            Self::Valid(value) => Some(value),
+            Self::Missing | Self::Conflicted => None,
+        }
+    }
 }
 
 impl Metadata {
@@ -171,33 +214,28 @@ impl Metadata {
             return Err(ModelError::PropertyTypeMismatch);
         }
 
-        let occupied = match property {
-            AppleProperty::Time => self.time.is_some(),
-            AppleProperty::Solar => self.solar.is_some(),
-            AppleProperty::Appearance => self.appearance.is_some(),
-        };
-        if occupied {
-            return Err(ModelError::DuplicateProperty(property));
-        }
-
         match value {
-            PropertyValue::Time(schedule) => self.time = Some(schedule),
-            PropertyValue::Solar(schedule) => self.solar = Some(schedule),
-            PropertyValue::Appearance(appearance) => self.appearance = Some(appearance),
+            PropertyValue::Time(schedule) => insert_property(&mut self.time, property, schedule),
+            PropertyValue::Solar(schedule) => insert_property(&mut self.solar, property, schedule),
+            PropertyValue::Appearance(appearance) => {
+                insert_property(&mut self.appearance, property, appearance)
+            }
         }
-        Ok(())
     }
 
     pub const fn time(&self) -> Option<&Schedule<TimePoint>> {
-        self.time.as_ref()
+        self.time.value()
     }
 
     pub const fn solar(&self) -> Option<&Schedule<SolarPoint>> {
-        self.solar.as_ref()
+        self.solar.value()
     }
 
     pub const fn appearance(&self) -> Option<Appearance> {
-        self.appearance
+        match self.appearance.value() {
+            Some(value) => Some(*value),
+            None => None,
+        }
     }
 
     pub fn select(
@@ -218,11 +256,11 @@ impl Metadata {
         }
 
         if solar_enabled && location_available {
-            if let Some(schedule) = self.solar.as_ref() {
+            if let Some(schedule) = self.solar() {
                 return Selection::Solar(schedule);
             }
         }
-        if let Some(schedule) = self.time.as_ref() {
+        if let Some(schedule) = self.time() {
             return Selection::Time(schedule);
         }
 
@@ -231,9 +269,28 @@ impl Metadata {
     }
 
     fn fallback_appearance(&self) -> Option<Appearance> {
-        self.appearance
-            .or_else(|| self.time.as_ref().and_then(|value| value.appearance))
-            .or_else(|| self.solar.as_ref().and_then(|value| value.appearance))
+        self.appearance()
+            .or_else(|| self.time().and_then(|value| value.appearance))
+            .or_else(|| self.solar().and_then(|value| value.appearance))
+    }
+}
+
+fn insert_property<T: PartialEq>(
+    state: &mut PropertyState<T>,
+    property: AppleProperty,
+    value: T,
+) -> Result<(), ModelError> {
+    match state {
+        PropertyState::Missing => {
+            *state = PropertyState::Valid(value);
+            Ok(())
+        }
+        PropertyState::Valid(existing) if *existing == value => Ok(()),
+        PropertyState::Valid(_) => {
+            *state = PropertyState::Conflicted;
+            Err(ModelError::DuplicateProperty(property))
+        }
+        PropertyState::Conflicted => Err(ModelError::DuplicateProperty(property)),
     }
 }
 
@@ -253,11 +310,17 @@ pub enum Selection<'a> {
     Primary,
 }
 
+/// A validated Gregorian calendar date.
+///
+/// ```compile_fail
+/// use genkan::dynamic_wallpaper::CivilDate;
+/// let invalid = CivilDate { year: 2023, month: 2, day: 29 };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CivilDate {
-    pub year: i32,
-    pub month: u8,
-    pub day: u8,
+    year: i32,
+    month: u8,
+    day: u8,
 }
 
 impl CivilDate {
@@ -275,17 +338,35 @@ impl CivilDate {
 
         Ok(Self { year, month, day })
     }
+
+    pub const fn year(self) -> i32 {
+        self.year
+    }
+
+    pub const fn month(self) -> u8 {
+        self.month
+    }
+
+    pub const fn day(self) -> u8 {
+        self.day
+    }
 }
 
 const fn is_leap_year(year: i32) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
+/// A validated local wall-clock time.
+///
+/// ```compile_fail
+/// use genkan::dynamic_wallpaper::CivilTime;
+/// let invalid = CivilTime { hour: 24, minute: 0, second: 0 };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CivilTime {
-    pub hour: u8,
-    pub minute: u8,
-    pub second: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
 }
 
 impl CivilTime {
@@ -300,13 +381,35 @@ impl CivilTime {
             Err(ModelError::InvalidCivilTime)
         }
     }
+
+    pub const fn hour(self) -> u8 {
+        self.hour
+    }
+
+    pub const fn minute(self) -> u8 {
+        self.minute
+    }
+
+    pub const fn second(self) -> u8 {
+        self.second
+    }
 }
 
+/// Validated local civil time and its corresponding UTC offset.
+///
+/// ```compile_fail
+/// use genkan::dynamic_wallpaper::{CivilDate, CivilTime, ClockSnapshot};
+/// let invalid = ClockSnapshot {
+///     date: CivilDate::new(2026, 9, 9).unwrap(),
+///     time: CivilTime::new(12, 0, 0).unwrap(),
+///     utc_offset_seconds: 86_400,
+/// };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockSnapshot {
-    pub date: CivilDate,
-    pub time: CivilTime,
-    pub utc_offset_seconds: i32,
+    date: CivilDate,
+    time: CivilTime,
+    utc_offset_seconds: i32,
 }
 
 impl ClockSnapshot {
@@ -315,7 +418,7 @@ impl ClockSnapshot {
         time: CivilTime,
         utc_offset_seconds: i32,
     ) -> Result<Self, ModelError> {
-        if !(-86_400..86_400).contains(&utc_offset_seconds) {
+        if !(-86_399..=86_399).contains(&utc_offset_seconds) {
             return Err(ModelError::InvalidUtcOffset);
         }
         Ok(Self {
@@ -323,6 +426,18 @@ impl ClockSnapshot {
             time,
             utc_offset_seconds,
         })
+    }
+
+    pub const fn date(self) -> CivilDate {
+        self.date
+    }
+
+    pub const fn time(self) -> CivilTime {
+        self.time
+    }
+
+    pub const fn utc_offset_seconds(self) -> i32 {
+        self.utc_offset_seconds
     }
 }
 
@@ -454,35 +569,12 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_attribute_and_element_forms_enter_the_same_model_path() {
-        enum XmpForm {
-            Attribute,
-            Element,
-        }
+    fn collection_positions_are_not_heif_item_ids() {
+        let images = TopLevelImages::new([1, 3, 4, 5].into_iter().map(HeifItemId::new).collect());
 
-        for form in [XmpForm::Attribute, XmpForm::Element] {
-            let mut metadata = Metadata::default();
-            assert_eq!(
-                metadata.insert_expanded(
-                    APPLE_DESKTOP_NAMESPACE,
-                    "h24",
-                    PropertyValue::Time(time_schedule()),
-                ),
-                Ok(true),
-                "XMP {form_name} form must use the expanded property name",
-                form_name = match form {
-                    XmpForm::Attribute => "attribute",
-                    XmpForm::Element => "element",
-                }
-            );
-            assert!(metadata.time().is_some());
-        }
-    }
-
-    #[test]
-    fn positions_are_zero_based_collection_positions() {
-        assert_eq!(image(0).position(), 0);
-        assert_eq!(image(3).position(), 3);
+        assert_eq!(images.resolve(image(1)), Some(HeifItemId::new(3)));
+        assert_eq!(images.resolve(image(3)), Some(HeifItemId::new(5)));
+        assert_eq!(images.resolve(image(4)), None);
     }
 
     #[test]
@@ -496,8 +588,10 @@ mod tests {
             dark: image(3),
         };
         let metadata = Metadata {
-            time: Some(Schedule::new(time_schedule().points, Some(embedded)).unwrap()),
-            appearance: Some(standalone),
+            time: PropertyState::Valid(
+                Schedule::new(time_schedule().points, Some(embedded)).unwrap(),
+            ),
+            appearance: PropertyState::Valid(standalone),
             ..Metadata::default()
         };
 
@@ -557,9 +651,9 @@ mod tests {
     #[test]
     fn explicit_appearance_suppresses_dynamic_schedules() {
         let metadata = Metadata {
-            time: Some(time_schedule()),
-            solar: Some(solar_schedule()),
-            appearance: Some(appearance()),
+            time: PropertyState::Valid(time_schedule()),
+            solar: PropertyState::Valid(solar_schedule()),
+            appearance: PropertyState::Valid(appearance()),
         };
 
         assert_eq!(
@@ -571,9 +665,9 @@ mod tests {
     #[test]
     fn solar_requires_opt_in_and_location_then_precedes_time() {
         let metadata = Metadata {
-            time: Some(time_schedule()),
-            solar: Some(solar_schedule()),
-            appearance: Some(appearance()),
+            time: PropertyState::Valid(time_schedule()),
+            solar: PropertyState::Valid(solar_schedule()),
+            appearance: PropertyState::Valid(appearance()),
         };
 
         assert!(matches!(
@@ -593,7 +687,7 @@ mod tests {
     #[test]
     fn appearance_then_primary_are_static_fallbacks() {
         let metadata = Metadata {
-            appearance: Some(appearance()),
+            appearance: PropertyState::Valid(appearance()),
             ..Metadata::default()
         };
         assert_eq!(
@@ -621,9 +715,13 @@ mod tests {
             dark: image(5),
         };
         let metadata = Metadata {
-            time: Some(Schedule::new(time_schedule().points, Some(embedded_time)).unwrap()),
-            solar: Some(Schedule::new(solar_schedule().points, Some(embedded_solar)).unwrap()),
-            appearance: Some(standalone),
+            time: PropertyState::Valid(
+                Schedule::new(time_schedule().points, Some(embedded_time)).unwrap(),
+            ),
+            solar: PropertyState::Valid(
+                Schedule::new(solar_schedule().points, Some(embedded_solar)).unwrap(),
+            ),
+            appearance: PropertyState::Valid(standalone),
         };
 
         assert_eq!(
@@ -632,7 +730,7 @@ mod tests {
         );
 
         let metadata = Metadata {
-            appearance: None,
+            appearance: PropertyState::Missing,
             ..metadata
         };
         assert_eq!(
@@ -641,7 +739,7 @@ mod tests {
         );
 
         let metadata = Metadata {
-            time: None,
+            time: PropertyState::Missing,
             ..metadata
         };
         assert_eq!(
@@ -684,9 +782,9 @@ mod tests {
         .unwrap();
         let location = Location::new(37.7749, -122.4194).unwrap();
 
-        assert_eq!(snapshot.date.day, 29);
-        assert_eq!(snapshot.time.hour, 6);
-        assert_eq!(snapshot.utc_offset_seconds, -28_800);
+        assert_eq!(snapshot.date().day(), 29);
+        assert_eq!(snapshot.time().hour(), 6);
+        assert_eq!(snapshot.utc_offset_seconds(), -28_800);
         assert_eq!(location.latitude_degrees(), 37.7749);
         assert_eq!(location.longitude_degrees(), -122.4194);
         assert_eq!(
@@ -703,23 +801,24 @@ mod tests {
             Err(ModelError::InvalidCivilDate)
         );
         assert!(CivilTime::new(23, 59, 59).is_ok());
-        assert_eq!(
-            CivilTime::new(24, 0, 0),
-            Err(ModelError::InvalidCivilTime)
-        );
-        assert!(ClockSnapshot::new(
-            CivilDate::new(2026, 9, 9).unwrap(),
-            CivilTime::new(12, 0, 0).unwrap(),
-            86_399,
-        )
-        .is_ok());
-        assert_eq!(
-            ClockSnapshot::new(
+        assert_eq!(CivilTime::new(24, 0, 0), Err(ModelError::InvalidCivilTime));
+        for offset in [-86_399, 86_399] {
+            assert!(ClockSnapshot::new(
                 CivilDate::new(2026, 9, 9).unwrap(),
                 CivilTime::new(12, 0, 0).unwrap(),
-                86_400,
-            ),
-            Err(ModelError::InvalidUtcOffset)
-        );
+                offset,
+            )
+            .is_ok());
+        }
+        for offset in [-86_400, 86_400] {
+            assert_eq!(
+                ClockSnapshot::new(
+                    CivilDate::new(2026, 9, 9).unwrap(),
+                    CivilTime::new(12, 0, 0).unwrap(),
+                    offset,
+                ),
+                Err(ModelError::InvalidUtcOffset)
+            );
+        }
     }
 }

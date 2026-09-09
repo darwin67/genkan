@@ -38,8 +38,11 @@ int main(int argc, char **argv)
         { 255, 255, 255 },
     };
     struct heif_context *context;
+    const struct heif_encoder_descriptor *encoders[8];
     struct heif_encoder *encoder = NULL;
     struct heif_image_handle *primary = NULL;
+    int encoder_count;
+    int encoder_index;
     size_t color_index;
 
     if (argc != 2) {
@@ -50,8 +53,20 @@ int main(int argc, char **argv)
     if (context == NULL) {
         fail("failed to allocate libheif context");
     }
-    check(heif_context_get_encoder_for_format(
-        context, heif_compression_HEVC, &encoder));
+    encoder_count = heif_get_encoder_descriptors(
+        heif_compression_HEVC, "x265", encoders,
+        (int)(sizeof(encoders) / sizeof(encoders[0])));
+    for (encoder_index = 0; encoder_index < encoder_count; encoder_index++) {
+        if (strcmp(heif_encoder_descriptor_get_id_name(encoders[encoder_index]),
+                   "x265") == 0) {
+            check(heif_context_get_encoder(context, encoders[encoder_index],
+                                           &encoder));
+            break;
+        }
+    }
+    if (encoder == NULL) {
+        fail("libheif x265 encoder is unavailable");
+    }
     check(heif_encoder_set_lossless(encoder, 1));
 
     for (color_index = 0; color_index < sizeof(colors) / sizeof(colors[0]);

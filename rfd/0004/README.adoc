@@ -50,15 +50,21 @@ The Apple namespace URI is `http://ns.apple.com/namespace/1.0/`. Parsing is
 namespace-aware rather than dependent on the literal `apple_desktop` prefix and
 accepts equivalent XMP attribute and element forms. A standalone `apr` property
 contains `{d,l}` at its property-list root; `ap` is the equivalent pair nested
-inside a time or solar property. Image positions are zero-based. Conflicting
-duplicate Apple schedule properties make that schedule unusable instead of
-silently selecting one. Unknown namespaces and keys are ignored.
+inside a time or solar property. Image positions are zero-based. Identical
+decoded duplicates are idempotent. Conflicting duplicate Apple properties
+permanently make that property unusable, even if a later duplicate matches the
+first value; unrelated valid properties remain available. Unknown namespaces
+and keys are ignored.
 
 Schedule precedence is explicit. A usable solar schedule is selected only when
 desktop solar behavior is enabled and location is available; otherwise a valid
 `h24` schedule is used. An explicit static light or dark preference suppresses
 dynamic scheduling and selects the corresponding appearance image. Appearance
 metadata otherwise provides fallback after dynamic scheduling is unavailable.
+That fallback uses standalone `apr`, then embedded `h24.ap`, then embedded
+`solar.ap`. An automatic preference selects the fallback's light image; an
+explicit light or dark preference selects the corresponding image from the
+same ordered fallback search.
 
 The format describes still variants and schedule points. It does not require a
 particular Genkan animation between points. Smooth transition policy therefore
