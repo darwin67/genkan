@@ -415,6 +415,20 @@ mod tests {
         .unwrap()
     }
 
+    fn different_time_schedule() -> Schedule<TimePoint> {
+        Schedule::new(
+            vec![TimePoint {
+                image: image(3),
+                time: NormalizedTime::new(0.75).unwrap(),
+            }],
+            Some(Appearance {
+                light: image(1),
+                dark: image(2),
+            }),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn apple_properties_use_expanded_names_not_prefixes() {
         assert_eq!(
@@ -492,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_properties_are_rejected_instead_of_replaced() {
+    fn identical_duplicate_properties_are_idempotent() {
         let mut metadata = Metadata::default();
         let original = time_schedule();
         metadata
@@ -500,10 +514,44 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            metadata.insert(AppleProperty::Time, PropertyValue::Time(time_schedule())),
-            Err(ModelError::DuplicateProperty(AppleProperty::Time))
+            metadata.insert(AppleProperty::Time, PropertyValue::Time(original.clone())),
+            Ok(())
         );
         assert_eq!(metadata.time(), Some(&original));
+    }
+
+    #[test]
+    fn conflicting_duplicate_permanently_invalidates_only_that_property() {
+        let mut metadata = Metadata::default();
+        let original = time_schedule();
+        metadata
+            .insert(AppleProperty::Time, PropertyValue::Time(original.clone()))
+            .unwrap();
+        metadata
+            .insert(
+                AppleProperty::Appearance,
+                PropertyValue::Appearance(appearance()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            metadata.insert(
+                AppleProperty::Time,
+                PropertyValue::Time(different_time_schedule()),
+            ),
+            Err(ModelError::DuplicateProperty(AppleProperty::Time))
+        );
+        assert_eq!(metadata.time(), None);
+        assert_eq!(
+            metadata.select(AppearancePreference::Automatic, false, false),
+            Selection::Static(image(0))
+        );
+
+        assert_eq!(
+            metadata.insert(AppleProperty::Time, PropertyValue::Time(original)),
+            Err(ModelError::DuplicateProperty(AppleProperty::Time))
+        );
+        assert_eq!(metadata.time(), None);
     }
 
     #[test]
@@ -559,6 +607,50 @@ mod tests {
     }
 
     #[test]
+    fn appearance_fallback_precedence_uses_distinguishable_pairs() {
+        let standalone = Appearance {
+            light: image(0),
+            dark: image(1),
+        };
+        let embedded_time = Appearance {
+            light: image(2),
+            dark: image(3),
+        };
+        let embedded_solar = Appearance {
+            light: image(4),
+            dark: image(5),
+        };
+        let metadata = Metadata {
+            time: Some(Schedule::new(time_schedule().points, Some(embedded_time)).unwrap()),
+            solar: Some(Schedule::new(solar_schedule().points, Some(embedded_solar)).unwrap()),
+            appearance: Some(standalone),
+        };
+
+        assert_eq!(
+            metadata.select(AppearancePreference::Dark, true, true),
+            Selection::Static(image(1))
+        );
+
+        let metadata = Metadata {
+            appearance: None,
+            ..metadata
+        };
+        assert_eq!(
+            metadata.select(AppearancePreference::Light, false, false),
+            Selection::Static(image(2))
+        );
+
+        let metadata = Metadata {
+            time: None,
+            ..metadata
+        };
+        assert_eq!(
+            metadata.select(AppearancePreference::Dark, false, false),
+            Selection::Static(image(5))
+        );
+    }
+
+    #[test]
     fn model_rejects_out_of_domain_values() {
         assert_eq!(
             NormalizedTime::new(1.0),
@@ -600,6 +692,34 @@ mod tests {
         assert_eq!(
             CivilDate::new(2023, 2, 29),
             Err(ModelError::InvalidCivilDate)
+        );
+    }
+
+    #[test]
+    fn civil_values_accept_and_reject_asymmetric_boundaries() {
+        assert!(CivilDate::new(2000, 2, 29).is_ok());
+        assert_eq!(
+            CivilDate::new(1900, 2, 29),
+            Err(ModelError::InvalidCivilDate)
+        );
+        assert!(CivilTime::new(23, 59, 59).is_ok());
+        assert_eq!(
+            CivilTime::new(24, 0, 0),
+            Err(ModelError::InvalidCivilTime)
+        );
+        assert!(ClockSnapshot::new(
+            CivilDate::new(2026, 9, 9).unwrap(),
+            CivilTime::new(12, 0, 0).unwrap(),
+            86_399,
+        )
+        .is_ok());
+        assert_eq!(
+            ClockSnapshot::new(
+                CivilDate::new(2026, 9, 9).unwrap(),
+                CivilTime::new(12, 0, 0).unwrap(),
+                86_400,
+            ),
+            Err(ModelError::InvalidUtcOffset)
         );
     }
 }
