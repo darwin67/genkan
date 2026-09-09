@@ -19,8 +19,9 @@ use iced::futures::stream;
 use iced::widget::{image, Image};
 use iced::{ContentFit, Element, Fill, Subscription};
 use iced_runtime::image::{Allocation, Error as AllocationError};
-use rustix::fs::{open, Mode, OFlags};
 use tokio::sync::watch;
+
+use crate::stable_file::{open_regular, OpenError};
 
 const OUTPUT_FRAMES_PER_SECOND: i32 = 30;
 const MAX_DIAGNOSTIC_CHARS: usize = 240;
@@ -461,24 +462,15 @@ fn element(factory: &str) -> Result<gst::Element, String> {
     })
 }
 
-fn open_wallpaper(path: &Path) -> Result<File, String> {
-    let bound = open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
-        .map(File::from)
-        .map_err(|_| pipeline_error("wallpaper file is unavailable"))?;
-    if !bound
-        .metadata()
-        .map_err(|_| pipeline_error("wallpaper file metadata is unavailable"))?
-        .is_file()
-    {
-        return Err(pipeline_error("wallpaper path is not a regular file"));
-    }
-    open(
-        format!("/proc/self/fd/{}", bound.as_raw_fd()),
-        OFlags::RDONLY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|_| pipeline_error("wallpaper file could not be opened for playback"))
+pub(crate) fn open_wallpaper(path: &Path) -> Result<File, String> {
+    open_regular(path).map_err(|error| {
+        pipeline_error(match error {
+            OpenError::Unavailable => "wallpaper file is unavailable",
+            OpenError::Metadata => "wallpaper file metadata is unavailable",
+            OpenError::NotRegular => "wallpaper path is not a regular file",
+            OpenError::Reopen => "wallpaper file could not be opened for playback",
+        })
+    })
 }
 
 fn build_pipeline(
@@ -1027,6 +1019,7 @@ mod tests {
 
     use super::*;
     use iced::Size;
+    use rustix::fs::Mode;
 
     fn frame(value: u8, pts: Duration) -> Frame {
         Frame {

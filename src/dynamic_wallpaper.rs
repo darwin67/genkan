@@ -2,6 +2,9 @@
 
 use std::fmt;
 
+#[cfg(feature = "gui")]
+pub mod heic;
+
 pub const APPLE_DESKTOP_NAMESPACE: &str = "http://ns.apple.com/namespace/1.0/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +61,10 @@ pub struct TopLevelImages(Vec<HeifItemId>);
 impl TopLevelImages {
     pub fn new(item_ids: Vec<HeifItemId>) -> Self {
         Self(item_ids)
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = HeifItemId> + '_ {
+        self.0.iter().copied()
     }
 
     pub fn resolve(&self, reference: ImageReference) -> Option<HeifItemId> {

@@ -6,6 +6,7 @@ mod locker;
 mod outputs;
 mod power;
 mod sessions;
+mod stable_file;
 mod theme;
 mod wallpaper;
 

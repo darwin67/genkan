@@ -31,6 +31,7 @@ let
   runtimeLibraries =
     with pkgs;
     [
+      libheif
       libxkbcommon
       vulkan-loader
       wayland
@@ -81,6 +82,7 @@ let
       pkgs.pkg-config
     ];
     buildInputs = gstreamerPackages ++ [
+      pkgs.libheif
       pkgs.libxkbcommon
       pkgs.pam
     ];
@@ -134,6 +136,7 @@ let
       pkgs.pkg-config
     ];
     buildInputs = gstreamerPackages ++ [
+      pkgs.libheif
       pkgs.libxkbcommon
       pkgs.pam
     ];
@@ -155,6 +158,7 @@ let
       pkgs.awscli2
       pkgs.git-cliff
       pkgs.jq
+      pkgs.libheif
       pkgs.libxkbcommon
       pkgs.pam
       pkgs.pkg-config
