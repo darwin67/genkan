@@ -4,6 +4,8 @@ use std::fmt;
 
 #[cfg(feature = "gui")]
 pub mod heic;
+#[cfg(feature = "gui")]
+pub mod playback;
 
 pub const APPLE_DESKTOP_NAMESPACE: &str = "http://ns.apple.com/namespace/1.0/";
 
@@ -416,6 +418,7 @@ impl CivilTime {
 pub struct ClockSnapshot {
     date: CivilDate,
     time: CivilTime,
+    nanosecond: u32,
     utc_offset_seconds: i32,
 }
 
@@ -425,12 +428,25 @@ impl ClockSnapshot {
         time: CivilTime,
         utc_offset_seconds: i32,
     ) -> Result<Self, ModelError> {
+        Self::new_with_nanosecond(date, time, 0, utc_offset_seconds)
+    }
+
+    pub fn new_with_nanosecond(
+        date: CivilDate,
+        time: CivilTime,
+        nanosecond: u32,
+        utc_offset_seconds: i32,
+    ) -> Result<Self, ModelError> {
+        if nanosecond >= 1_000_000_000 {
+            return Err(ModelError::InvalidNanosecond);
+        }
         if !(-86_399..=86_399).contains(&utc_offset_seconds) {
             return Err(ModelError::InvalidUtcOffset);
         }
         Ok(Self {
             date,
             time,
+            nanosecond,
             utc_offset_seconds,
         })
     }
@@ -441,6 +457,10 @@ impl ClockSnapshot {
 
     pub const fn time(self) -> CivilTime {
         self.time
+    }
+
+    pub const fn nanosecond(self) -> u32 {
+        self.nanosecond
     }
 
     pub const fn utc_offset_seconds(self) -> i32 {
@@ -485,6 +505,7 @@ pub enum ModelError {
     InvalidCivilTime,
     InvalidLatitude,
     InvalidLongitude,
+    InvalidNanosecond,
     InvalidNormalizedTime,
     InvalidSolarAltitude,
     InvalidSolarAzimuth,
@@ -791,6 +812,7 @@ mod tests {
 
         assert_eq!(snapshot.date().day(), 29);
         assert_eq!(snapshot.time().hour(), 6);
+        assert_eq!(snapshot.nanosecond(), 0);
         assert_eq!(snapshot.utc_offset_seconds(), -28_800);
         assert_eq!(location.latitude_degrees(), 37.7749);
         assert_eq!(location.longitude_degrees(), -122.4194);
@@ -827,5 +849,14 @@ mod tests {
                 Err(ModelError::InvalidUtcOffset)
             );
         }
+        assert_eq!(
+            ClockSnapshot::new_with_nanosecond(
+                CivilDate::new(2026, 9, 9).unwrap(),
+                CivilTime::new(12, 0, 0).unwrap(),
+                1_000_000_000,
+                0,
+            ),
+            Err(ModelError::InvalidNanosecond)
+        );
     }
 }

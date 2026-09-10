@@ -52,25 +52,25 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
 
 * Phase 3: Implement ~h24~ scheduling and transitions
 
-- [ ] Compute ~t_now~ from local wall-clock seconds divided by 86,400, require
+- [X] Compute ~t_now~ from local wall-clock seconds divided by 86,400, require
   ~0 <= t < 1~, use ~t <= t_now~ selection, and define empty, duplicate, and
   exact-boundary behavior in tests.
-- [ ] Recompute after time-zone, daylight-saving, clock, suspend, and resume
+- [X] Recompute after time-zone, daylight-saving, clock, suspend, and resume
   changes rather than replaying skipped times, including repeated-hour tests.
-- [ ] Wake at relevant schedule boundaries, resynchronize at least every 60
+- [X] Wake at relevant schedule boundaries, resynchronize at least every 60
   seconds, and avoid an unnecessary static-frame redraw loop.
-- [ ] Implement a two-second boundary-starting dissolve, immediate switch after
+- [X] Implement a two-second boundary-starting dissolve, immediate switch after
   a late decode or unequal dimensions, and immediate reselection after clock
   discontinuity.
-- [ ] Attach a request-generation token to decode completion so stale work
+- [X] Attach a request-generation token to decode completion so stale work
   cannot replace a frame selected after a clock or schedule change.
-- [ ] Bound both decoded endpoints, displayed or pending blend, renderer-owned
-  buffers, and decoder working memory; release obsolete roles promptly.
-- [ ] Keep reduced-motion HEIC scheduling active while disabling dissolves;
+- [X] Bound decoded endpoints, the displayed or pending blend, and decoder
+  working memory; release obsolete engine-owned roles promptly.
+- [X] Keep reduced-motion HEIC scheduling active while disabling dissolves;
   preserve the existing fixed-poster meaning for reduced-motion MOV playback.
-- [ ] Use appearance metadata as an explicit static preference and fallback
+- [X] Use appearance metadata as an explicit static preference and fallback
   without depending on a desktop-environment theme API.
-- [ ] Add all schedule, transition, stale-work, resource, and failure regression
+- [X] Add all schedule, transition, stale-work, resource, and failure regression
   tests in this phase rather than deferring them to final verification.
 
 * Phase 4: Add the layer-shell desktop runtime
@@ -82,6 +82,7 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
 - [ ] Add a dedicated Smithay Client Toolkit layer-shell runtime with a bounded
   shared-memory renderer; share neutral RGBA helpers rather than the lock
   runtime or authentication presentation.
+- [ ] Bound renderer-owned buffers and in-flight decode/result queues.
 - [ ] Create one explicit-output background surface with all-edge anchors,
   exclusive zone ~-1~, keyboard interactivity ~none~, and an empty input region
   for every output.
