@@ -107,3 +107,13 @@ The independent author and `verify-imageio.swift` produced and verified this
 evidence in the linked GitHub Actions run. The macOS CI job continues checking
 both fixtures so later byte or metadata changes cannot silently invalidate the
 recorded evidence.
+
+== Geometry smoke fixture
+
+`generate-geometry.c` authors a single-image, nonuniform 12 by 8 HEIC for the
+layer-shell compositor smoke test. It uses six programmatic color blocks and an
+asymmetric corner marker so the test can distinguish cover cropping and output
+orientation. The smoke builds this fixture with libheif's x265 encoder, decodes
+an independent ImageMagick reference, and compares that reference with the
+actual landscape and transformed-portrait compositor captures. No generated
+binary is checked in and the fixture contains no third-party artwork.
