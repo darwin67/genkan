@@ -173,6 +173,8 @@ jobs:
       # Graphics checks use software rendering and must not compete for runner CPU.
       - name: Graphics smoke
         run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs
+      - name: Desktop wallpaper smoke
+        run: nix build .#checks.${{ matrix.system }}.desktop-wallpaper-smoke --print-build-logs
       - name: Session-lock smoke
         run: nix build .#checks.${{ matrix.system }}.session-lock-smoke --print-build-logs
       - name: Preview evidence

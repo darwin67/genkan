@@ -259,6 +259,11 @@ in
       inherit pkgs;
       genkan = package;
     };
+    desktop-wallpaper-smoke = import ./tests/desktop-wallpaper-smoke.nix {
+      inherit pkgs;
+      genkan = package;
+      lockTestGenkan = sessionLockTestPackage;
+    };
     preview-evidence = import ./tests/preview-evidence.nix {
       inherit pkgs;
       genkan = package;

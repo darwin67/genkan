@@ -24,6 +24,7 @@ synthetic accounts and sessions and never sends credentials or power requests.
 - Confirmed sleep, restart, and shutdown actions through logind.
 - Original-resolution Tahoe Beach and Sequoia animated wallpapers with static
   posters, reduced-motion support, smooth loop transitions, and safe fallback.
+- Dynamic HEIC desktop wallpaper scheduling on wlr-layer-shell compositors.
 - Reproducible Nix packaging for x86_64-linux and aarch64-linux.
 - Service-free deterministic previews for UI development and review.
 - A consistent translucent-glass authentication field across login and lock
@@ -89,6 +90,17 @@ services.greetd = {
 The packaged greeter animates Tahoe Beach by default. Operators can select
 `sequoia-sunrise`, `sequoia-morning`, or `sequoia-night`, or use
 `--reduce-motion` to retain the corresponding static poster.
+
+Logged-in users on a supported compositor can run a dynamic HEIC wallpaper as
+a dedicated non-interactive background client:
+
+```sh
+genkan wallpaper --file /absolute/path/to/wallpaper.heic
+```
+
+This command is separate from login and lock. See the
+[deployment guide](docs/deployment.md#desktop-wallpaper) for compositor support
+and autostart examples.
 
 With multiple outputs, Genkan presents authentication on one monitor and keeps
 the others as unobstructed animated wallpaper. It chooses the first available
