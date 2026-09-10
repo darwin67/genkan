@@ -25,29 +25,29 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
 
 * Phase 2: Parse and decode dynamic HEIC
 
-- [ ] Add pinned ~libheif~ runtime and build dependencies with a verified HEVC
+- [X] Add pinned ~libheif~ runtime and build dependencies with a verified HEVC
   decode backend on x86_64-linux and aarch64-linux.
-- [ ] Add maintained Rust ~libheif~, XML, Base64, and binary-property-list
+- [X] Add maintained Rust ~libheif~, XML, Base64, and binary-property-list
   dependencies using the minimum feature set required for decode.
-- [ ] Open only absolute regular local files through a stable descriptor and
+- [X] Open only absolute regular local files through a stable descriptor and
   reject URIs, FIFOs, devices, and pathname replacement while documenting that
   the file owner can still modify the bound inode in place.
-- [ ] Create the libheif context, apply source, item, tile, dimension, metadata,
+- [X] Create the libheif context, apply source, item, tile, dimension, metadata,
   nesting, decoded-memory, and working-memory limits before parsing, and retain
   a descriptor-owning ~Read + Seek~ reader for lazy decode.
-- [ ] Capture one ordered top-level item-ID vector, resolve every metadata index
+- [X] Capture one ordered top-level item-ID vector, resolve every metadata index
   through it without compaction after handle failure, and inspect all
   primary-image XMP MIME metadata blocks.
-- [ ] Parse Apple ~h24~, ~solar~, and ~apr~ properties while ignoring unrelated
+- [X] Parse Apple ~h24~, ~solar~, and ~apr~ properties while ignoring unrelated
   metadata and unknown future keys.
-- [ ] Bound Base64, XML, and property-list expansion during parsing, then
+- [X] Bound Base64, XML, and property-list expansion during parsing, then
   validate value counts, image indices, finite numeric domains, dimensions,
   decoded lengths, and arithmetic before frame allocation.
-- [ ] Decode a selected item to packed RGBA without invoking a shell or external
+- [X] Decode a selected item to packed RGBA without invoking a shell or external
   conversion command.
-- [ ] Convert supported color profiles and embedded orientation to opaque SDR
+- [X] Convert supported color profiles and embedded orientation to opaque SDR
   sRGB RGBA8; reject or fall back from unsupported HDR and color metadata.
-- [ ] Test malformed containers and metadata against the limits before adding a
+- [X] Test malformed containers and metadata against the limits before adding a
   desktop or authentication presentation consumer.
 
 * Phase 3: Implement ~h24~ scheduling and transitions
