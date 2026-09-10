@@ -2,6 +2,7 @@ mod accounts;
 mod app;
 mod background;
 mod conversation;
+mod desktop_wallpaper;
 mod locker;
 mod outputs;
 mod power;
@@ -31,6 +32,29 @@ enum Command {
     Login(LoginArguments),
     /// Securely cover and lock the current Wayland session.
     Lock(LockArguments),
+    /// Display a dynamic HEIC wallpaper on a supported Wayland desktop.
+    Wallpaper(WallpaperArguments),
+}
+
+#[derive(Debug, Args)]
+struct WallpaperArguments {
+    /// Absolute local dynamic HEIC file.
+    #[arg(long, value_parser = parse_heic_wallpaper_file)]
+    file: PathBuf,
+    /// Disable dissolves while retaining time-of-day frame changes.
+    #[arg(long)]
+    reduce_motion: bool,
+    /// Select static appearance metadata instead of time scheduling.
+    #[arg(long, value_enum, default_value = "automatic")]
+    appearance: WallpaperAppearance,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum WallpaperAppearance {
+    #[default]
+    Automatic,
+    Light,
+    Dark,
 }
 
 #[derive(Debug, Args)]
@@ -207,6 +231,26 @@ fn parse_wallpaper_file(value: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn parse_heic_wallpaper_file(value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err("wallpaper file must be an absolute local path, not a URI or pipeline".into());
+    }
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("heic") || extension.eq_ignore_ascii_case("heif")
+        })
+    {
+        return Err("desktop wallpaper file must be HEIC or HEIF".into());
+    }
+    if !path.is_file() {
+        return Err("wallpaper file must name an existing regular file".into());
+    }
+    Ok(path)
+}
+
 fn animate_wallpaper(preview: bool, reduce_motion: bool, animated_preview: bool) -> bool {
     !reduce_motion && (!preview || animated_preview)
 }
@@ -215,7 +259,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     match Arguments::parse().command {
         Command::Login(arguments) => run_login(arguments)?,
         Command::Lock(arguments) => run_lock(arguments)?,
+        Command::Wallpaper(arguments) => run_wallpaper(arguments)?,
     }
+    Ok(())
+}
+
+fn run_wallpaper(arguments: WallpaperArguments) -> Result<(), Box<dyn std::error::Error>> {
+    let appearance = match arguments.appearance {
+        WallpaperAppearance::Automatic => {
+            genkan::dynamic_wallpaper::AppearancePreference::Automatic
+        }
+        WallpaperAppearance::Light => genkan::dynamic_wallpaper::AppearancePreference::Light,
+        WallpaperAppearance::Dark => genkan::dynamic_wallpaper::AppearancePreference::Dark,
+    };
+    desktop_wallpaper::run(desktop_wallpaper::Config {
+        file: arguments.file,
+        appearance,
+        reduced_motion: arguments.reduce_motion,
+    })?;
     Ok(())
 }
 
@@ -389,7 +450,9 @@ mod tests {
         let parsed = Arguments::try_parse_from(arguments)?;
         match parsed.command {
             Command::Login(arguments) => Ok(arguments),
-            Command::Lock(_) => unreachable!("the helper always selects login"),
+            Command::Lock(_) | Command::Wallpaper(_) => {
+                unreachable!("the helper always selects login")
+            }
         }
     }
 
@@ -400,7 +463,24 @@ mod tests {
         let parsed = Arguments::try_parse_from(arguments)?;
         match parsed.command {
             Command::Lock(arguments) => Ok(arguments),
-            Command::Login(_) => unreachable!("the helper always selects lock"),
+            Command::Login(_) | Command::Wallpaper(_) => {
+                unreachable!("the helper always selects lock")
+            }
+        }
+    }
+
+    fn try_parse_wallpaper<const N: usize>(
+        arguments: [&str; N],
+    ) -> Result<WallpaperArguments, clap::Error> {
+        let arguments = ["genkan", "wallpaper"]
+            .into_iter()
+            .chain(arguments.into_iter().skip(1));
+        let parsed = Arguments::try_parse_from(arguments)?;
+        match parsed.command {
+            Command::Wallpaper(arguments) => Ok(arguments),
+            Command::Login(_) | Command::Lock(_) => {
+                unreachable!("the helper always selects wallpaper")
+            }
         }
     }
 
@@ -414,6 +494,41 @@ mod tests {
         assert!(Arguments::try_parse_from(["genkan", "login", "--windowed"]).is_ok());
         assert!(Arguments::try_parse_from(["genkan", "lock"]).is_ok());
         assert!(Arguments::try_parse_from(["genkan", "lock", "--username", "alice"]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "wallpaper", "--username", "alice"]).is_err());
+    }
+
+    #[test]
+    fn desktop_wallpaper_requires_a_local_heic_and_keeps_options_scoped() {
+        let path = std::env::temp_dir().join(format!(
+            "genkan-dynamic-wallpaper-{}.heic",
+            std::process::id()
+        ));
+        std::fs::write(&path, []).unwrap();
+        let arguments = try_parse_wallpaper([
+            "genkan",
+            "--file",
+            path.to_str().unwrap(),
+            "--appearance",
+            "dark",
+            "--reduce-motion",
+        ])
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(arguments.file, path);
+        assert!(matches!(arguments.appearance, WallpaperAppearance::Dark));
+        assert!(arguments.reduce_motion);
+        assert!(try_parse_wallpaper(["genkan"]).is_err());
+        for invalid in [
+            "wallpaper.heic",
+            "https://example.test/wallpaper.heic",
+            "/tmp/wallpaper.mov",
+        ] {
+            assert!(try_parse_wallpaper(["genkan", "--file", invalid]).is_err());
+        }
+        assert!(
+            Arguments::try_parse_from(["genkan", "login", "--file", "/tmp/wallpaper.heic"])
+                .is_err()
+        );
     }
 
     #[test]

@@ -75,30 +75,30 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
 
 * Phase 4: Add the layer-shell desktop runtime
 
-- [ ] Add ~genkan wallpaper --file~ as a dedicated logged-in-user state machine
+- [X] Add ~genkan wallpaper --file~ as a dedicated logged-in-user state machine
   with no greetd, PAM, lock, session-selection, or power behavior.
-- [ ] Require wlr layer-shell and fail without opening an ordinary fallback
+- [X] Require wlr layer-shell and fail without opening an ordinary fallback
   window when the compositor does not support it.
-- [ ] Add a dedicated Smithay Client Toolkit layer-shell runtime with a bounded
+- [X] Add a dedicated Smithay Client Toolkit layer-shell runtime with a bounded
   shared-memory renderer; share neutral RGBA helpers rather than the lock
   runtime or authentication presentation.
-- [ ] Bound renderer-owned buffers and in-flight decode/result queues.
-- [ ] Create one explicit-output background surface with all-edge anchors,
+- [X] Bound renderer-owned buffers and in-flight decode/result queues.
+- [X] Create one explicit-output background surface with all-edge anchors,
   exclusive zone ~-1~, keyboard interactivity ~none~, and an empty input region
   for every output.
-- [ ] Perform the initial bufferless commit, acknowledge configure before
+- [X] Perform the initial bufferless commit, acknowledge configure before
   attachment, reuse buffers only after release, and pace animation through
   compositor frame callbacks.
-- [ ] Handle output addition, removal, logical size, transform, and mixed scale
+- [X] Handle output addition, removal, logical size, transform, and mixed scale
   without restarting the shared scheduler or decoder.
-- [ ] Render aspect-preserving cover independently on laptop, 1080p, 4K,
+- [X] Render aspect-preserving cover independently on laptop, 1080p, 4K,
   ultrawide, portrait, and mixed-output layouts.
-- [ ] Verify the desktop wallpaper remains an ordinary occluded client while
+- [X] Verify the desktop wallpaper remains an ordinary occluded client while
   ~genkan lock~ owns compositor session-lock surfaces.
-- [ ] Document compositor autostart as the initial activation mechanism without
+- [X] Document compositor autostart as the initial activation mechanism without
   wrapping validated session commands, installing a generic UID-wide user
   service, or delaying desktop startup.
-- [ ] Add headless layer-shell protocol, multi-output, input-region, buffer,
+- [X] Add headless layer-shell protocol, multi-output, input-region, buffer,
   rendering, memory, and failure tests in this phase.
 
 * Phase 5: Add optional desktop GeoClue solar selection

@@ -19,6 +19,8 @@ lock-test = ["genkan-session-lock/lock-test"]
 gui = [
     "dep:base64",
     "dep:bytes",
+    "dep:calloop",
+    "dep:calloop-wayland-source",
     "dep:chrono",
     "dep:cosmic-text",
     "dep:genkan-lock-auth",
@@ -55,6 +57,8 @@ required-features = ["e2e"]
 [dependencies]
 base64 = { version = "0.22.1", optional = true }
 bytes = { version = "1.10.1", optional = true }
+calloop = { version = "=0.14.4", optional = true }
+calloop-wayland-source = { version = "=0.4.1", optional = true }
 chrono = { version = "0.4.38", default-features = false, features = ["clock"], optional = true }
 clap = { version = "4.5.23", features = ["derive"] }
 cosmic-text = { version = "0.15.0", optional = true }
@@ -73,7 +77,7 @@ libheif-rs = { version = "3.0.0", default-features = false, features = ["v1_23"]
 plist = { version = "1.10.1", default-features = false, optional = true }
 quick-xml = { version = "0.42.0", default-features = false, optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
-rustix = { version = "1.1.4", features = ["fs", "process"], optional = true }
+rustix = { version = "1.1.4", features = ["fs", "process", "time"], optional = true }
 smithay-client-toolkit = { version = "=0.20.0", default-features = false, optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "time"] }

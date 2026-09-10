@@ -149,6 +149,42 @@ screen. Switch to another VT (for example with Ctrl+Alt+F2), sign in there, and
 restart the trusted locker/compositor or terminate the affected graphical
 session. Do not kill the locker expecting that to reveal the session.
 
+## Desktop wallpaper
+
+`genkan wallpaper` runs as an ordinary logged-in-user client and creates one
+non-interactive background-layer surface per output:
+
+```sh
+genkan wallpaper --file /home/alice/Pictures/dynamic.heic
+```
+
+The initial backend requires `zwlr_layer_shell_v1` and is intended for niri,
+Sway, River, Hyprland, and other compatible wlroots-oriented compositors. It
+fails instead of opening an ordinary window when layer shell is unavailable.
+GNOME Shell and KDE Plasma generally require shell-specific wallpaper APIs and
+are not supported by this backend.
+
+Start the command from the compositor's own autostart configuration so it
+inherits the exact `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, and session lifetime.
+For example, Sway accepts:
+
+```text
+exec genkan wallpaper --file /home/alice/Pictures/dynamic.heic
+```
+
+Use the equivalent `spawn-at-startup` or `exec-once` mechanism for the selected
+compositor. Disable any competing wallpaper process. Genkan deliberately does
+not install a generic systemd user service or wrap the validated desktop
+session command: a UID-wide user manager may not identify the intended Wayland
+session, and wallpaper startup must not delay desktop startup.
+
+`--reduce-motion` keeps time-of-day scheduling but changes frames immediately
+instead of dissolving. `--appearance light` or `--appearance dark` selects
+static appearance metadata when present. The desktop process does not contact
+greetd or PAM, acquire a session lock, select sessions, or request power
+operations. A running `genkan lock` remains compositor-owned and occludes this
+ordinary background client.
+
 greetd supplies `GREETD_SOCK`. Genkan handles each PAM prompt in sequence and
 then asks greetd to start the selected session with the Wayland XDG environment.
 If AccountsService, a valid session, or the greetd socket is unavailable,
