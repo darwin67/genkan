@@ -123,8 +123,18 @@
     def inject_until(path, patterns, baselines, label):
         # Ephemeral virtual-pointer commands are occasionally dropped by
         # headless Sway, so resend input until every requested event is seen.
+        # Keyboard is reliable and only sent while it is still missing, so a
+        # retry cannot record the same label repeatedly.
+        if len(patterns) != len(baselines):
+            raise Exception("inject_until patterns and baselines must align")
+        keyboard = [
+            (pattern, baseline)
+            for pattern, baseline in zip(patterns, baselines)
+            if "keyboard" in pattern or pattern == "KEYBOARD"
+        ]
         for _ in range(20):
-            machine.succeed(as_alice(f"wtype -s 50 {label}"))
+            if any(count(path, pattern) <= baseline for pattern, baseline in keyboard):
+                machine.succeed(as_alice(f"wtype -s 50 {label}"))
             machine.succeed(as_alice("wlrctl pointer move 6 4"))
             machine.succeed(as_alice("wlrctl pointer move -3 -2"))
             machine.succeed(as_alice("wlrctl pointer click"))
@@ -212,6 +222,7 @@
         client_before = stable_client_counts()
         machine.succeed(as_alice(f"wtype -s 50 {label}"))
         machine.succeed(as_alice("wlrctl pointer move 6 4"))
+        machine.succeed(as_alice("wlrctl pointer move -3 -2"))
         machine.succeed(as_alice("wlrctl pointer click"))
         machine.sleep(timedelta(milliseconds=500))
         assert client_counts() == client_before
