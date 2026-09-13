@@ -503,27 +503,10 @@ fn clock_discontinuity(
     {
         return true;
     }
-    let wall_delta = utc_nanoseconds(clock) - utc_nanoseconds(previous_clock);
+    let wall_delta = clock.utc_nanoseconds() - previous_clock.utc_nanoseconds();
     let monotonic_delta = i128::try_from(monotonic.saturating_sub(previous_monotonic).as_nanos())
         .unwrap_or(i128::MAX);
     (wall_delta - monotonic_delta).abs() > CLOCK_TOLERANCE_NANOSECONDS
-}
-
-fn utc_nanoseconds(clock: ClockSnapshot) -> i128 {
-    let date = clock.date();
-    let month = i128::from(date.month());
-    let adjustment = (14 - month).div_euclid(12);
-    let year = i128::from(date.year()) + 4_800 - adjustment;
-    let month = month + 12 * adjustment - 3;
-    let day_number =
-        i128::from(date.day()) + (153 * month + 2).div_euclid(5) + 365 * year + year.div_euclid(4)
-            - year.div_euclid(100)
-            + year.div_euclid(400)
-            - 32_045;
-    (day_number * i128::from(DAY_SECONDS) + i128::from(seconds_of_day(clock))
-        - i128::from(clock.utc_offset_seconds()))
-        * 1_000_000_000
-        + i128::from(clock.nanosecond())
 }
 
 fn valid_frame(frame: &RgbaFrame) -> bool {
