@@ -3,6 +3,7 @@ mod app;
 mod background;
 mod conversation;
 mod desktop_wallpaper;
+mod geoclue;
 mod locker;
 mod outputs;
 mod power;
@@ -47,6 +48,9 @@ struct WallpaperArguments {
     /// Select static appearance metadata instead of time scheduling.
     #[arg(long, value_enum, default_value = "automatic")]
     appearance: WallpaperAppearance,
+    /// Opt into GeoClue-backed solar scheduling when the file provides it.
+    #[arg(long)]
+    solar: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -276,6 +280,7 @@ fn run_wallpaper(arguments: WallpaperArguments) -> Result<(), Box<dyn std::error
         file: arguments.file,
         appearance,
         reduced_motion: arguments.reduce_motion,
+        solar: arguments.solar,
     })?;
     Ok(())
 }
@@ -511,13 +516,17 @@ mod tests {
             "--appearance",
             "dark",
             "--reduce-motion",
+            "--solar",
         ])
         .unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(arguments.file, path);
         assert!(matches!(arguments.appearance, WallpaperAppearance::Dark));
         assert!(arguments.reduce_motion);
+        assert!(arguments.solar);
         assert!(try_parse_wallpaper(["genkan"]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "login", "--solar"]).is_err());
+        assert!(Arguments::try_parse_from(["genkan", "lock", "--solar"]).is_err());
         for invalid in [
             "wallpaper.heic",
             "https://example.test/wallpaper.heic",

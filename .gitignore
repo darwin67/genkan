@@ -26,6 +26,7 @@ rust-project.json
 
 /.direnv/
 /result
+/result-*
 
 # Python script test artifacts
 __pycache__/

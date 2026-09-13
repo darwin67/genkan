@@ -23,6 +23,7 @@ gui = [
     "dep:calloop-wayland-source",
     "dep:chrono",
     "dep:cosmic-text",
+    "dep:futures-util",
     "dep:genkan-lock-auth",
     "dep:genkan-session-lock",
     "dep:gstreamer",
@@ -62,6 +63,7 @@ calloop-wayland-source = { version = "=0.4.1", optional = true }
 chrono = { version = "0.4.38", default-features = false, features = ["clock"], optional = true }
 clap = { version = "4.5.23", features = ["derive"] }
 cosmic-text = { version = "0.15.0", optional = true }
+futures-util = { version = "0.3.34", default-features = false, optional = true }
 genkan-output-selection = { path = "crates/output-selection" }
 genkan-session-lock = { path = "crates/session-lock", optional = true }
 genkan-lock-auth = { path = "crates/lock-auth", optional = true }
