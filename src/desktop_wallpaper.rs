@@ -1114,14 +1114,11 @@ impl Runtime {
                         "genkan wallpaper: solar location {}; retaining the h24 schedule or static fallback",
                         error.category()
                     );
-                    match error {
-                        GeoClueError::Unavailable | GeoClueError::Timeout => {
-                            self.solar_requested = false;
-                            self.next_location_refresh = Some(Instant::now() + LOCATION_RETRY);
-                        }
-                        GeoClueError::Denied | GeoClueError::Coarse | GeoClueError::Invalid => {
-                            self.solar_terminal = true;
-                        }
+                    if error.is_retryable() {
+                        self.solar_requested = false;
+                        self.next_location_refresh = Some(Instant::now() + LOCATION_RETRY);
+                    } else {
+                        self.solar_terminal = true;
                     }
                 }
             }

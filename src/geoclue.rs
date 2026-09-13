@@ -7,8 +7,10 @@
 //! coordinates are deliberately absent from the public error surface so
 //! callers cannot leak them into ordinary diagnostics.
 
+use std::fmt;
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use thiserror::Error;
 
 /// Application identity that NixOS authorizes in the user-session agent.
@@ -16,7 +18,11 @@ pub const DESKTOP_ID: &str = "genkan-wallpaper";
 /// `GCLUE_ACCURACY_LEVEL_CITY`, the coarsest useful level for sunrise/sunset.
 pub const CITY_ACCURACY_LEVEL: u32 = 2;
 /// A fix coarser than this is treated as less precise than city accuracy.
-pub const MAX_CITY_ACCURACY_METERS: f64 = 100_000.0;
+/// GeoClue's city level is on the order of a metro area; country-level
+/// GeoIP fixes are an order of magnitude larger and can shift sunrise and
+/// sunset by several minutes.
+pub const MAX_CITY_ACCURACY_METERS: f64 = 25_000.0;
+const ACCESS_DENIED_NAME: &str = "org.freedesktop.DBus.Error.AccessDenied";
 
 const SERVICE: &str = "org.freedesktop.GeoClue2";
 const MANAGER_PATH: &str = "/org/freedesktop/GeoClue2/Manager";
@@ -24,10 +30,9 @@ const MANAGER_INTERFACE: &str = "org.freedesktop.GeoClue2.Manager";
 const CLIENT_INTERFACE: &str = "org.freedesktop.GeoClue2.Client";
 const LOCATION_INTERFACE: &str = "org.freedesktop.GeoClue2.Location";
 const EMPTY_PATH: &str = "/";
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A validated, city-level location. The value is retained in memory only.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct GeoLocation {
     latitude_degrees: f64,
     longitude_degrees: f64,
@@ -68,6 +73,17 @@ impl GeoLocation {
     }
 }
 
+impl fmt::Debug for GeoLocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GeoLocation")
+            .field("latitude_degrees", &"<redacted>")
+            .field("longitude_degrees", &"<redacted>")
+            .field("accuracy_meters", &self.accuracy_meters)
+            .finish()
+    }
+}
+
 /// Bounded, non-identifying failure categories.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum GeoClueError {
@@ -95,6 +111,41 @@ impl GeoClueError {
             Self::Coarse => "coarse",
         }
     }
+
+    /// Whether a later request could succeed. Transient bus, timeout, and
+    /// unknown-accuracy failures retry on a bounded backoff; denial and
+    /// coarser-than-city results stop solar for the process lifetime.
+    pub const fn is_retryable(self) -> bool {
+        matches!(self, Self::Unavailable | Self::Timeout | Self::Invalid)
+    }
+}
+
+fn classify_bus_error(error: &zbus::Error) -> GeoClueError {
+    if is_access_denied(error) {
+        GeoClueError::Denied
+    } else {
+        GeoClueError::Unavailable
+    }
+}
+
+fn classify_fdo_error(error: &zbus::fdo::Error) -> GeoClueError {
+    if matches!(error, zbus::fdo::Error::AccessDenied(_)) {
+        GeoClueError::Denied
+    } else {
+        GeoClueError::Unavailable
+    }
+}
+
+fn is_access_denied(error: &zbus::Error) -> bool {
+    match error {
+        zbus::Error::MethodError(name, _, _) => is_access_denied_name(name.as_str()),
+        zbus::Error::FDO(error) => matches!(**error, zbus::fdo::Error::AccessDenied(_)),
+        _ => false,
+    }
+}
+
+fn is_access_denied_name(name: &str) -> bool {
+    name == ACCESS_DENIED_NAME
 }
 
 /// Requests one city-level fix, bounded by `timeout`.
@@ -122,52 +173,88 @@ async fn resolve() -> Result<GeoLocation, GeoClueError> {
     client
         .set_property("DesktopId", DESKTOP_ID.to_owned())
         .await
-        .map_err(|_| GeoClueError::Denied)?;
+        .map_err(|error| classify_fdo_error(&error))?;
     client
         .set_property("RequestedAccuracyLevel", CITY_ACCURACY_LEVEL)
         .await
-        .map_err(|_| GeoClueError::Unavailable)?;
+        .map_err(|error| classify_fdo_error(&error))?;
+    // `Start` must expect a reply: a `NoReplyExpected` call cannot observe
+    // the daemon's ACCESS_DENIED error and would loop until the outer timeout.
     client
-        .call_noreply("Start", &())
+        .call::<_, _, ()>("Start", &())
         .await
-        .map_err(|_| GeoClueError::Denied)?;
+        .map_err(|error| classify_bus_error(&error))?;
 
-    let result = poll_location(&connection, &client).await;
+    let result = await_location(&connection, &client).await;
     let _ = client.call_noreply("Stop", &()).await;
     result
 }
 
-async fn poll_location(
+/// Waits for the client's `LocationUpdated` signal.
+///
+/// The current `Location` property is read after subscribing so a fix that
+/// arrived before the match rule was installed is still observed.
+async fn await_location(
     connection: &zbus::Connection,
     client: &zbus::Proxy<'_>,
 ) -> Result<GeoLocation, GeoClueError> {
-    loop {
-        if let Ok(path) = client
-            .get_property::<zbus::zvariant::OwnedObjectPath>("Location")
-            .await
-        {
-            if path.as_str() != EMPTY_PATH {
-                let location =
-                    zbus::Proxy::new(connection, SERVICE, path.as_str(), LOCATION_INTERFACE)
-                        .await
-                        .map_err(|_| GeoClueError::Unavailable)?;
-                let latitude: f64 = location
-                    .get_property("Latitude")
-                    .await
-                    .map_err(|_| GeoClueError::Unavailable)?;
-                let longitude: f64 = location
-                    .get_property("Longitude")
-                    .await
-                    .map_err(|_| GeoClueError::Unavailable)?;
-                let accuracy: f64 = location
-                    .get_property("Accuracy")
-                    .await
-                    .map_err(|_| GeoClueError::Unavailable)?;
-                return GeoLocation::new(latitude, longitude, accuracy);
-            }
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
+    let mut updates = client
+        .receive_signal("LocationUpdated")
+        .await
+        .map_err(|_| GeoClueError::Unavailable)?;
+    if let Some(location) = read_location(connection, client).await? {
+        return Ok(location);
     }
+    loop {
+        let signal = updates.next().await.ok_or(GeoClueError::Unavailable)?;
+        let (_, updated) = signal
+            .body()
+            .deserialize::<(
+                zbus::zvariant::OwnedObjectPath,
+                zbus::zvariant::OwnedObjectPath,
+            )>()
+            .map_err(|_| GeoClueError::Unavailable)?;
+        if updated.as_str() != EMPTY_PATH {
+            return read_location_at(connection, updated.as_str()).await;
+        }
+    }
+}
+
+async fn read_location(
+    connection: &zbus::Connection,
+    client: &zbus::Proxy<'_>,
+) -> Result<Option<GeoLocation>, GeoClueError> {
+    match client
+        .get_property::<zbus::zvariant::OwnedObjectPath>("Location")
+        .await
+    {
+        Ok(path) if path.as_str() != EMPTY_PATH => {
+            read_location_at(connection, path.as_str()).await.map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+async fn read_location_at(
+    connection: &zbus::Connection,
+    path: &str,
+) -> Result<GeoLocation, GeoClueError> {
+    let location = zbus::Proxy::new(connection, SERVICE, path, LOCATION_INTERFACE)
+        .await
+        .map_err(|_| GeoClueError::Unavailable)?;
+    let latitude: f64 = location
+        .get_property("Latitude")
+        .await
+        .map_err(|_| GeoClueError::Unavailable)?;
+    let longitude: f64 = location
+        .get_property("Longitude")
+        .await
+        .map_err(|_| GeoClueError::Unavailable)?;
+    let accuracy: f64 = location
+        .get_property("Accuracy")
+        .await
+        .map_err(|_| GeoClueError::Unavailable)?;
+    GeoLocation::new(latitude, longitude, accuracy)
 }
 
 #[cfg(test)]
@@ -179,7 +266,52 @@ mod tests {
         assert_eq!(DESKTOP_ID, "genkan-wallpaper");
         assert!(!DESKTOP_ID.contains(char::is_whitespace));
         assert_eq!(CITY_ACCURACY_LEVEL, 2, "GeoClue city accuracy is level 2");
-        assert!(include_str!("../nix/module.nix").contains(DESKTOP_ID));
+        let module = include_str!("../nix/module.nix");
+        assert!(module.contains(&format!("wallpaperDesktopId = \"{DESKTOP_ID}\"")));
+        assert!(
+            module.contains("appConfig.${wallpaperDesktopId}"),
+            "the module must authorize the desktop id through appConfig"
+        );
+    }
+
+    #[test]
+    fn retryable_failures_are_bounded_and_terminal_failures_stop_solar() {
+        assert!(GeoClueError::Unavailable.is_retryable());
+        assert!(GeoClueError::Timeout.is_retryable());
+        assert!(GeoClueError::Invalid.is_retryable());
+        assert!(!GeoClueError::Denied.is_retryable());
+        assert!(!GeoClueError::Coarse.is_retryable());
+    }
+
+    #[test]
+    fn bus_errors_classify_denial_separately_from_availability() {
+        let denied = zbus::Error::FDO(Box::new(zbus::fdo::Error::AccessDenied("no".into())));
+        assert_eq!(classify_bus_error(&denied), GeoClueError::Denied);
+        assert_eq!(
+            classify_bus_error(&zbus::Error::Failure("boom".into())),
+            GeoClueError::Unavailable
+        );
+        assert!(is_access_denied_name(ACCESS_DENIED_NAME));
+        assert!(!is_access_denied_name(
+            "org.freedesktop.DBus.Error.ServiceUnknown"
+        ));
+        assert_eq!(
+            classify_fdo_error(&zbus::fdo::Error::AccessDenied("no".into())),
+            GeoClueError::Denied
+        );
+        assert_eq!(
+            classify_fdo_error(&zbus::fdo::Error::Failed("x".into())),
+            GeoClueError::Unavailable
+        );
+    }
+
+    #[test]
+    fn location_debug_redacts_coordinates() {
+        let fix = GeoLocation::new(37.7749, -122.4194, 5_000.0).unwrap();
+        let debug = format!("{fix:?}");
+        assert!(!debug.contains("37.7749"), "{debug}");
+        assert!(!debug.contains("122.4194"), "{debug}");
+        assert!(debug.contains("redacted"), "{debug}");
     }
 
     #[test]
@@ -210,6 +342,11 @@ mod tests {
         assert_eq!(
             GeoLocation::new(0.0, 0.0, MAX_CITY_ACCURACY_METERS + 1.0),
             Err(GeoClueError::Coarse)
+        );
+        assert_eq!(
+            GeoLocation::new(0.0, 0.0, 50_000.0),
+            Err(GeoClueError::Coarse),
+            "country-level fixes must not be accepted as city-level"
         );
         assert!(GeoLocation::new(0.0, 0.0, MAX_CITY_ACCURACY_METERS).is_ok());
     }
