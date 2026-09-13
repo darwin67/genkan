@@ -188,8 +188,8 @@ fn solar_altitude_azimuth(location: Location, utc_seconds: f64) -> (f64, f64) {
     let century = (julian_day - 2_451_545.0) / 36_525.0;
 
     let mean_longitude =
-        (280.46646 + century * (36_000.76983 + century * 0.0003032)).rem_euclid(360.0);
-    let mean_anomaly = 357.52911 + century * (35_999.05029 - 0.0001537 * century);
+        (280.46646 + century * (36_000.769_83 + century * 0.0003032)).rem_euclid(360.0);
+    let mean_anomaly = 357.52911 + century * (35_999.050_29 - 0.0001537 * century);
     let eccentricity = 0.016708634 - century * (0.000042037 + 0.0000001267 * century);
 
     let anomaly = mean_anomaly.to_radians();
@@ -267,13 +267,6 @@ mod tests {
 
     fn midday(year: i32, month: u8, day: u8) -> ClockSnapshot {
         clock_on(year, month, day, 12, 0)
-    }
-
-    fn solar_point(position: usize, altitude: f64, azimuth: f64) -> SolarPoint {
-        SolarPoint {
-            image: ImageReference::from_position(position),
-            position: SolarPosition::new(altitude, azimuth).unwrap(),
-        }
     }
 
     #[test]
@@ -373,7 +366,7 @@ mod tests {
             .unwrap()
             .1;
         let azimuth = noon.azimuth_degrees();
-        assert!(azimuth < 2.0 || azimuth > 358.0, "{noon:?}");
+        assert!(!(2.0..=358.0).contains(&azimuth), "{noon:?}");
     }
 
     #[test]

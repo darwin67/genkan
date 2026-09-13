@@ -11,9 +11,13 @@ use genkan::dynamic_wallpaper::heic::{Document, RgbaFrame};
 use genkan::dynamic_wallpaper::playback::{
     DecodeOutcome, DecodeRequest, Playback, SynchronizeOutcome,
 };
+use genkan::dynamic_wallpaper::solar;
 use genkan::dynamic_wallpaper::{
-    AppearancePreference, CivilDate, CivilTime, ClockSnapshot, ImageReference, Metadata,
+    AppearancePreference, CivilDate, CivilTime, ClockSnapshot, ImageReference, Location, Metadata,
+    Schedule, TimePoint,
 };
+
+use crate::geoclue::{self, GeoClueError, GeoLocation};
 use rustix::time::{
     clock_gettime, timerfd_create, timerfd_settime, ClockId, Itimerspec, TimerfdClockId,
     TimerfdFlags, TimerfdTimerFlags, Timespec,
@@ -42,6 +46,10 @@ const MAX_SURFACE_DIMENSION: u32 = 16_384;
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const SUSPEND_DETECTION_THRESHOLD: Duration = Duration::from_millis(10);
 const FALLBACK_RGB: [u8; 3] = [5, 9, 24];
+const LOCATION_TIMEOUT: Duration = Duration::from_secs(10);
+const LOCATION_REFRESH: Duration = Duration::from_secs(6 * 60 * 60);
+const LOCATION_RETRY: Duration = Duration::from_secs(10 * 60);
+const MEANINGFUL_LOCATION_CHANGE_METERS: f64 = 5_000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SurfaceAction {
@@ -342,6 +350,17 @@ impl Scheduler {
         );
         outcome
     }
+
+    fn apply_solar_schedule(
+        &mut self,
+        schedule: &Schedule<TimePoint>,
+        clock: ClockSnapshot,
+        monotonic: Duration,
+    ) -> SynchronizeOutcome {
+        let outcome = self.playback.set_solar_schedule(schedule, clock, monotonic);
+        self.next_synchronize = playback_deadline(&self.playback, clock, monotonic);
+        outcome
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -401,6 +420,7 @@ pub struct Config {
     pub file: PathBuf,
     pub appearance: AppearancePreference,
     pub reduced_motion: bool,
+    pub solar: bool,
 }
 
 #[derive(Debug, Error)]
@@ -515,6 +535,96 @@ impl Decoder {
     }
 }
 
+enum SolarResult {
+    Located(GeoLocation),
+    Failed(GeoClueError),
+}
+
+struct SolarResolver {
+    commands: SyncSender<()>,
+    results: Receiver<SolarResult>,
+    in_flight: bool,
+}
+
+impl SolarResolver {
+    fn spawn() -> Result<Self, Error> {
+        let (commands, command_receiver) = mpsc::sync_channel::<()>(1);
+        let (result_sender, results) = mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("genkan-geoclue".into())
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(_) => {
+                        let _ = result_sender.send(SolarResult::Failed(GeoClueError::Unavailable));
+                        return;
+                    }
+                };
+                while command_receiver.recv().is_ok() {
+                    let outcome =
+                        match runtime.block_on(geoclue::request_city_location(LOCATION_TIMEOUT)) {
+                            Ok(location) => SolarResult::Located(location),
+                            Err(error) => SolarResult::Failed(error),
+                        };
+                    if result_sender.send(outcome).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|_| Error::Runtime("could not create GeoClue worker".into()))?;
+        Ok(Self {
+            commands,
+            results,
+            in_flight: false,
+        })
+    }
+
+    fn dispatch(&mut self) -> Result<(), Error> {
+        match self.commands.try_send(()) {
+            Ok(()) => {
+                self.in_flight = true;
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => Ok(()),
+            Err(TrySendError::Disconnected(_)) => {
+                Err(Error::Runtime("GeoClue worker stopped".into()))
+            }
+        }
+    }
+
+    fn receive(&mut self) -> Option<SolarResult> {
+        match self.results.try_recv() {
+            Ok(result) => {
+                self.in_flight = false;
+                Some(result)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.in_flight = false;
+                None
+            }
+        }
+    }
+}
+
+/// True when two city-level fixes differ enough to change trajectory selection.
+fn meaningful_location_change(previous: GeoLocation, next: GeoLocation) -> bool {
+    let mut delta_longitude = next.longitude_degrees() - previous.longitude_degrees();
+    if delta_longitude > 180.0 {
+        delta_longitude -= 360.0;
+    } else if delta_longitude < -180.0 {
+        delta_longitude += 360.0;
+    }
+    let mean_latitude =
+        ((previous.latitude_degrees() + next.latitude_degrees()) / 2.0).to_radians();
+    let east = delta_longitude.to_radians() * mean_latitude.cos();
+    let north = (next.latitude_degrees() - previous.latitude_degrees()).to_radians();
+    (east * east + north * north).sqrt() * 6_371_000.0 > MEANINGFUL_LOCATION_CHANGE_METERS
+}
+
 struct SurfaceBuffer {
     size: (u32, u32),
     generation: u64,
@@ -566,6 +676,14 @@ struct Runtime {
     suspend_detector: SuspendDetector,
     check_clock: bool,
     failure: Option<Error>,
+    solar_enabled: bool,
+    solar_resolver: Option<SolarResolver>,
+    solar_requested: bool,
+    solar_terminal: bool,
+    metadata: Option<Metadata>,
+    location: Option<GeoLocation>,
+    next_location_refresh: Option<Instant>,
+    mapped_date: Option<CivilDate>,
 }
 
 pub fn run(config: Config) -> Result<(), Error> {
@@ -597,6 +715,18 @@ pub fn run(config: Config) -> Result<(), Error> {
         suspend_detector: SuspendDetector::new(suspend_clock_offset()),
         check_clock: false,
         failure: None,
+        solar_enabled: config.solar,
+        solar_resolver: if config.solar {
+            Some(SolarResolver::spawn()?)
+        } else {
+            None
+        },
+        solar_requested: false,
+        solar_terminal: false,
+        metadata: None,
+        location: None,
+        next_location_refresh: None,
+        mapped_date: None,
     };
     event_queue
         .roundtrip(&mut runtime)
@@ -729,14 +859,20 @@ impl Runtime {
                 WorkerResult::Initialized { metadata, primary } => {
                     let clock = current_clock()?;
                     let monotonic = self.started_at.elapsed();
-                    let playback = Playback::new(
+                    let mapped = self
+                        .location
+                        .and_then(|location| map_solar(&metadata, location, clock));
+                    self.mapped_date = mapped.as_ref().map(|_| clock.date());
+                    let playback = Playback::with_solar(
                         &metadata,
                         primary,
                         self.appearance,
                         clock,
                         monotonic,
                         self.reduced_motion,
+                        mapped.as_ref(),
                     );
+                    self.metadata = Some(metadata);
                     self.scheduler = Some(Scheduler::new(playback, clock, monotonic));
                     self.dispatch_decode()?;
                 }
@@ -776,6 +912,8 @@ impl Runtime {
                 }
             }
         }
+
+        self.maintain_solar()?;
 
         let has_frame_callbacks = self
             .surfaces
@@ -896,12 +1034,117 @@ impl Runtime {
             .as_ref()
             .is_some_and(|decoder| decoder.initializing || decoder.in_flight)
             .then_some(WORKER_POLL_INTERVAL);
+        let solar = self
+            .solar_resolver
+            .as_ref()
+            .is_some_and(|resolver| resolver.in_flight)
+            .then_some(WORKER_POLL_INTERVAL);
         let synchronization = self
             .scheduler
             .as_ref()
             .and_then(|scheduler| scheduler.next_synchronize)
             .map(|deadline| deadline.saturating_sub(self.started_at.elapsed()));
-        worker.into_iter().chain(synchronization).min()
+        worker.into_iter().chain(solar).chain(synchronization).min()
+    }
+
+    fn frame_available(&self) -> bool {
+        self.scheduler
+            .as_ref()
+            .is_some_and(|scheduler| scheduler.playback.frame().is_some())
+    }
+
+    fn dispatch_solar(&mut self) {
+        if let Some(resolver) = self.solar_resolver.as_mut() {
+            if resolver.dispatch().is_err() {
+                self.solar_terminal = true;
+                eprintln!(
+                    "genkan wallpaper: solar location worker stopped; retaining the h24 schedule or static fallback"
+                );
+            }
+        }
+    }
+
+    fn install_solar_mapping(&mut self) -> Result<(), Error> {
+        let (Some(location), Some(metadata)) = (self.location, self.metadata.as_ref()) else {
+            return Ok(());
+        };
+        let clock = current_clock()?;
+        let monotonic = self.started_at.elapsed();
+        let Some(mapped) = map_solar(metadata, location, clock) else {
+            return Ok(());
+        };
+        self.mapped_date = Some(clock.date());
+        if let Some(scheduler) = self.scheduler.as_mut() {
+            let outcome = scheduler.apply_solar_schedule(&mapped, clock, monotonic);
+            if outcome.selection_changed || outcome.presentation_changed {
+                self.redraw_all();
+            }
+        }
+        self.dispatch_decode()
+    }
+
+    fn maintain_solar(&mut self) -> Result<(), Error> {
+        if !self.solar_enabled {
+            return Ok(());
+        }
+        while let Some(result) = self
+            .solar_resolver
+            .as_mut()
+            .and_then(|resolver| resolver.receive())
+        {
+            match result {
+                SolarResult::Located(location) => {
+                    let changed = self
+                        .location
+                        .is_none_or(|previous| meaningful_location_change(previous, location));
+                    self.location = Some(location);
+                    self.next_location_refresh = Some(Instant::now() + LOCATION_REFRESH);
+                    if changed {
+                        self.install_solar_mapping()?;
+                    }
+                }
+                SolarResult::Failed(error) => {
+                    eprintln!(
+                        "genkan wallpaper: solar location {}; retaining the h24 schedule or static fallback",
+                        error.category()
+                    );
+                    match error {
+                        GeoClueError::Unavailable | GeoClueError::Timeout => {
+                            self.solar_requested = false;
+                            self.next_location_refresh = Some(Instant::now() + LOCATION_RETRY);
+                        }
+                        GeoClueError::Denied | GeoClueError::Coarse | GeoClueError::Invalid => {
+                            self.solar_terminal = true;
+                        }
+                    }
+                }
+            }
+        }
+        if self.solar_terminal {
+            return Ok(());
+        }
+        let idle = !self
+            .solar_resolver
+            .as_ref()
+            .is_some_and(|resolver| resolver.in_flight);
+        let due = self
+            .next_location_refresh
+            .is_none_or(|deadline| Instant::now() >= deadline);
+        let ready = self.location.is_some() || (!self.solar_requested && self.frame_available());
+        if idle && due && ready {
+            self.solar_requested = true;
+            self.dispatch_solar();
+        }
+        let needs_mapping = self.location.is_some()
+            && self
+                .metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.solar().is_some())
+            && self.mapped_date != Some(current_clock()?.date());
+        if needs_mapping {
+            self.install_solar_mapping()?;
+        }
+        Ok(())
     }
 
     fn redraw_all(&mut self) {
@@ -1213,6 +1456,21 @@ fn current_clock() -> Result<ClockSnapshot, Error> {
         now.offset().fix().local_minus_utc(),
     )
     .map_err(|error| Error::Runtime(error.to_string()))
+}
+
+/// Maps the file's authored solar points onto the current day's trajectory.
+///
+/// Returns `None` when the file has no solar schedule or when a retained
+/// location cannot be represented, so callers fall back to `h24` and then to
+/// static appearance or the primary image.
+fn map_solar(
+    metadata: &Metadata,
+    location: GeoLocation,
+    clock: ClockSnapshot,
+) -> Option<Schedule<TimePoint>> {
+    let schedule = metadata.solar()?;
+    let location = Location::new(location.latitude_degrees(), location.longitude_degrees()).ok()?;
+    solar::map_schedule(schedule, location, clock).ok()
 }
 
 fn render_cover_argb(target: &mut [u8], width: u32, height: u32, frame: Option<&RgbaFrame>) {
@@ -1731,5 +1989,45 @@ mod tests {
         let mut target = vec![0; 8];
         render_cover_argb(&mut target, 2, 1, None);
         assert_eq!(target, [24, 9, 5, 255, 24, 9, 5, 255]);
+    }
+
+    #[test]
+    fn meaningful_location_change_ignores_jitter_and_detects_moves() {
+        let base = GeoLocation::new(37.7749, -122.4194, 5_000.0).unwrap();
+        let jitter = GeoLocation::new(37.7849, -122.4194, 5_000.0).unwrap();
+        assert!(!meaningful_location_change(base, jitter));
+
+        let moved = GeoLocation::new(37.8749, -122.4194, 5_000.0).unwrap();
+        assert!(meaningful_location_change(base, moved));
+
+        let east = GeoLocation::new(0.0, 179.99, 5_000.0).unwrap();
+        let west = GeoLocation::new(0.0, -179.99, 5_000.0).unwrap();
+        assert!(!meaningful_location_change(east, west));
+    }
+
+    #[test]
+    fn map_solar_requires_a_solar_schedule_and_a_valid_location() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dynamic-heic/synthetic-all-properties.heic");
+        let document = Document::open(&path).unwrap();
+        let location = GeoLocation::new(40.0, -75.0, 1_000.0).unwrap();
+
+        let mapped = map_solar(document.metadata(), location, clock(6, 0, 0)).unwrap();
+        assert_eq!(
+            mapped.points().len(),
+            document.metadata().solar().unwrap().points().len()
+        );
+
+        let mut without_solar = Metadata::default();
+        without_solar
+            .insert(
+                AppleProperty::Appearance,
+                PropertyValue::Appearance(Appearance {
+                    light: image(0),
+                    dark: image(1),
+                }),
+            )
+            .unwrap();
+        assert!(map_solar(&without_solar, location, clock(6, 0, 0)).is_none());
     }
 }

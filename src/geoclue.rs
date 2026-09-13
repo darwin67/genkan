@@ -65,10 +65,6 @@ impl GeoLocation {
     pub const fn longitude_degrees(self) -> f64 {
         self.longitude_degrees
     }
-
-    pub const fn accuracy_meters(self) -> f64 {
-        self.accuracy_meters
-    }
 }
 
 /// Bounded, non-identifying failure categories.
@@ -189,7 +185,7 @@ mod tests {
         let fix = GeoLocation::new(37.7749, -122.4194, 5_000.0).unwrap();
         assert_eq!(fix.latitude_degrees(), 37.7749);
         assert_eq!(fix.longitude_degrees(), -122.4194);
-        assert_eq!(fix.accuracy_meters(), 5_000.0);
+        assert_eq!(fix.accuracy_meters, 5_000.0);
 
         assert_eq!(GeoLocation::new(91.0, 0.0, 1.0), Err(GeoClueError::Invalid));
         assert_eq!(
