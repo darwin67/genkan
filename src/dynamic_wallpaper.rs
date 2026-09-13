@@ -6,6 +6,7 @@ use std::fmt;
 pub mod heic;
 #[cfg(feature = "gui")]
 pub mod playback;
+pub mod solar;
 
 pub const APPLE_DESKTOP_NAMESPACE: &str = "http://ns.apple.com/namespace/1.0/";
 
@@ -466,6 +467,31 @@ impl ClockSnapshot {
     pub const fn utc_offset_seconds(self) -> i32 {
         self.utc_offset_seconds
     }
+
+    /// Nanoseconds since the Unix epoch for this local wall-clock snapshot.
+    pub fn utc_nanoseconds(self) -> i128 {
+        let date = self.date;
+        let month = i128::from(date.month());
+        let adjustment = (14 - month).div_euclid(12);
+        let year = i128::from(date.year()) + 4_800 - adjustment;
+        let month = month + 12 * adjustment - 3;
+        let day_number = i128::from(date.day())
+            + (153 * month + 2).div_euclid(5)
+            + 365 * year
+            + year.div_euclid(4)
+            - year.div_euclid(100)
+            + year.div_euclid(400)
+            - 32_045;
+        let seconds = u32::from(self.time.hour()) * 3_600
+            + u32::from(self.time.minute()) * 60
+            + u32::from(self.time.second());
+        // `day_number` is the noon-based Julian day number; 2_440_588 is the
+        // Julian day number of the 1970-01-01 Unix epoch.
+        ((day_number - 2_440_588) * 86_400 + i128::from(seconds)
+            - i128::from(self.utc_offset_seconds))
+            * 1_000_000_000
+            + i128::from(self.nanosecond)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -798,6 +824,33 @@ mod tests {
             Schedule::<TimePoint>::new(Vec::new(), None),
             Err(ModelError::EmptySchedule)
         );
+    }
+
+    #[test]
+    fn utc_nanoseconds_is_a_unix_epoch_instant() {
+        let epoch = ClockSnapshot::new(
+            CivilDate::new(1970, 1, 1).unwrap(),
+            CivilTime::new(0, 0, 0).unwrap(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(epoch.utc_nanoseconds(), 0);
+
+        let next_day = ClockSnapshot::new(
+            CivilDate::new(1970, 1, 2).unwrap(),
+            CivilTime::new(0, 0, 0).unwrap(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(next_day.utc_nanoseconds(), 86_400_000_000_000);
+
+        let offset = ClockSnapshot::new(
+            CivilDate::new(1970, 1, 1).unwrap(),
+            CivilTime::new(1, 0, 0).unwrap(),
+            3_600,
+        )
+        .unwrap();
+        assert_eq!(offset.utc_nanoseconds(), 0);
     }
 
     #[test]

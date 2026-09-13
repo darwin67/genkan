@@ -185,6 +185,28 @@ greetd or PAM, acquire a session lock, select sessions, or request power
 operations. A running `genkan lock` remains compositor-owned and occludes this
 ordinary background client.
 
+### Optional solar scheduling
+
+`--solar` opts a wallpaper that carries Apple `solar` metadata into a
+GeoClue-backed schedule. Genkan exposes no location provider, service URL,
+authorization field, or coordinate option. It requests only city-level accuracy
+through the logged-in user's GeoClue agent, after the first frame is already on
+screen, so location lookup never delays compositor startup or surface
+configuration. A successful fix is retained in memory, refreshed no more often
+than every six hours, and never written to disk.
+
+Enabling solar can cause GeoClue to use a network geolocation provider
+according to host policy. On denial, timeout, an unavailable service, or a fix
+coarser than city accuracy, Genkan falls back to a valid `h24` schedule and then
+to the declared appearance or primary image. Losing the network after a
+successful fix does not invalidate it, and no location outcome ends the
+wallpaper process or affects login or lock.
+
+NixOS hosts set `programs.genkan.wallpaper.solar.enable` to provision GeoClue and
+authorize the `genkan-wallpaper` application identity. The option does not start
+a compositor or select a user session; `--solar` remains an explicit runtime
+choice, and login and lock never request location.
+
 greetd supplies `GREETD_SOCK`. Genkan handles each PAM prompt in sequence and
 then asks greetd to start the selected session with the Wayland XDG environment.
 If AccountsService, a valid session, or the greetd socket is unavailable,

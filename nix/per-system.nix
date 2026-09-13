@@ -226,13 +226,40 @@ let
       )
     ];
   };
+  solarModuleSystem = nixpkgs.lib.nixosSystem {
+    inherit system;
+    modules = [
+      ./module.nix
+      (
+        { pkgs, ... }:
+        {
+          programs.genkan = {
+            enable = true;
+            package = package;
+            wallpaper = {
+              enable = true;
+              solar.enable = true;
+            };
+          };
+          services.kanidm.package = pkgs.kanidm_1_8;
+          system.stateVersion = "26.05";
+        }
+      )
+    ];
+  };
   modulePamPolicy = pkgs.writeText "genkan-lock-pam-policy" (
     moduleSystem.config.security.pam.services.genkan-lock.text
   );
+  solarAppConfig = solarModuleSystem.config.services.geoclue2.appConfig."genkan-wallpaper";
   moduleCheck =
     assert builtins.elem package moduleSystem.config.environment.systemPackages;
     assert !(builtins.elem package disabledModuleSystem.config.environment.systemPackages);
     assert !(builtins.hasAttr "genkan-lock" disabledModuleSystem.config.security.pam.services);
+    assert solarModuleSystem.config.services.geoclue2.enable;
+    assert solarAppConfig.isAllowed;
+    assert !solarAppConfig.isSystem;
+    assert !disabledModuleSystem.config.services.geoclue2.enable;
+    assert builtins.length moduleSystem.config.services.geoclue2.whitelistedAgents > 0;
     pkgs.runCommand "genkan-module-check" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
       grep -F 'pam_unix.so' ${modulePamPolicy}
       grep -F 'pam_deny.so' ${modulePamPolicy}
