@@ -185,6 +185,12 @@ greetd or PAM, acquire a session lock, select sessions, or request power
 operations. A running `genkan lock` remains compositor-owned and occludes this
 ordinary background client.
 
+greetd supplies `GREETD_SOCK`. Genkan handles each PAM prompt in sequence and
+then asks greetd to start the selected session with the Wayland XDG environment.
+If AccountsService, a valid session, or the greetd socket is unavailable,
+Genkan reports the specific configuration or transport failure rather than
+using a host-specific fallback.
+
 ### Optional solar scheduling
 
 `--solar` opts a wallpaper that carries Apple `solar` metadata into a
@@ -206,12 +212,6 @@ NixOS hosts set `programs.genkan.wallpaper.solar.enable` to provision GeoClue an
 authorize the `genkan-wallpaper` application identity. The option does not start
 a compositor or select a user session; `--solar` remains an explicit runtime
 choice, and login and lock never request location.
-
-greetd supplies `GREETD_SOCK`. Genkan handles each PAM prompt in sequence and
-then asks greetd to start the selected session with the Wayland XDG environment.
-If AccountsService, a valid session, or the greetd socket is unavailable,
-Genkan reports the specific configuration or transport failure rather than
-using a host-specific fallback.
 
 ## Accounts and sessions
 
