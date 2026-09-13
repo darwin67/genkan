@@ -251,6 +251,8 @@ let
     moduleSystem.config.security.pam.services.genkan-lock.text
   );
   solarAppConfig = solarModuleSystem.config.services.geoclue2.appConfig."genkan-wallpaper";
+  solarGeoclueConfig = pkgs.writeText "genkan-geoclue-config"
+    solarModuleSystem.config.environment.etc."geoclue/geoclue.conf".text;
   moduleCheck =
     assert builtins.elem package moduleSystem.config.environment.systemPackages;
     assert !(builtins.elem package disabledModuleSystem.config.environment.systemPackages);
@@ -259,11 +261,20 @@ let
     assert solarAppConfig.isAllowed;
     assert !solarAppConfig.isSystem;
     assert !disabledModuleSystem.config.services.geoclue2.enable;
+    assert !moduleSystem.config.services.geoclue2.enable;
+    # Provisioning must not rewrite the host-wide agent whitelist.
+    assert solarModuleSystem.config.services.geoclue2.whitelistedAgents
+      == moduleSystem.config.services.geoclue2.whitelistedAgents;
     assert builtins.length moduleSystem.config.services.geoclue2.whitelistedAgents > 0;
     pkgs.runCommand "genkan-module-check" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
       grep -F 'pam_unix.so' ${modulePamPolicy}
       grep -F 'pam_deny.so' ${modulePamPolicy}
       ! grep -F 'pam_permit.so' ${modulePamPolicy}
+      grep -F 'geoclue-demo-agent' ${solarGeoclueConfig}
+      awk 'BEGIN { found = 0 } /^\[/ { found = ($0 == "[genkan-wallpaper]") } found' \
+        ${solarGeoclueConfig} | grep -F 'allowed=true'
+      awk 'BEGIN { found = 0 } /^\[/ { found = ($0 == "[genkan-wallpaper]") } found' \
+        ${solarGeoclueConfig} | grep -F 'system=false'
       touch $out
     '';
 in

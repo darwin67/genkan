@@ -39,21 +39,29 @@ in
       security.pam.services.genkan-lock = { };
     })
 
-    (lib.mkIf (cfg.enable && cfg.wallpaper.solar.enable) {
+    (lib.mkIf cfg.wallpaper.solar.enable {
       assertions = [
         {
-          assertion = cfg.wallpaper.enable;
-          message = "programs.genkan.wallpaper.solar requires programs.genkan.wallpaper.enable.";
+          assertion = cfg.enable && cfg.wallpaper.enable;
+          message = "programs.genkan.wallpaper.solar requires programs.genkan.enable and programs.genkan.wallpaper.enable.";
         }
       ];
+    })
 
+    (lib.mkIf (cfg.enable && cfg.wallpaper.enable && cfg.wallpaper.solar.enable) {
       # Provision only the high-level GeoClue service and the exact
       # application identity. Raw services.geoclue2 settings remain host
-      # configuration, the host-wide agent whitelist is untouched, and
-      # isSystem stays false so location access is never a system bypass.
+      # configuration and the host-wide agent whitelist is untouched.
+      #
+      # GeoClue treats a non-flatpak client as a system component and may
+      # complete Start without consulting the agent, so `isSystem = false`
+      # alone is not what grants access. A user-session agent must still be
+      # present; enabling the packaged demo agent by default supplies one for
+      # compositors that ship no agent of their own. Hosts may override it.
       services.geoclue2 = {
-        enable = true;
-        appConfig.${wallpaperDesktopId} = {
+        enable = lib.mkDefault true;
+        enableDemoAgent = lib.mkDefault true;
+        appConfig.${wallpaperDesktopId} = lib.mkDefault {
           isAllowed = true;
           isSystem = false;
         };
