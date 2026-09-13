@@ -98,9 +98,10 @@ a dedicated non-interactive background client:
 genkan wallpaper --file /absolute/path/to/wallpaper.heic
 ```
 
-This command is separate from login and lock. See the
-[deployment guide](docs/deployment.md#desktop-wallpaper) for compositor support
-and autostart examples.
+This command is separate from login and lock. Files with Apple `solar` metadata
+can opt into GeoClue-backed city-level scheduling with `--solar`. See the
+[deployment guide](docs/deployment.md#desktop-wallpaper) for compositor support,
+solar behavior, and autostart examples.
 
 With multiple outputs, Genkan presents authentication on one monitor and keeps
 the others as unobstructed animated wallpaper. It chooses the first available

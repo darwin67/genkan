@@ -103,28 +103,28 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
 
 * Phase 5: Add optional desktop GeoClue solar selection
 
-- [ ] Add one high-level Genkan desktop solar enablement path without exposing
+- [X] Add one high-level Genkan desktop solar enablement path without exposing
   provider, application-authorization, service URL, or coordinate settings.
-- [ ] Request only city-level location through the logged-in user's GeoClue
+- [X] Request only city-level location through the logged-in user's GeoClue
   agent after the initial wallpaper frame is available and never block desktop
   startup or wallpaper surface configuration.
-- [ ] Map each authored altitude and azimuth vector to the nearest point on a
+- [X] Map each authored altitude and azimuth vector to the nearest point on a
   one-minute sampled and locally refined 24-hour trajectory, with explicit
   azimuth convention, angular-distance, tie, duplicate-time, and polar tests.
-- [ ] Feed mapped times through the Phase 3 scheduler and recalculate at local
+- [X] Feed mapped times through the Phase 3 scheduler and recalculate at local
   midnight or after a meaningful location change.
-- [ ] Keep a successful location in process memory, refresh no more often than
+- [X] Keep a successful location in process memory, refresh no more often than
   every six hours, and exclude coordinates, network observations, metadata, and
   raw service errors from diagnostics.
-- [ ] Fall back to a valid ~h24~ schedule and then an appearance or primary
+- [X] Fall back to a valid ~h24~ schedule and then an appearance or primary
   static frame after denial, timeout, unavailable service, or coarse accuracy;
   do not invalidate a retained location merely because the network disconnects.
-- [ ] Extend the NixOS module so solar enablement provisions GeoClue and the
+- [X] Extend the NixOS module so solar enablement provisions GeoClue and the
   user-session agent authorization without mirroring raw GeoClue settings or
   automatically activating a compositor process.
 - [ ] Verify the application and agent authorization contract against the real
   pinned GeoClue daemon in addition to deterministic mocked-location tests.
-- [ ] Keep login and lock location requests out of the initial implementation;
+- [X] Keep login and lock location requests out of the initial implementation;
   do not clear the host-wide agent whitelist or use ~system=true~ as a bypass.
 
 * Phase 6: Reuse HEIC in login and lock
