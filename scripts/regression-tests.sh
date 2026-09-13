@@ -293,6 +293,14 @@ test_representative_selection_placement_and_cleanup() {
   assert_fixture_process_stopped "$fixture"
 }
 
+test_no_tracked_nix_result_links() {
+  local tracked
+  tracked=$(git -C "$repo_root" ls-files | grep -E '^result(-.*)?$' || true)
+  [[ -z $tracked ]] || fail "nix result symlinks must not be tracked: $tracked"
+  grep -Fq '/result-*' "$repo_root/.gitignore" ||
+    fail ".gitignore must ignore nix result symlinks"
+}
+
 test_ci_watches_all_scripts() {
   [[ $(grep -Fc '"scripts/**"' "$repo_root/.github/workflows/ci.yml") == 2 ]] || \
     fail "CI push and pull_request filters must watch scripts/**"
@@ -773,6 +781,7 @@ test_vulkan_discovery_timeout
 test_sway_query_failure_is_not_masked
 test_external_output_must_be_active
 test_representative_selection_placement_and_cleanup
+test_no_tracked_nix_result_links
 test_ci_watches_all_scripts
 test_ci_serializes_software_graphics_checks
 test_dev_preview_does_not_inherit_host_identity
