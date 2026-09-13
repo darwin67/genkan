@@ -827,6 +827,33 @@ mod tests {
     }
 
     #[test]
+    fn utc_nanoseconds_is_a_unix_epoch_instant() {
+        let epoch = ClockSnapshot::new(
+            CivilDate::new(1970, 1, 1).unwrap(),
+            CivilTime::new(0, 0, 0).unwrap(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(epoch.utc_nanoseconds(), 0);
+
+        let next_day = ClockSnapshot::new(
+            CivilDate::new(1970, 1, 2).unwrap(),
+            CivilTime::new(0, 0, 0).unwrap(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(next_day.utc_nanoseconds(), 86_400_000_000_000);
+
+        let offset = ClockSnapshot::new(
+            CivilDate::new(1970, 1, 1).unwrap(),
+            CivilTime::new(1, 0, 0).unwrap(),
+            3_600,
+        )
+        .unwrap();
+        assert_eq!(offset.utc_nanoseconds(), 0);
+    }
+
+    #[test]
     fn deterministic_clock_and_location_inputs_are_plain_values() {
         let snapshot = ClockSnapshot::new(
             CivilDate::new(2024, 2, 29).unwrap(),
