@@ -178,6 +178,7 @@ mod tests {
         assert_eq!(DESKTOP_ID, "genkan-wallpaper");
         assert!(!DESKTOP_ID.contains(char::is_whitespace));
         assert_eq!(CITY_ACCURACY_LEVEL, 2, "GeoClue city accuracy is level 2");
+        assert!(include_str!("../nix/module.nix").contains(DESKTOP_ID));
     }
 
     #[test]
