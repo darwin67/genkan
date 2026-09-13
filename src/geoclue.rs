@@ -1,10 +1,11 @@
 //! Minimal GeoClue2 client for the logged-in desktop wallpaper process.
 //!
-//! The client requests city-level accuracy through the user session's GeoClue
-//! agent and never exposes a provider selector, service URL, coordinate field,
-//! or application-authorization knob. Raw service errors and coordinates are
-//! deliberately absent from the public error surface so callers cannot leak
-//! them into ordinary diagnostics.
+//! GeoClue2 and its authorization agent are system-bus services; the client
+//! requests city-level accuracy through the agent registered by the running
+//! user session. It never exposes a provider selector, service URL, coordinate
+//! field, or application-authorization knob. Raw service errors and
+//! coordinates are deliberately absent from the public error surface so
+//! callers cannot leak them into ordinary diagnostics.
 
 use std::time::Duration;
 
@@ -105,7 +106,7 @@ pub async fn request_city_location(timeout: Duration) -> Result<GeoLocation, Geo
 }
 
 async fn resolve() -> Result<GeoLocation, GeoClueError> {
-    let connection = zbus::Connection::session()
+    let connection = zbus::Connection::system()
         .await
         .map_err(|_| GeoClueError::Unavailable)?;
     let manager = zbus::Proxy::new(&connection, SERVICE, MANAGER_PATH, MANAGER_INTERFACE)
