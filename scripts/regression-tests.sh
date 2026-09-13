@@ -317,6 +317,13 @@ test_ci_serializes_software_graphics_checks() {
     fail "CI must run preview-evidence only after graphics-smoke"
 }
 
+test_ci_runs_geoclue_solar_vm() {
+  grep -Fq \
+    'nix build .#checks.x86_64-linux.geoclue-solar-vm --print-build-logs' \
+    "$repo_root/.github/workflows/ci.yml" ||
+    fail "CI must run the GeoClue solar VM check"
+}
+
 test_dev_preview_does_not_inherit_host_identity() {
   local command
   command=$(env -u PREVIEW make --no-print-directory -n -C "$repo_root" PREVIEW=selected dev)
@@ -784,6 +791,7 @@ test_representative_selection_placement_and_cleanup
 test_no_tracked_nix_result_links
 test_ci_watches_all_scripts
 test_ci_serializes_software_graphics_checks
+test_ci_runs_geoclue_solar_vm
 test_dev_preview_does_not_inherit_host_identity
 test_preview_evidence_rejects_dead_application
 test_preview_evidence_rejects_blank_frame
