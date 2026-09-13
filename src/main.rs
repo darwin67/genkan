@@ -53,7 +53,7 @@ struct WallpaperArguments {
     solar: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum WallpaperAppearance {
     #[default]
     Automatic,
@@ -89,7 +89,7 @@ struct LoginArguments {
     /// Select one of the packaged animated wallpapers.
     #[arg(long, value_enum, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
-    /// Replace the selected catalog entry's video with an absolute local MOV file.
+    /// Replace the selected catalog entry with an absolute local MOV or HEIC file.
     #[arg(long, value_parser = parse_wallpaper_file)]
     wallpaper_file: Option<PathBuf>,
     /// Show the selected poster without starting the video decoder.
@@ -102,6 +102,9 @@ struct LoginArguments {
     /// Enable real wallpaper playback while keeping preview services simulated.
     #[arg(long, requires = "preview", conflicts_with = "reduce_motion")]
     animated_preview: bool,
+    /// Select static appearance metadata for a dynamic HEIC wallpaper.
+    #[arg(long, value_enum, default_value = "automatic")]
+    appearance: WallpaperAppearance,
     /// Present authentication on this output when it is available.
     #[arg(long, value_parser = parse_output_name, conflicts_with = "windowed")]
     authentication_output: Option<String>,
@@ -134,12 +137,15 @@ struct LockArguments {
     /// Select one of the packaged animated wallpapers.
     #[arg(long, value_enum, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
-    /// Replace the selected catalog entry's video with an absolute local MOV file.
+    /// Replace the selected catalog entry with an absolute local MOV or HEIC file.
     #[arg(long, value_parser = parse_wallpaper_file)]
     wallpaper_file: Option<PathBuf>,
     /// Show the selected poster without starting the video decoder.
     #[arg(long, visible_alias = "static-wallpaper")]
     reduce_motion: bool,
+    /// Select static appearance metadata for a dynamic HEIC wallpaper.
+    #[arg(long, value_enum, default_value = "automatic")]
+    appearance: WallpaperAppearance,
     /// Present authentication on this output when it is available.
     #[arg(long, value_parser = parse_output_name, conflicts_with = "preview")]
     authentication_output: Option<String>,
@@ -225,9 +231,13 @@ fn parse_wallpaper_file(value: &str) -> Result<PathBuf, String> {
     if !path
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("mov"))
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("mov")
+                || extension.eq_ignore_ascii_case("heic")
+                || extension.eq_ignore_ascii_case("heif")
+        })
     {
-        return Err("wallpaper file must be a MOV file, not a playlist or pipeline".into());
+        return Err("wallpaper file must be a MOV, HEIC, or HEIF file".into());
     }
     if !path.is_file() {
         return Err("wallpaper file must name an existing regular file".into());
@@ -259,6 +269,29 @@ fn animate_wallpaper(preview: bool, reduce_motion: bool, animated_preview: bool)
     !reduce_motion && (!preview || animated_preview)
 }
 
+/// Whether the login wallpaper should start a dynamic source.
+///
+/// Reduced-motion MOV selection still shows a fixed poster, but
+/// reduced-motion HEIC keeps time-of-day scheduling; the dissolve is disabled
+/// inside the HEIC source instead.
+fn login_wallpaper_animate(
+    is_heic: bool,
+    preview: bool,
+    reduce_motion: bool,
+    animated_preview: bool,
+) -> bool {
+    if is_heic {
+        !preview || animated_preview
+    } else {
+        animate_wallpaper(preview, reduce_motion, animated_preview)
+    }
+}
+
+/// Reduced-motion HEIC keeps scheduling; reduced-motion MOV shows a poster.
+fn lock_wallpaper_animate(is_heic: bool, reduce_motion: bool) -> bool {
+    is_heic || !reduce_motion
+}
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     match Arguments::parse().command {
         Command::Login(arguments) => run_login(arguments)?,
@@ -268,14 +301,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_wallpaper(arguments: WallpaperArguments) -> Result<(), Box<dyn std::error::Error>> {
-    let appearance = match arguments.appearance {
+fn appearance_preference(
+    appearance: WallpaperAppearance,
+) -> genkan::dynamic_wallpaper::AppearancePreference {
+    match appearance {
         WallpaperAppearance::Automatic => {
             genkan::dynamic_wallpaper::AppearancePreference::Automatic
         }
         WallpaperAppearance::Light => genkan::dynamic_wallpaper::AppearancePreference::Light,
         WallpaperAppearance::Dark => genkan::dynamic_wallpaper::AppearancePreference::Dark,
-    };
+    }
+}
+
+fn run_wallpaper(arguments: WallpaperArguments) -> Result<(), Box<dyn std::error::Error>> {
+    let appearance = appearance_preference(arguments.appearance);
     desktop_wallpaper::run(desktop_wallpaper::Config {
         file: arguments.file,
         appearance,
@@ -308,8 +347,14 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
             })
             .ok()
     };
-    let animate_wallpaper = animate_wallpaper(
-        arguments.preview.is_some(),
+    let preview = arguments.preview.is_some();
+    let is_heic = arguments
+        .wallpaper_file
+        .as_deref()
+        .is_some_and(wallpaper::is_heic_path);
+    let animate_wallpaper = login_wallpaper_animate(
+        is_heic,
+        preview,
         arguments.reduce_motion,
         arguments.animated_preview,
     );
@@ -326,6 +371,8 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
             catalog: arguments.wallpaper,
             override_path: arguments.wallpaper_file,
             animate: animate_wallpaper,
+            reduced_motion: arguments.reduce_motion,
+            appearance: appearance_preference(arguments.appearance),
         },
     };
 
@@ -344,12 +391,18 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
 }
 
 fn lock_config(arguments: LockArguments) -> locker::Config {
+    let is_heic = arguments
+        .wallpaper_file
+        .as_deref()
+        .is_some_and(wallpaper::is_heic_path);
     locker::Config {
         authentication_output: arguments.authentication_output,
         wallpaper: wallpaper::Settings {
             catalog: arguments.wallpaper,
             override_path: arguments.wallpaper_file,
-            animate: !arguments.reduce_motion,
+            animate: lock_wallpaper_animate(is_heic, arguments.reduce_motion),
+            reduced_motion: arguments.reduce_motion,
+            appearance: appearance_preference(arguments.appearance),
         },
         ready_fd: arguments.ready_fd,
         #[cfg(feature = "lock-test")]
@@ -376,6 +429,8 @@ fn run_lock(arguments: LockArguments) -> Result<(), Box<dyn std::error::Error>> 
                 catalog: arguments.wallpaper,
                 override_path: arguments.wallpaper_file,
                 animate: false,
+                reduced_motion: false,
+                appearance: appearance_preference(arguments.appearance),
             },
             fixture,
             arguments.width.unwrap_or(DEFAULT_WINDOW_WIDTH),
@@ -419,6 +474,19 @@ fn daemon_child_arguments(arguments: &LockArguments) -> Result<Vec<CString>, std
     }
     if arguments.reduce_motion {
         child.push(CString::new("--reduce-motion").expect("static argument"));
+    }
+    if arguments.appearance != WallpaperAppearance::Automatic {
+        child.push(CString::new("--appearance").expect("static argument"));
+        child.push(
+            CString::new(
+                arguments
+                    .appearance
+                    .to_possible_value()
+                    .expect("appearance value has a CLI name")
+                    .get_name(),
+            )
+            .expect("appearance names contain no NUL"),
+        );
     }
     if let Some(output) = &arguments.authentication_output {
         child.push(CString::new("--authentication-output").expect("static argument"));
@@ -870,17 +938,20 @@ mod tests {
     }
 
     #[test]
-    fn wallpaper_override_accepts_only_an_existing_absolute_mov() {
-        let path =
-            std::env::temp_dir().join(format!("genkan-wallpaper-{}.mov", std::process::id()));
-        std::fs::write(&path, []).unwrap();
-        let parsed = try_parse_login(["genkan", "--wallpaper-file", path.to_str().unwrap()]);
-        std::fs::remove_file(&path).unwrap();
-
-        assert_eq!(parsed.unwrap().wallpaper_file, Some(path));
+    fn wallpaper_override_accepts_mov_heic_and_heif() {
+        for extension in ["mov", "heic", "heif"] {
+            let path = std::env::temp_dir().join(format!(
+                "genkan-wallpaper-{}.{extension}",
+                std::process::id()
+            ));
+            std::fs::write(&path, []).unwrap();
+            let parsed = try_parse_login(["genkan", "--wallpaper-file", path.to_str().unwrap()]);
+            std::fs::remove_file(&path).unwrap();
+            assert_eq!(parsed.unwrap().wallpaper_file, Some(path), "{extension}");
+        }
         for invalid in [
             "wallpaper.mov",
-            "https://example.test/wallpaper.mov",
+            "https://example.test/wallpaper.heic",
             "/tmp/wallpaper.m3u8",
             "videotestsrc ! appsink",
             "/does/not/exist.mov",
@@ -890,5 +961,50 @@ mod tests {
                 "accepted {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn reduced_motion_keeps_heic_scheduling() {
+        assert!(login_wallpaper_animate(true, false, true, false));
+        assert!(!login_wallpaper_animate(true, true, true, false));
+        assert!(login_wallpaper_animate(true, true, true, true));
+        assert!(login_wallpaper_animate(false, false, false, false));
+        assert!(!login_wallpaper_animate(false, false, true, false));
+
+        assert!(lock_wallpaper_animate(true, true));
+        assert!(lock_wallpaper_animate(true, false));
+        assert!(!lock_wallpaper_animate(false, true));
+        assert!(lock_wallpaper_animate(false, false));
+    }
+
+    #[test]
+    fn login_and_lock_accept_appearance_selection() {
+        assert_eq!(
+            try_parse_login(["genkan", "--appearance", "dark"])
+                .unwrap()
+                .appearance,
+            WallpaperAppearance::Dark
+        );
+        assert_eq!(
+            try_parse_lock(["genkan", "--appearance", "light"])
+                .unwrap()
+                .appearance,
+            WallpaperAppearance::Light
+        );
+        assert!(try_parse_login(["genkan", "--appearance", "sepia"]).is_err());
+        assert!(try_parse_lock(["genkan", "--appearance", "sepia"]).is_err());
+    }
+
+    #[test]
+    fn daemon_child_forwards_non_default_appearance() {
+        let arguments = try_parse_lock(["genkan", "--daemonize", "--appearance", "dark"]).unwrap();
+        let child = daemon_child_arguments(&arguments)
+            .unwrap()
+            .into_iter()
+            .map(|argument| argument.into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert!(child
+            .windows(2)
+            .any(|arguments| arguments == ["--appearance", "dark"]));
     }
 }

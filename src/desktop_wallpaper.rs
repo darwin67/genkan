@@ -6,15 +6,13 @@ use std::time::{Duration, Instant};
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, Mode, PostAction};
 use calloop_wayland_source::WaylandSource;
-use chrono::{Datelike, Local, Offset, Timelike};
 use genkan::dynamic_wallpaper::heic::{Document, RgbaFrame};
 use genkan::dynamic_wallpaper::playback::{
     DecodeOutcome, DecodeRequest, Playback, SynchronizeOutcome,
 };
 use genkan::dynamic_wallpaper::solar;
 use genkan::dynamic_wallpaper::{
-    AppearancePreference, CivilDate, CivilTime, ClockSnapshot, ImageReference, Location, Metadata,
-    TimePoint,
+    AppearancePreference, CivilDate, ClockSnapshot, ImageReference, Location, Metadata, TimePoint,
 };
 
 use crate::geoclue::{self, GeoClueError, GeoLocation};
@@ -1515,16 +1513,8 @@ fn timespec_duration(value: Timespec) -> Duration {
 }
 
 fn current_clock() -> Result<ClockSnapshot, Error> {
-    let now = Local::now();
-    ClockSnapshot::new_with_nanosecond(
-        CivilDate::new(now.year(), now.month() as u8, now.day() as u8)
-            .map_err(|error| Error::Runtime(error.to_string()))?,
-        CivilTime::new(now.hour() as u8, now.minute() as u8, now.second() as u8)
-            .map_err(|error| Error::Runtime(error.to_string()))?,
-        now.nanosecond(),
-        now.offset().fix().local_minus_utc(),
-    )
-    .map_err(|error| Error::Runtime(error.to_string()))
+    crate::wallpaper::current_clock()
+        .ok_or_else(|| Error::Runtime("system clock is unavailable".into()))
 }
 
 /// Maps the file's authored solar points onto the current day's trajectory.
@@ -1586,7 +1576,7 @@ fn render_cover_argb(target: &mut [u8], width: u32, height: u32, frame: Option<&
 mod tests {
     use super::*;
     use genkan::dynamic_wallpaper::{
-        Appearance, AppleProperty, NormalizedTime, PropertyValue, Schedule, TimePoint,
+        Appearance, AppleProperty, CivilTime, NormalizedTime, PropertyValue, Schedule, TimePoint,
     };
 
     fn image(position: usize) -> ImageReference {

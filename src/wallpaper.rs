@@ -10,7 +10,11 @@ use std::time::{Duration, Instant};
 
 use ::image as image_rs;
 use bytes::Bytes;
+use chrono::{Datelike, Offset, Timelike};
 use clap::ValueEnum;
+use genkan::dynamic_wallpaper::heic::{Document, RgbaFrame as HeicFrame};
+use genkan::dynamic_wallpaper::playback::{DecodeOutcome, Playback as HeicPlayback};
+use genkan::dynamic_wallpaper::{AppearancePreference, CivilDate, CivilTime, ClockSnapshot};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -31,6 +35,8 @@ const AUTOMATIC_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SOFTWARE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const SEEK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+const HEIC_TRANSITION_INTERVAL: Duration = Duration::from_millis(16);
+const HEIC_POLL_INTERVAL: Duration = Duration::from_millis(100);
 static POSTERS: [OnceLock<Result<image::Handle, String>>; 4] = [const { OnceLock::new() }; 4];
 
 #[derive(Debug, Clone, Copy)]
@@ -97,11 +103,36 @@ pub(crate) struct Settings {
     pub(crate) catalog: Catalog,
     pub(crate) override_path: Option<PathBuf>,
     pub(crate) animate: bool,
+    /// Reduced-motion HEIC keeps time-of-day scheduling but switches frames
+    /// immediately instead of dissolving. It has no effect on MOV playback,
+    /// whose reduced-motion behavior is a fixed poster selected by `animate`.
+    pub(crate) reduced_motion: bool,
+    /// Explicit light or dark preference for a dynamic HEIC fallback.
+    pub(crate) appearance: AppearancePreference,
+}
+
+impl Settings {
+    /// The local dynamic HEIC override, if one was supplied.
+    pub(crate) fn heic_path(&self) -> Option<&Path> {
+        self.override_path
+            .as_deref()
+            .filter(|path| is_heic_path(path))
+    }
+}
+
+/// Whether a path names a dynamic HEIC/HEIF wallpaper by extension.
+pub(crate) fn is_heic_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("heic") || extension.eq_ignore_ascii_case("heif")
+        })
 }
 
 #[derive(Debug)]
 pub(crate) struct State {
     player: Option<Player>,
+    heic: Option<HeicPlayer>,
     poster: Option<image::Handle>,
     frame: Option<image::Handle>,
     allocation: Option<Allocation>,
@@ -117,20 +148,19 @@ pub(crate) enum Refresh {
 
 impl State {
     pub(crate) fn start(settings: Settings) -> Self {
-        let spec = settings.catalog.spec();
         let poster = load_poster(settings.catalog)
             .map_err(|error| diagnostic(&error))
             .ok();
-        if !settings.animate {
-            return Self {
-                player: None,
-                frame: poster.clone(),
-                poster,
-                allocation: None,
-                allocation_pending: false,
-            };
+
+        if let Some(path) = settings.heic_path().map(Path::to_owned) {
+            return Self::start_heic(settings, &path, poster);
         }
 
+        if !settings.animate {
+            return Self::poster_only(poster);
+        }
+
+        let spec = settings.catalog.spec();
         let result = settings
             .override_path
             .map_or_else(|| packaged_wallpaper_path(spec.install_name), Ok)
@@ -138,6 +168,7 @@ impl State {
         match result {
             Ok(player) => Self {
                 player: Some(player),
+                heic: None,
                 frame: poster.clone(),
                 poster,
                 allocation: None,
@@ -145,14 +176,39 @@ impl State {
             },
             Err(error) => {
                 diagnostic(&error);
-                Self {
-                    player: None,
-                    frame: poster.clone(),
-                    poster,
-                    allocation: None,
-                    allocation_pending: false,
-                }
+                Self::poster_only(poster)
             }
+        }
+    }
+
+    fn start_heic(settings: Settings, path: &Path, poster: Option<image::Handle>) -> Self {
+        if !settings.animate {
+            return Self::poster_only(poster);
+        }
+        match HeicPlayer::start(path, settings.appearance, settings.reduced_motion) {
+            Ok(heic) => Self {
+                player: None,
+                heic: Some(heic),
+                frame: poster.clone(),
+                poster,
+                allocation: None,
+                allocation_pending: false,
+            },
+            Err(error) => {
+                diagnostic(&error);
+                Self::poster_only(poster)
+            }
+        }
+    }
+
+    fn poster_only(poster: Option<image::Handle>) -> Self {
+        Self {
+            player: None,
+            heic: None,
+            frame: poster.clone(),
+            poster,
+            allocation: None,
+            allocation_pending: false,
         }
     }
 
@@ -160,6 +216,7 @@ impl State {
     pub(crate) fn disabled() -> Self {
         Self {
             player: None,
+            heic: None,
             poster: None,
             frame: None,
             allocation: None,
@@ -168,13 +225,22 @@ impl State {
     }
 
     pub(crate) fn subscription(&self) -> Subscription<()> {
+        match (&self.player, &self.heic) {
+            (Some(player), _) => player.subscription(),
+            (None, Some(heic)) => heic.subscription(),
+            (None, None) => Subscription::none(),
+        }
+    }
+
+    fn take_latest(&self) -> Option<Update> {
         self.player
             .as_ref()
-            .map_or_else(Subscription::none, Player::subscription)
+            .and_then(Player::take_latest)
+            .or_else(|| self.heic.as_ref().and_then(HeicPlayer::take_latest))
     }
 
     pub(crate) fn receive_latest(&mut self) -> Refresh {
-        let Some(update) = self.player.as_ref().and_then(Player::take_latest) else {
+        let Some(update) = self.take_latest() else {
             return Refresh::Unchanged;
         };
 
@@ -199,7 +265,7 @@ impl State {
         if self.allocation_pending {
             return None;
         }
-        let update = self.player.as_ref().and_then(Player::take_latest)?;
+        let update = self.take_latest()?;
 
         match update {
             Update::Frame(frame) => {
@@ -246,7 +312,9 @@ impl State {
     }
 
     fn stop_after_terminal_failure(&mut self) -> bool {
-        if !self.player.as_ref().is_some_and(Player::has_failed) {
+        let failed = self.player.as_ref().is_some_and(Player::has_failed)
+            || self.heic.as_ref().is_some_and(HeicPlayer::has_failed);
+        if !failed {
             return false;
         }
         self.stop_playback();
@@ -259,6 +327,7 @@ impl State {
             self.frame.clone_from(&self.poster);
         }
         self.player.take();
+        self.heic.take();
     }
 
     pub(crate) fn rgba_frame(&self) -> Option<genkan_session_lock::RgbaFrame> {
@@ -290,7 +359,7 @@ impl State {
 
     #[cfg(test)]
     pub(crate) fn decoder_is_stopped(&self) -> bool {
-        self.player.is_none()
+        self.player.is_none() && self.heic.is_none()
     }
 }
 
@@ -382,6 +451,206 @@ impl Drop for Player {
             let _ = worker.join();
         }
     }
+}
+
+#[derive(Default)]
+struct HeicShared {
+    pending: Mutex<Option<Update>>,
+    sequence: AtomicU64,
+    failed: AtomicBool,
+}
+
+/// A dynamic HEIC source for login and lock.
+///
+/// It reuses the shared `Document` reader, `Playback` scheduler, and RGBA
+/// frame type from `genkan::dynamic_wallpaper`. Location/solar selection is
+/// deliberately unavailable here: `Playback::new` disables solar, so login and
+/// lock never contact GeoClue.
+struct HeicPlayer {
+    shared: Arc<HeicShared>,
+    signal: watch::Receiver<u64>,
+    stopping: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for HeicPlayer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("HeicPlayer").finish_non_exhaustive()
+    }
+}
+
+impl HeicPlayer {
+    fn start(
+        path: &Path,
+        appearance: AppearancePreference,
+        reduced_motion: bool,
+    ) -> Result<Self, String> {
+        if !path.is_file() {
+            return Err(pipeline_error("dynamic wallpaper file is unavailable"));
+        }
+        let (signal_sender, signal) = watch::channel(0);
+        let shared = Arc::new(HeicShared::default());
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_shared = Arc::clone(&shared);
+        let worker_stopping = Arc::clone(&stopping);
+        let worker_path = path.to_owned();
+        let worker = thread::Builder::new()
+            .name("wallpaper-heic".into())
+            .spawn(move || {
+                run_heic(
+                    &worker_path,
+                    appearance,
+                    reduced_motion,
+                    &worker_shared,
+                    &signal_sender,
+                    &worker_stopping,
+                )
+            })
+            .map_err(|_| pipeline_error("could not start the dynamic wallpaper worker"))?;
+        Ok(Self {
+            shared,
+            signal,
+            stopping,
+            worker: Some(worker),
+        })
+    }
+
+    fn subscription(&self) -> Subscription<()> {
+        Subscription::run_with(
+            HeicFrameSignal {
+                player: Arc::as_ptr(&self.shared) as usize,
+                receiver: self.signal.clone(),
+            },
+            |signal| {
+                stream::unfold(signal.receiver.clone(), |mut receiver| async move {
+                    receiver.changed().await.ok().map(|()| ((), receiver))
+                })
+            },
+        )
+    }
+
+    fn take_latest(&self) -> Option<Update> {
+        lock(&self.shared.pending).take()
+    }
+
+    fn has_failed(&self) -> bool {
+        self.shared.failed.load(Ordering::Acquire)
+    }
+}
+
+struct HeicFrameSignal {
+    player: usize,
+    receiver: watch::Receiver<u64>,
+}
+
+impl Hash for HeicFrameSignal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.player.hash(state);
+    }
+}
+
+impl Drop for HeicPlayer {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn publish_heic(shared: &HeicShared, signal: &watch::Sender<u64>, frame: Option<&HeicFrame>) {
+    let Some(frame) = frame else {
+        return;
+    };
+    if shared.failed.load(Ordering::Acquire) {
+        return;
+    }
+    *lock(&shared.pending) = Some(Update::Frame(Frame {
+        width: frame.width,
+        height: frame.height,
+        pixels: Bytes::copy_from_slice(&frame.pixels),
+        pts: None,
+    }));
+    let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+    signal.send_replace(sequence);
+}
+
+fn fail_heic(shared: &HeicShared, signal: &watch::Sender<u64>) {
+    if shared.failed.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    diagnostic("dynamic wallpaper could not be decoded; retaining current background");
+    *lock(&shared.pending) = Some(Update::Failed);
+    let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+    signal.send_replace(sequence);
+}
+
+fn run_heic(
+    path: &Path,
+    appearance: AppearancePreference,
+    reduced_motion: bool,
+    shared: &Arc<HeicShared>,
+    signal: &watch::Sender<u64>,
+    stopping: &AtomicBool,
+) {
+    let document = match Document::open(path) {
+        Ok(document) => document,
+        Err(_) => {
+            fail_heic(shared, signal);
+            return;
+        }
+    };
+    let started = Instant::now();
+    let Some(initial_clock) = current_clock() else {
+        fail_heic(shared, signal);
+        return;
+    };
+    let mut playback = HeicPlayback::new(
+        document.metadata(),
+        document.primary_image(),
+        appearance,
+        initial_clock,
+        started.elapsed(),
+        reduced_motion,
+    );
+    while !stopping.load(Ordering::Acquire) {
+        let monotonic = started.elapsed();
+        let clock = current_clock().unwrap_or(initial_clock);
+        playback.synchronize(clock, monotonic);
+        if let Some(request) = playback.take_decode_request() {
+            let result = document.decode(request.image).map_err(|_| ());
+            let outcome = playback.complete_decode(request, result, monotonic);
+            if matches!(
+                outcome,
+                DecodeOutcome::Presented | DecodeOutcome::Transitioning
+            ) {
+                publish_heic(shared, signal, playback.frame());
+            }
+        }
+        if playback.advance_transition(monotonic) {
+            publish_heic(shared, signal, playback.frame());
+        }
+        let delay = if playback.is_transitioning() {
+            HEIC_TRANSITION_INTERVAL
+        } else {
+            HEIC_POLL_INTERVAL
+        };
+        thread::sleep(delay);
+    }
+}
+
+/// The current local civil time, matching the desktop runtime's clock source.
+pub(crate) fn current_clock() -> Option<ClockSnapshot> {
+    let now = chrono::Local::now();
+    let date = CivilDate::new(now.year(), now.month() as u8, now.day() as u8).ok()?;
+    let time = CivilTime::new(now.hour() as u8, now.minute() as u8, now.second() as u8).ok()?;
+    ClockSnapshot::new_with_nanosecond(
+        date,
+        time,
+        now.nanosecond(),
+        now.offset().fix().local_minus_utc(),
+    )
+    .ok()
 }
 
 #[derive(Default)]
@@ -1156,10 +1425,83 @@ mod tests {
                 catalog: *catalog,
                 override_path: None,
                 animate: false,
+                reduced_motion: false,
+                appearance: AppearancePreference::Automatic,
             });
             assert!(state.decoder_is_stopped(), "{catalog:?}");
             assert!(state.has_frame(), "{catalog:?}");
         }
+    }
+
+    fn heic_fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dynamic-heic/synthetic-all-properties.heic")
+    }
+
+    fn heic_settings(path: Option<PathBuf>, animate: bool, reduced_motion: bool) -> Settings {
+        Settings {
+            catalog: Catalog::TahoeBeach,
+            override_path: path,
+            animate,
+            reduced_motion,
+            appearance: AppearancePreference::Automatic,
+        }
+    }
+
+    fn wait_for_heic(state: &mut State) -> Refresh {
+        for _ in 0..1000 {
+            match state.receive_latest() {
+                Refresh::Unchanged => thread::sleep(Duration::from_millis(10)),
+                other => return other,
+            }
+        }
+        Refresh::Unchanged
+    }
+
+    #[test]
+    fn heic_paths_are_detected_case_insensitively() {
+        assert!(is_heic_path(Path::new("/tmp/wallpaper.heic")));
+        assert!(is_heic_path(Path::new("/tmp/wallpaper.HEIF")));
+        assert!(!is_heic_path(Path::new("/tmp/wallpaper.mov")));
+        assert!(!is_heic_path(Path::new("/tmp/wallpaper")));
+    }
+
+    #[test]
+    fn dynamic_heic_source_produces_scheduled_frames() {
+        for reduced_motion in [false, true] {
+            let mut state = State::start(heic_settings(Some(heic_fixture()), true, reduced_motion));
+            assert_eq!(
+                wait_for_heic(&mut state),
+                Refresh::Frame,
+                "reduced_motion={reduced_motion}"
+            );
+            assert!(!state.decoder_is_stopped());
+            assert_eq!(state.rgba_frame().unwrap().dimensions(), (8, 8));
+        }
+    }
+
+    #[test]
+    fn dynamic_heic_static_uses_only_the_poster() {
+        let state = State::start(heic_settings(Some(heic_fixture()), false, false));
+        assert!(state.decoder_is_stopped());
+        assert!(state.has_frame());
+    }
+
+    #[test]
+    fn dynamic_heic_failure_retains_the_poster() {
+        let directory =
+            std::env::temp_dir().join(format!("genkan-heic-failure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("broken.heic");
+        std::fs::write(&path, b"not a heic container").unwrap();
+
+        let mut state = State::start(heic_settings(Some(path), true, false));
+        assert_eq!(wait_for_heic(&mut state), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert!(state.has_frame());
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1210,6 +1552,7 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            heic: None,
             poster: Some(poster.clone()),
             frame: Some(poster),
             allocation: None,
@@ -1297,6 +1640,7 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            heic: None,
             poster: Some(poster),
             frame: None,
             allocation: None,
@@ -1324,6 +1668,7 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            heic: None,
             poster: Some(poster),
             frame: Some(current),
             allocation: None,
@@ -1349,6 +1694,7 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            heic: None,
             poster: None,
             frame: Some(current),
             allocation: None,

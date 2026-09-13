@@ -310,6 +310,8 @@ mod tests {
                 catalog: wallpaper::Catalog::TahoeBeach,
                 override_path: None,
                 animate: false,
+                reduced_motion: false,
+                appearance: genkan::dynamic_wallpaper::AppearancePreference::Automatic,
             },
             None,
         )
@@ -365,6 +367,8 @@ mod tests {
                 catalog: wallpaper::Catalog::TahoeBeach,
                 override_path: Some(path.clone()),
                 animate: true,
+                reduced_motion: false,
+                appearance: genkan::dynamic_wallpaper::AppearancePreference::Automatic,
             },
             None,
         );
