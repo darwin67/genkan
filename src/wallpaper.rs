@@ -1481,6 +1481,24 @@ mod tests {
     }
 
     #[test]
+    fn login_and_lock_sources_never_enable_solar_location() {
+        // The greeter and locker must never request location. Their HEIC
+        // source uses `Playback::new`, which disables solar selection; guard
+        // against a future change wiring in the solar constructor or GeoClue.
+        let source = include_str!("wallpaper.rs");
+        let solar = format!("with_{}", "solar");
+        assert!(
+            !source.contains(solar.as_str()),
+            "login/lock must not enable solar"
+        );
+        let geoclue = format!("{}::", "geoclue");
+        assert!(
+            !source.contains(geoclue.as_str()),
+            "login/lock must not use GeoClue"
+        );
+    }
+
+    #[test]
     fn dynamic_heic_static_uses_only_the_poster() {
         let state = State::start(heic_settings(Some(heic_fixture()), false, false));
         assert!(state.decoder_is_stopped());
