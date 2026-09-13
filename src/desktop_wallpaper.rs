@@ -1053,6 +1053,12 @@ impl Runtime {
             .is_some_and(|scheduler| scheduler.playback.frame().is_some())
     }
 
+    fn has_solar_schedule(&self) -> bool {
+        self.metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.solar().is_some())
+    }
+
     fn dispatch_solar(&mut self) {
         if let Some(resolver) = self.solar_resolver.as_mut() {
             if resolver.dispatch().is_err() {
@@ -1130,16 +1136,14 @@ impl Runtime {
         let due = self
             .next_location_refresh
             .is_none_or(|deadline| Instant::now() >= deadline);
-        let ready = self.location.is_some() || (!self.solar_requested && self.frame_available());
+        let ready = self.has_solar_schedule()
+            && (self.location.is_some() || (!self.solar_requested && self.frame_available()));
         if idle && due && ready {
             self.solar_requested = true;
             self.dispatch_solar();
         }
         let needs_mapping = self.location.is_some()
-            && self
-                .metadata
-                .as_ref()
-                .is_some_and(|metadata| metadata.solar().is_some())
+            && self.has_solar_schedule()
             && self.mapped_date != Some(current_clock()?.date());
         if needs_mapping {
             self.install_solar_mapping()?;
