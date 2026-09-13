@@ -23,8 +23,6 @@ const REFINEMENT_RADIUS_SECONDS: u32 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolarError {
-    /// The authored schedule was unexpectedly empty.
-    EmptySchedule,
     /// The local date or trajectory could not be represented.
     InvalidTrajectory,
 }
@@ -51,13 +49,20 @@ struct Sample {
 /// trajectory for `clock`'s local date and `location`.
 ///
 /// Authored order is preserved. Points that map to the same wall-clock second
-/// remain in the returned schedule in metadata order; the downstream `h24`
-/// scheduler keeps the last duplicate at that boundary.
+/// remain in the returned vector in metadata order; the downstream `h24`
+/// scheduler keeps the last duplicate at that boundary. The result carries no
+/// appearance: appearance fallback is a metadata concern resolved before solar
+/// is selected.
+///
+/// The day is modeled as 86,400 seconds at `clock`'s UTC offset, matching the
+/// `h24` model. On a daylight-saving transition day the civil day is 23 or 25
+/// hours long, so the caller re-runs this mapping when the observed offset
+/// changes; the trajectory itself is not stretched to the wall-clock day.
 pub fn map_schedule(
     schedule: &Schedule<SolarPoint>,
     location: Location,
     clock: ClockSnapshot,
-) -> Result<Schedule<TimePoint>, SolarError> {
+) -> Result<Vec<TimePoint>, SolarError> {
     let base_utc = clock
         .utc_nanoseconds()
         .checked_sub(i128::from(seconds_of_day(clock)) * NANOSECONDS_PER_SECOND)
@@ -81,7 +86,7 @@ pub fn map_schedule(
             time,
         });
     }
-    Schedule::new(mapped, schedule.appearance).map_err(|_| SolarError::EmptySchedule)
+    Ok(mapped)
 }
 
 /// The full one-minute trajectory for the civil day containing `clock`.
@@ -404,9 +409,7 @@ mod tests {
         .unwrap();
         let mapped = map_schedule(&schedule, north, day).unwrap();
         let expected = f64::from(12 * 3_600) / f64::from(SECONDS_PER_DAY);
-        assert!(
-            (mapped.points()[0].time.value() - expected).abs() < 1.0 / f64::from(SECONDS_PER_DAY)
-        );
+        assert!((mapped[0].time.value() - expected).abs() < 1.0 / f64::from(SECONDS_PER_DAY));
     }
 
     #[test]
@@ -432,8 +435,8 @@ mod tests {
         .unwrap();
 
         let mapped = map_schedule(&schedule, north, day).unwrap();
-        assert_eq!(mapped.points().len(), authored.len());
-        for (index, point) in mapped.points().iter().enumerate() {
+        assert_eq!(mapped.len(), authored.len());
+        for (index, point) in mapped.iter().enumerate() {
             let expected = f64::from([5_u32, 12, 19][index] * 3_600) / f64::from(SECONDS_PER_DAY);
             assert!(
                 (point.time.value() - expected).abs() < 1.0 / f64::from(SECONDS_PER_DAY),
@@ -442,13 +445,6 @@ mod tests {
             );
             assert_eq!(point.image, ImageReference::from_position(index));
         }
-        assert_eq!(
-            mapped.appearance,
-            Some(Appearance {
-                light: ImageReference::from_position(0),
-                dark: ImageReference::from_position(2),
-            })
-        );
     }
 
     #[test]
@@ -473,9 +469,9 @@ mod tests {
         .unwrap();
 
         let mapped = map_schedule(&schedule, north, day).unwrap();
-        assert_eq!(mapped.points()[0].time, mapped.points()[1].time);
-        assert_eq!(mapped.points()[0].image, ImageReference::from_position(7));
-        assert_eq!(mapped.points()[1].image, ImageReference::from_position(9));
+        assert_eq!(mapped[0].time, mapped[1].time);
+        assert_eq!(mapped[0].image, ImageReference::from_position(7));
+        assert_eq!(mapped[1].image, ImageReference::from_position(9));
     }
 
     #[test]

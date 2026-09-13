@@ -14,7 +14,7 @@ use genkan::dynamic_wallpaper::playback::{
 use genkan::dynamic_wallpaper::solar;
 use genkan::dynamic_wallpaper::{
     AppearancePreference, CivilDate, CivilTime, ClockSnapshot, ImageReference, Location, Metadata,
-    Schedule, TimePoint,
+    TimePoint,
 };
 
 use crate::geoclue::{self, GeoClueError, GeoLocation};
@@ -354,11 +354,11 @@ impl Scheduler {
 
     fn apply_solar_schedule(
         &mut self,
-        schedule: &Schedule<TimePoint>,
+        points: &[TimePoint],
         clock: ClockSnapshot,
         monotonic: Duration,
     ) -> SynchronizeOutcome {
-        let outcome = self.playback.set_solar_schedule(schedule, clock, monotonic);
+        let outcome = self.playback.set_solar_schedule(points, clock, monotonic);
         self.next_synchronize = playback_deadline(&self.playback, clock, monotonic);
         outcome
     }
@@ -1536,7 +1536,7 @@ fn map_solar(
     metadata: &Metadata,
     location: GeoLocation,
     clock: ClockSnapshot,
-) -> Option<Schedule<TimePoint>> {
+) -> Option<Vec<TimePoint>> {
     let schedule = metadata.solar()?;
     let location = Location::new(location.latitude_degrees(), location.longitude_degrees()).ok()?;
     solar::map_schedule(schedule, location, clock).ok()
@@ -2193,7 +2193,7 @@ mod tests {
 
         let mapped = map_solar(document.metadata(), location, clock(6, 0, 0)).unwrap();
         assert_eq!(
-            mapped.points().len(),
+            mapped.len(),
             document.metadata().solar().unwrap().points().len()
         );
 
