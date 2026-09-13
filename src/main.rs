@@ -3,6 +3,7 @@ mod app;
 mod background;
 mod conversation;
 mod desktop_wallpaper;
+mod geoclue;
 mod locker;
 mod outputs;
 mod power;

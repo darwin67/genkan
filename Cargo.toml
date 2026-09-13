@@ -42,6 +42,7 @@ gui = [
     "dep:wayland-client",
     "dep:zeroize",
     "dep:zbus",
+    "tokio/rt",
 ]
 
 [[bin]]
