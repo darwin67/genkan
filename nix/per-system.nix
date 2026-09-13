@@ -317,5 +317,11 @@ in
     session-lock-vm = pkgs.testers.runNixOSTest (
       import ./tests/session-lock-vm.nix { genkan = sessionLockTestPackage; }
     );
+    geoclue-solar-vm = pkgs.testers.runNixOSTest (
+      import ./tests/geoclue-solar-vm.nix {
+        genkan = package;
+        fixture = ../tests/fixtures/dynamic-heic/synthetic-all-properties.heic;
+      }
+    );
   };
 }

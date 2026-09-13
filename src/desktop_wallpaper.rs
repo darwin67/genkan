@@ -1120,6 +1120,7 @@ impl Runtime {
                 self.redraw_all();
             }
         }
+        eprintln!("genkan wallpaper: solar schedule applied");
         self.dispatch_decode()
     }
 
