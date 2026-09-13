@@ -92,7 +92,7 @@ struct LoginArguments {
     /// Replace the selected catalog entry with an absolute local MOV or HEIC file.
     #[arg(long, value_parser = parse_wallpaper_file)]
     wallpaper_file: Option<PathBuf>,
-    /// Show the selected poster without starting the video decoder.
+    /// Use a fixed MOV poster; for HEIC, disable dissolves but keep scheduling.
     #[arg(
         long,
         visible_alias = "static-wallpaper",
@@ -140,7 +140,7 @@ struct LockArguments {
     /// Replace the selected catalog entry with an absolute local MOV or HEIC file.
     #[arg(long, value_parser = parse_wallpaper_file)]
     wallpaper_file: Option<PathBuf>,
-    /// Show the selected poster without starting the video decoder.
+    /// Use a fixed MOV poster; for HEIC, disable dissolves but keep scheduling.
     #[arg(long, visible_alias = "static-wallpaper")]
     reduce_motion: bool,
     /// Select static appearance metadata for a dynamic HEIC wallpaper.
