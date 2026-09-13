@@ -382,6 +382,26 @@ mod tests {
     }
 
     #[test]
+    fn polar_authored_points_map_to_the_computed_trajectory() {
+        let north = location(89.0, 0.0);
+        let day = midday(2026, 6, 21);
+        let samples = trajectory(north, day).unwrap();
+        let schedule = Schedule::new(
+            vec![SolarPoint {
+                image: ImageReference::from_position(0),
+                position: samples[12 * 60].1,
+            }],
+            None,
+        )
+        .unwrap();
+        let mapped = map_schedule(&schedule, north, day).unwrap();
+        let expected = f64::from(12 * 3_600) / f64::from(SECONDS_PER_DAY);
+        assert!(
+            (mapped.points()[0].time.value() - expected).abs() < 1.0 / f64::from(SECONDS_PER_DAY)
+        );
+    }
+
+    #[test]
     fn authored_points_map_to_their_actual_trajectory_time() {
         let north = location(40.0, -75.0);
         let day = midday(2026, 6, 21);
