@@ -120,6 +120,22 @@
             previous = current
         raise Exception("ordinary client input event counts did not stabilize")
 
+    def inject_until(path, patterns, baselines, label):
+        # Ephemeral virtual-pointer commands are occasionally dropped by
+        # headless Sway, so resend input until every requested event is seen.
+        for _ in range(20):
+            machine.succeed(as_alice(f"wtype -s 50 {label}"))
+            machine.succeed(as_alice("wlrctl pointer move 6 4"))
+            machine.succeed(as_alice("wlrctl pointer move -3 -2"))
+            machine.succeed(as_alice("wlrctl pointer click"))
+            machine.sleep(timedelta(milliseconds=100))
+            if all(
+                count(path, pattern) > baseline
+                for pattern, baseline in zip(patterns, baselines)
+            ):
+                return
+        raise Exception(f"{path} did not observe injected input for {label}")
+
     def archive_observer(path="/tmp/observer"):
         machine.succeed(f"test ! -f {path} || (cat {path} >>/tmp/all-observer && rm -f {path})")
 
@@ -139,8 +155,12 @@
         machine.succeed("rm -f /tmp/client-events")
         machine.execute(f"{as_alice('stdbuf -oL wev')} >/tmp/client-events 2>&1 &")
         machine.wait_until_succeeds(f"{as_alice('swaymsg -t get_tree')} | grep -F '\"app_id\": \"wev\"'")
-        machine.succeed(f"{as_alice('wtype before-lock')}")
-        machine.wait_until_succeeds("grep -E 'wl_keyboard] key:' /tmp/client-events")
+        inject_until(
+            "/tmp/client-events",
+            ["wl_keyboard] key:"],
+            (count("/tmp/client-events", "wl_keyboard] key:"),),
+            "before-lock",
+        )
 
     def stop_sway():
         machine.execute("kill $(cat /tmp/sway.pid) 2>/dev/null || true")
@@ -178,14 +198,11 @@
         client_before = stable_client_counts()
         keyboard_before = count("/tmp/observer", "KEYBOARD")
         pointer_before = count("/tmp/observer", "POINTER")
-        machine.succeed(as_alice(f"wtype -s 50 {label}"))
-        machine.succeed(as_alice("wlrctl pointer move 2 2"))
-        machine.succeed(as_alice("wlrctl pointer click"))
-        machine.wait_until_succeeds(
-            f"test $(grep -Fc KEYBOARD /tmp/observer) -gt {keyboard_before}"
-        )
-        machine.wait_until_succeeds(
-            f"test $(grep -Fc POINTER /tmp/observer) -gt {pointer_before}"
+        inject_until(
+            "/tmp/observer",
+            ["KEYBOARD", "POINTER"],
+            (keyboard_before, pointer_before),
+            label,
         )
         machine.sleep(timedelta(milliseconds=500))
         assert client_counts() == client_before
@@ -194,7 +211,7 @@
     def inject_client_blocked(label):
         client_before = stable_client_counts()
         machine.succeed(as_alice(f"wtype -s 50 {label}"))
-        machine.succeed(as_alice("wlrctl pointer move 2 2"))
+        machine.succeed(as_alice("wlrctl pointer move 6 4"))
         machine.succeed(as_alice("wlrctl pointer click"))
         machine.sleep(timedelta(milliseconds=500))
         assert client_counts() == client_before
@@ -290,14 +307,11 @@
         )
         post_unlock_baseline = stable_client_counts()
         assert post_unlock_baseline == client_baseline
-        machine.succeed(f"{as_alice('wtype -s 50 after-unlock')}")
-        machine.succeed(f"{as_alice('wlrctl pointer move 2 2')}")
-        machine.succeed(f"{as_alice('wlrctl pointer click')}")
-        machine.wait_until_succeeds(
-            f"test $(grep -Fc 'wl_keyboard] key:' /tmp/client-events) -gt {post_unlock_baseline[0]}"
-        )
-        machine.wait_until_succeeds(
-            f"test $(grep -Fc 'wl_pointer]' /tmp/client-events) -gt {post_unlock_baseline[1]}"
+        inject_until(
+            "/tmp/client-events",
+            ["wl_keyboard] key:", "wl_pointer]"],
+            post_unlock_baseline,
+            "after-unlock",
         )
 
     with subtest("before-sleep waits for readiness and lock survives simulated resume"):
