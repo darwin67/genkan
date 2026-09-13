@@ -9,6 +9,8 @@ pub mod playback;
 pub mod solar;
 
 pub const APPLE_DESKTOP_NAMESPACE: &str = "http://ns.apple.com/namespace/1.0/";
+/// Wall-clock seconds in one civil day, shared by `h24` and solar scheduling.
+pub(crate) const SECONDS_PER_DAY: u32 = 86_400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppleProperty {
@@ -310,6 +312,14 @@ pub enum AppearancePreference {
     Automatic,
     Light,
     Dark,
+}
+
+impl AppearancePreference {
+    /// Dynamic schedules, including mapped solar, are used only when the
+    /// caller did not request a static light or dark appearance.
+    pub const fn permits_solar(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -700,6 +710,13 @@ mod tests {
             Err(ModelError::DuplicateProperty(AppleProperty::Time))
         );
         assert_eq!(metadata.time(), None);
+    }
+
+    #[test]
+    fn only_automatic_appearance_permits_solar() {
+        assert!(AppearancePreference::Automatic.permits_solar());
+        assert!(!AppearancePreference::Light.permits_solar());
+        assert!(!AppearancePreference::Dark.permits_solar());
     }
 
     #[test]

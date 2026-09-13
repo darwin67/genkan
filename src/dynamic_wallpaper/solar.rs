@@ -14,10 +14,9 @@ use std::fmt;
 
 use super::{
     ClockSnapshot, Location, NormalizedTime, Schedule, SolarPoint, SolarPosition, TimePoint,
+    SECONDS_PER_DAY,
 };
 
-/// Wall-clock seconds in one civil day.
-pub const SECONDS_PER_DAY: u32 = 86_400;
 const MINUTES_PER_DAY: u32 = 1_440;
 const NANOSECONDS_PER_SECOND: i128 = 1_000_000_000;
 const REFINEMENT_RADIUS_SECONDS: u32 = 60;
@@ -63,10 +62,18 @@ pub fn map_schedule(
         .utc_nanoseconds()
         .checked_sub(i128::from(seconds_of_day(clock)) * NANOSECONDS_PER_SECOND)
         .ok_or(SolarError::InvalidTrajectory)?;
+    // Sample the day once and reuse it for every authored point.
+    let samples = trajectory(location, clock)?
+        .iter()
+        .map(|(second, position)| Sample {
+            second: *second,
+            vector: unit_vector(*position),
+        })
+        .collect::<Vec<_>>();
     let mut mapped = Vec::with_capacity(schedule.points().len());
     for point in schedule.points() {
         let target = unit_vector(point.position);
-        let second = nearest_second(location, base_utc, target)?;
+        let second = nearest_second(&samples, location, base_utc, target)?;
         let time = NormalizedTime::new(f64::from(second) / f64::from(SECONDS_PER_DAY))
             .map_err(|_| SolarError::InvalidTrajectory)?;
         mapped.push(TimePoint {
@@ -80,7 +87,7 @@ pub fn map_schedule(
 /// The full one-minute trajectory for the civil day containing `clock`.
 ///
 /// The returned samples are ordered by ascending wall-clock second.
-pub fn trajectory(
+fn trajectory(
     location: Location,
     clock: ClockSnapshot,
 ) -> Result<Vec<(u32, SolarPosition)>, SolarError> {
@@ -91,23 +98,20 @@ pub fn trajectory(
     let mut samples = Vec::with_capacity(MINUTES_PER_DAY as usize);
     for minute in 0..MINUTES_PER_DAY {
         let second = minute * 60;
-        samples.push((second, solar_position(location, base_utc, second)));
+        samples.push((second, solar_position(location, base_utc, second)?));
     }
     Ok(samples)
 }
 
-fn nearest_second(location: Location, base_utc: i128, target: [f64; 3]) -> Result<u32, SolarError> {
+fn nearest_second(
+    samples: &[Sample],
+    location: Location,
+    base_utc: i128,
+    target: [f64; 3],
+) -> Result<u32, SolarError> {
     let mut best: Option<Sample> = None;
-    for minute in 0..MINUTES_PER_DAY {
-        let second = minute * 60;
-        best = nearer(
-            best,
-            Sample {
-                second,
-                vector: unit_vector(solar_position(location, base_utc, second)),
-            },
-            target,
-        );
+    for sample in samples {
+        best = nearer(best, *sample, target);
     }
     let coarse = best.ok_or(SolarError::InvalidTrajectory)?.second;
     let start = coarse.saturating_sub(REFINEMENT_RADIUS_SECONDS);
@@ -118,7 +122,7 @@ fn nearest_second(location: Location, base_utc: i128, target: [f64; 3]) -> Resul
             refined,
             Sample {
                 second,
-                vector: unit_vector(solar_position(location, base_utc, second)),
+                vector: unit_vector(solar_position(location, base_utc, second)?),
             },
             target,
         );
@@ -149,7 +153,7 @@ fn seconds_of_day(clock: ClockSnapshot) -> u32 {
 }
 
 /// Converts an altitude/azimuth into the `(east, north, up)` unit vector.
-pub fn unit_vector(position: SolarPosition) -> [f64; 3] {
+fn unit_vector(position: SolarPosition) -> [f64; 3] {
     let altitude = position.altitude_degrees().to_radians();
     let azimuth = position.azimuth_degrees().to_radians();
     [
@@ -164,13 +168,17 @@ fn angular_distance(left: [f64; 3], right: [f64; 3]) -> f64 {
     dot.clamp(-1.0, 1.0).acos()
 }
 
-fn solar_position(location: Location, base_utc: i128, second: u32) -> SolarPosition {
+fn solar_position(
+    location: Location,
+    base_utc: i128,
+    second: u32,
+) -> Result<SolarPosition, SolarError> {
     let utc_seconds = (base_utc + i128::from(second) * NANOSECONDS_PER_SECOND) as f64
         / NANOSECONDS_PER_SECOND as f64;
     let (altitude, azimuth) = solar_altitude_azimuth(location, utc_seconds);
     let altitude = altitude.clamp(-90.0, 90.0);
     let azimuth = normalize_degrees(azimuth);
-    SolarPosition::new(altitude, azimuth).expect("solar geometry stays within its domain")
+    SolarPosition::new(altitude, azimuth).map_err(|_| SolarError::InvalidTrajectory)
 }
 
 fn normalize_degrees(value: f64) -> f64 {

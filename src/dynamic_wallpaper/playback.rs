@@ -7,9 +7,9 @@ use std::time::Duration;
 use super::heic::RgbaFrame;
 use super::{
     AppearancePreference, ClockSnapshot, ImageReference, Metadata, Schedule, Selection, TimePoint,
+    SECONDS_PER_DAY,
 };
 
-const DAY_SECONDS: u32 = 86_400;
 const RESYNCHRONIZE_AFTER: Duration = Duration::from_secs(60);
 const DISSOLVE_DURATION: Duration = Duration::from_secs(2);
 const CLOCK_TOLERANCE_NANOSECONDS: i128 = 1_000_000_000;
@@ -321,7 +321,7 @@ impl Playback {
                     if boundary > now {
                         boundary - now
                     } else {
-                        Duration::from_secs(u64::from(DAY_SECONDS)) - now + boundary
+                        Duration::from_secs(u64::from(SECONDS_PER_DAY)) - now + boundary
                     }
                 })
                 .min(),
@@ -509,20 +509,20 @@ fn boundary_start(
     let boundary = Duration::from_secs(u64::from(boundary));
     let elapsed = if boundary <= now {
         now - boundary
-    } else if boundary == Duration::from_secs(u64::from(DAY_SECONDS)) {
+    } else if boundary == Duration::from_secs(u64::from(SECONDS_PER_DAY)) {
         now
     } else {
-        Duration::from_secs(u64::from(DAY_SECONDS)) - boundary + now
+        Duration::from_secs(u64::from(SECONDS_PER_DAY)) - boundary + now
     };
     monotonic.checked_sub(elapsed)
 }
 
 fn effective_boundary_second(time: f64) -> u32 {
     let mut low = 0;
-    let mut high = DAY_SECONDS;
+    let mut high = SECONDS_PER_DAY;
     while low < high {
         let middle = low + (high - low) / 2;
-        if time <= f64::from(middle) / f64::from(DAY_SECONDS) {
+        if time <= f64::from(middle) / f64::from(SECONDS_PER_DAY) {
             high = middle;
         } else {
             low = middle + 1;

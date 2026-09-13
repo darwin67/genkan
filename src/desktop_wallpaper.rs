@@ -49,6 +49,7 @@ const FALLBACK_RGB: [u8; 3] = [5, 9, 24];
 const LOCATION_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCATION_REFRESH: Duration = Duration::from_secs(6 * 60 * 60);
 const LOCATION_RETRY: Duration = Duration::from_secs(10 * 60);
+const SOLAR_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const MEANINGFUL_LOCATION_CHANGE_METERS: f64 = 5_000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -610,6 +611,37 @@ impl SolarResolver {
     }
 }
 
+/// Whether a GeoClue request should be dispatched now.
+///
+/// A static appearance suppresses both the request and any mapped schedule, so
+/// an explicit `--appearance` never causes location-related network access.
+fn solar_request_ready(
+    appearance: AppearancePreference,
+    has_solar: bool,
+    has_location: bool,
+    frame_available: bool,
+    requested: bool,
+) -> bool {
+    appearance.permits_solar() && has_solar && (has_location || (!requested && frame_available))
+}
+
+/// Whether the retained location must be re-mapped for the current civil time.
+///
+/// A changed date or UTC offset (daylight-saving transition, clock change)
+/// invalidates the day's mapping.
+fn solar_mapping_due(
+    appearance: AppearancePreference,
+    has_solar: bool,
+    has_location: bool,
+    mapped: Option<(CivilDate, i32)>,
+    clock: ClockSnapshot,
+) -> bool {
+    appearance.permits_solar()
+        && has_solar
+        && has_location
+        && mapped != Some((clock.date(), clock.utc_offset_seconds()))
+}
+
 /// True when two city-level fixes differ enough to change trajectory selection.
 fn meaningful_location_change(previous: GeoLocation, next: GeoLocation) -> bool {
     let mut delta_longitude = next.longitude_degrees() - previous.longitude_degrees();
@@ -683,7 +715,8 @@ struct Runtime {
     metadata: Option<Metadata>,
     location: Option<GeoLocation>,
     next_location_refresh: Option<Instant>,
-    mapped_date: Option<CivilDate>,
+    next_solar_check: Option<Instant>,
+    mapped: Option<(CivilDate, i32)>,
 }
 
 pub fn run(config: Config) -> Result<(), Error> {
@@ -716,17 +749,14 @@ pub fn run(config: Config) -> Result<(), Error> {
         check_clock: false,
         failure: None,
         solar_enabled: config.solar,
-        solar_resolver: if config.solar {
-            Some(SolarResolver::spawn()?)
-        } else {
-            None
-        },
+        solar_resolver: None,
         solar_requested: false,
         solar_terminal: false,
         metadata: None,
         location: None,
         next_location_refresh: None,
-        mapped_date: None,
+        next_solar_check: None,
+        mapped: None,
     };
     event_queue
         .roundtrip(&mut runtime)
@@ -859,18 +889,17 @@ impl Runtime {
                 WorkerResult::Initialized { metadata, primary } => {
                     let clock = current_clock()?;
                     let monotonic = self.started_at.elapsed();
-                    let mapped = self
-                        .location
-                        .and_then(|location| map_solar(&metadata, location, clock));
-                    self.mapped_date = mapped.as_ref().map(|_| clock.date());
-                    let playback = Playback::with_solar(
+                    // Location is never known before initialization because
+                    // the GeoClue worker only starts once a solar schedule is
+                    // available and the first frame is on screen. A later fix
+                    // is adopted through `install_solar_mapping`.
+                    let playback = Playback::new(
                         &metadata,
                         primary,
                         self.appearance,
                         clock,
                         monotonic,
                         self.reduced_motion,
-                        mapped.as_ref(),
                     );
                     self.metadata = Some(metadata);
                     self.scheduler = Some(Scheduler::new(playback, clock, monotonic));
@@ -1071,15 +1100,20 @@ impl Runtime {
     }
 
     fn install_solar_mapping(&mut self) -> Result<(), Error> {
+        if !self.appearance.permits_solar() {
+            return Ok(());
+        }
         let (Some(location), Some(metadata)) = (self.location, self.metadata.as_ref()) else {
             return Ok(());
         };
         let clock = current_clock()?;
-        let monotonic = self.started_at.elapsed();
+        // Record the attempt even if mapping fails so a persistent failure
+        // cannot recompute on every event-loop pass.
+        self.mapped = Some((clock.date(), clock.utc_offset_seconds()));
         let Some(mapped) = map_solar(metadata, location, clock) else {
             return Ok(());
         };
-        self.mapped_date = Some(clock.date());
+        let monotonic = self.started_at.elapsed();
         if let Some(scheduler) = self.scheduler.as_mut() {
             let outcome = scheduler.apply_solar_schedule(&mapped, clock, monotonic);
             if outcome.selection_changed || outcome.presentation_changed {
@@ -1123,8 +1157,24 @@ impl Runtime {
                 }
             }
         }
-        if self.solar_terminal {
+        if self.solar_terminal || !self.appearance.permits_solar() {
             return Ok(());
+        }
+        let has_solar = self.has_solar_schedule();
+        let frame_available = self.frame_available();
+        // Start the GeoClue worker only once a solar file and a first frame
+        // make a request meaningful, and degrade rather than abort on failure.
+        if self.solar_resolver.is_none() && has_solar && frame_available {
+            match SolarResolver::spawn() {
+                Ok(resolver) => self.solar_resolver = Some(resolver),
+                Err(_) => {
+                    self.solar_terminal = true;
+                    eprintln!(
+                        "genkan wallpaper: could not start the GeoClue worker; retaining the h24 schedule or static fallback"
+                    );
+                    return Ok(());
+                }
+            }
         }
         let idle = !self
             .solar_resolver
@@ -1133,17 +1183,34 @@ impl Runtime {
         let due = self
             .next_location_refresh
             .is_none_or(|deadline| Instant::now() >= deadline);
-        let ready = self.has_solar_schedule()
-            && (self.location.is_some() || (!self.solar_requested && self.frame_available()));
-        if idle && due && ready {
+        if idle
+            && due
+            && solar_request_ready(
+                self.appearance,
+                has_solar,
+                self.location.is_some(),
+                frame_available,
+                self.solar_requested,
+            )
+        {
             self.solar_requested = true;
             self.dispatch_solar();
         }
-        let needs_mapping = self.location.is_some()
-            && self.has_solar_schedule()
-            && self.mapped_date != Some(current_clock()?.date());
-        if needs_mapping {
-            self.install_solar_mapping()?;
+        // Recheck civil time at a bounded cadence instead of every frame.
+        if self
+            .next_solar_check
+            .is_none_or(|deadline| Instant::now() >= deadline)
+        {
+            self.next_solar_check = Some(Instant::now() + SOLAR_CHECK_INTERVAL);
+            if solar_mapping_due(
+                self.appearance,
+                has_solar,
+                self.location.is_some(),
+                self.mapped,
+                current_clock()?,
+            ) {
+                self.install_solar_mapping()?;
+            }
         }
         Ok(())
     }
@@ -2004,6 +2071,116 @@ mod tests {
         let east = GeoLocation::new(0.0, 179.99, 5_000.0).unwrap();
         let west = GeoLocation::new(0.0, -179.99, 5_000.0).unwrap();
         assert!(!meaningful_location_change(east, west));
+    }
+
+    #[test]
+    fn appearance_suppresses_solar_requests_and_mapping() {
+        let now = clock(12, 0, 0);
+        assert!(solar_request_ready(
+            AppearancePreference::Automatic,
+            true,
+            false,
+            true,
+            false
+        ));
+        assert!(!solar_request_ready(
+            AppearancePreference::Dark,
+            true,
+            false,
+            true,
+            false
+        ));
+        assert!(!solar_request_ready(
+            AppearancePreference::Light,
+            true,
+            false,
+            true,
+            false
+        ));
+        assert!(!solar_request_ready(
+            AppearancePreference::Automatic,
+            false,
+            false,
+            true,
+            false
+        ));
+        assert!(!solar_request_ready(
+            AppearancePreference::Automatic,
+            true,
+            false,
+            false,
+            false
+        ));
+        assert!(!solar_request_ready(
+            AppearancePreference::Automatic,
+            true,
+            false,
+            true,
+            true
+        ));
+        assert!(solar_request_ready(
+            AppearancePreference::Automatic,
+            true,
+            true,
+            false,
+            true
+        ));
+
+        assert!(!solar_mapping_due(
+            AppearancePreference::Dark,
+            true,
+            true,
+            None,
+            now
+        ));
+        assert!(solar_mapping_due(
+            AppearancePreference::Automatic,
+            true,
+            true,
+            None,
+            now
+        ));
+        assert!(!solar_mapping_due(
+            AppearancePreference::Automatic,
+            true,
+            true,
+            Some((now.date(), now.utc_offset_seconds())),
+            now
+        ));
+        let tomorrow = ClockSnapshot::new(
+            CivilDate::new(2026, 9, 11).unwrap(),
+            CivilTime::new(0, 0, 0).unwrap(),
+            0,
+        )
+        .unwrap();
+        assert!(solar_mapping_due(
+            AppearancePreference::Automatic,
+            true,
+            true,
+            Some((now.date(), now.utc_offset_seconds())),
+            tomorrow
+        ));
+        assert!(solar_mapping_due(
+            AppearancePreference::Automatic,
+            true,
+            true,
+            Some((now.date(), now.utc_offset_seconds() + 3_600)),
+            now
+        ));
+        assert!(!solar_mapping_due(
+            AppearancePreference::Automatic,
+            false,
+            true,
+            None,
+            now
+        ));
+        assert!(!solar_mapping_due(
+            AppearancePreference::Automatic,
+            true,
+            false,
+            None,
+            now
+        ));
     }
 
     #[test]
