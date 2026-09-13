@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Duration;
 
 use super::heic::RgbaFrame;
-use super::{AppearancePreference, ClockSnapshot, ImageReference, Metadata, Selection, TimePoint};
+use super::{
+    AppearancePreference, ClockSnapshot, ImageReference, Metadata, Schedule, Selection, TimePoint,
+};
 
 const DAY_SECONDS: u32 = 86_400;
 const RESYNCHRONIZE_AFTER: Duration = Duration::from_secs(60);
@@ -89,21 +91,41 @@ impl Playback {
         monotonic: Duration,
         reduced_motion: bool,
     ) -> Self {
-        let (mode, selected) = match metadata.select(appearance, false, false) {
-            Selection::Time(schedule) => {
-                let mut points = schedule.points().to_vec();
-                points.sort_by(|left, right| {
-                    left.time
-                        .value()
-                        .partial_cmp(&right.time.value())
-                        .unwrap_or(Ordering::Equal)
-                });
-                let selected = selected_point(&points, clock).image;
-                (Mode::Time(points), selected)
+        Self::with_solar(
+            metadata,
+            primary,
+            appearance,
+            clock,
+            monotonic,
+            reduced_motion,
+            None,
+        )
+    }
+
+    /// Builds playback from a mapped solar `h24` schedule.
+    ///
+    /// `solar` takes precedence over the file's time schedule only when the
+    /// caller left the appearance automatic. Explicit appearances remain
+    /// static and suppress both dynamic schedules.
+    pub fn with_solar(
+        metadata: &Metadata,
+        primary: ImageReference,
+        appearance: AppearancePreference,
+        clock: ClockSnapshot,
+        monotonic: Duration,
+        reduced_motion: bool,
+        solar: Option<&Schedule<TimePoint>>,
+    ) -> Self {
+        let (mode, selected) = match solar {
+            Some(schedule) if appearance == AppearancePreference::Automatic => {
+                sorted_time_mode(schedule.points(), clock)
             }
-            Selection::Static(image) => (Mode::Static, image),
-            Selection::Primary => (Mode::Static, primary),
-            Selection::Solar(_) => unreachable!("solar selection was not enabled"),
+            _ => match metadata.select(appearance, false, false) {
+                Selection::Time(schedule) => sorted_time_mode(schedule.points(), clock),
+                Selection::Static(image) => (Mode::Static, image),
+                Selection::Primary => (Mode::Static, primary),
+                Selection::Solar(_) => unreachable!("playback never enables solar by itself"),
+            },
         };
         let request = DecodeRequest {
             generation: next_generation(),
@@ -151,6 +173,20 @@ impl Playback {
         }
         pending.dispatched = true;
         Some(pending.request)
+    }
+
+    /// Adopts a new mapped solar schedule without discarding the presented
+    /// frame. Selection is re-evaluated immediately from `clock`; an unchanged
+    /// selection retains the current frame and an active transition.
+    pub fn set_solar_schedule(
+        &mut self,
+        schedule: &Schedule<TimePoint>,
+        clock: ClockSnapshot,
+        monotonic: Duration,
+    ) -> SynchronizeOutcome {
+        let (mode, _) = sorted_time_mode(schedule.points(), clock);
+        self.mode = mode;
+        self.synchronize_inner(clock, monotonic, false)
     }
 
     /// Re-selects directly from current civil fields. Elapsed boundaries are
@@ -438,6 +474,18 @@ impl Playback {
 
 fn next_generation() -> u64 {
     NEXT_GENERATION.fetch_add(1, AtomicOrdering::Relaxed)
+}
+
+fn sorted_time_mode(points: &[TimePoint], clock: ClockSnapshot) -> (Mode, ImageReference) {
+    let mut points = points.to_vec();
+    points.sort_by(|left, right| {
+        left.time
+            .value()
+            .partial_cmp(&right.time.value())
+            .unwrap_or(Ordering::Equal)
+    });
+    let selected = selected_point(&points, clock).image;
+    (Mode::Time(points), selected)
 }
 
 fn selected_point(points: &[TimePoint], clock: ClockSnapshot) -> TimePoint {
@@ -1354,5 +1402,120 @@ mod tests {
         );
         assert!(!playback.advance_transition(Duration::from_secs(62)));
         assert!(!playback.is_transitioning());
+    }
+
+    #[test]
+    fn mapped_solar_schedule_precedes_time_only_while_automatic() {
+        let metadata = metadata(vec![point(0, 0.0)]);
+        let mut with_appearance = Metadata::default();
+        with_appearance
+            .insert(
+                crate::dynamic_wallpaper::AppleProperty::Appearance,
+                PropertyValue::Appearance(Appearance {
+                    light: image(3),
+                    dark: image(4),
+                }),
+            )
+            .unwrap();
+        let solar = Schedule::new(vec![point(5, 0.0)], None).unwrap();
+
+        let automatic = Playback::with_solar(
+            &metadata,
+            image(9),
+            AppearancePreference::Automatic,
+            clock(12, 0, 0, 0),
+            Duration::ZERO,
+            false,
+            Some(&solar),
+        );
+        assert_eq!(automatic.selected(), image(5));
+
+        let explicit = Playback::with_solar(
+            &with_appearance,
+            image(9),
+            AppearancePreference::Dark,
+            clock(12, 0, 0, 0),
+            Duration::ZERO,
+            false,
+            Some(&solar),
+        );
+        assert_eq!(explicit.selected(), image(4));
+
+        let suppressed = Playback::with_solar(
+            &metadata,
+            image(9),
+            AppearancePreference::Light,
+            clock(12, 0, 0, 0),
+            Duration::ZERO,
+            false,
+            Some(&solar),
+        );
+        assert_eq!(suppressed.selected(), image(9));
+    }
+
+    #[test]
+    fn adopting_a_mapped_solar_schedule_retains_the_presented_frame() {
+        let metadata = metadata(vec![point(0, 0.0)]);
+        let now = clock(0, 0, 0, 0);
+        let mut playback = Playback::with_solar(
+            &metadata,
+            image(9),
+            AppearancePreference::Automatic,
+            now,
+            Duration::ZERO,
+            false,
+            None,
+        );
+        complete_initial(&mut playback, 10);
+
+        let unchanged = Schedule::new(vec![point(0, 0.0)], None).unwrap();
+        let outcome = playback.set_solar_schedule(&unchanged, now, Duration::from_secs(1));
+        assert!(!outcome.selection_changed);
+        assert!(!outcome.presentation_changed);
+        assert_eq!(playback.take_decode_request(), None);
+        assert_eq!(playback.frame().unwrap().pixels[0], 10);
+
+        let changed = Schedule::new(vec![point(5, 0.0)], None).unwrap();
+        let outcome = playback.set_solar_schedule(&changed, now, Duration::from_secs(2));
+        assert!(outcome.selection_changed);
+        let request = playback.take_decode_request().unwrap();
+        assert_eq!(request.image, image(5));
+    }
+
+    #[test]
+    fn mapped_fixture_solar_schedule_drives_playback_selection() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dynamic-heic/synthetic-all-properties.heic");
+        let document = Document::open(&path).unwrap();
+        let now = clock(6, 0, 0, 0);
+        let mapped = crate::dynamic_wallpaper::solar::map_schedule(
+            document.metadata().solar().unwrap(),
+            crate::dynamic_wallpaper::Location::new(40.0, -75.0).unwrap(),
+            now,
+        )
+        .unwrap();
+        let mut playback = Playback::with_solar(
+            document.metadata(),
+            document.primary_image(),
+            AppearancePreference::Automatic,
+            now,
+            Duration::ZERO,
+            true,
+            Some(&mapped),
+        );
+        assert!(mapped
+            .points()
+            .iter()
+            .any(|point| point.image == playback.selected()));
+        let request = playback.take_decode_request().unwrap();
+        assert_eq!(
+            playback.complete_decode(
+                request,
+                document.decode(request.image).map_err(|_| ()),
+                Duration::ZERO,
+            ),
+            DecodeOutcome::Presented
+        );
+        assert!(playback.frame().is_some());
     }
 }
