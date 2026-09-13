@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::heic::RgbaFrame;
 use super::{
-    AppearancePreference, ClockSnapshot, ImageReference, Metadata, Schedule, Selection, TimePoint,
+    AppearancePreference, ClockSnapshot, ImageReference, Metadata, Selection, TimePoint,
     SECONDS_PER_DAY,
 };
 
@@ -106,7 +106,9 @@ impl Playback {
     ///
     /// `solar` takes precedence over the file's time schedule only when the
     /// caller left the appearance automatic. Explicit appearances remain
-    /// static and suppress both dynamic schedules.
+    /// static and suppress both dynamic schedules. The mapped points carry no
+    /// appearance of their own; appearance fallback is resolved from
+    /// `metadata` before a solar schedule is ever offered.
     pub fn with_solar(
         metadata: &Metadata,
         primary: ImageReference,
@@ -114,14 +116,20 @@ impl Playback {
         clock: ClockSnapshot,
         monotonic: Duration,
         reduced_motion: bool,
-        solar: Option<&Schedule<TimePoint>>,
+        solar: Option<&[TimePoint]>,
     ) -> Self {
         let (mode, selected) = match solar {
-            Some(schedule) if appearance == AppearancePreference::Automatic => {
-                sorted_time_mode(schedule.points(), clock)
+            Some(points) if appearance == AppearancePreference::Automatic => {
+                let points = sorted_time_points(points);
+                let selected = selected_point(&points, clock).image;
+                (Mode::Time(points), selected)
             }
             _ => match metadata.select(appearance, false, false) {
-                Selection::Time(schedule) => sorted_time_mode(schedule.points(), clock),
+                Selection::Time(schedule) => {
+                    let points = sorted_time_points(schedule.points());
+                    let selected = selected_point(&points, clock).image;
+                    (Mode::Time(points), selected)
+                }
                 Selection::Static(image) => (Mode::Static, image),
                 Selection::Primary => (Mode::Static, primary),
                 Selection::Solar(_) => unreachable!("playback never enables solar by itself"),
@@ -180,12 +188,11 @@ impl Playback {
     /// selection retains the current frame and an active transition.
     pub fn set_solar_schedule(
         &mut self,
-        schedule: &Schedule<TimePoint>,
+        points: &[TimePoint],
         clock: ClockSnapshot,
         monotonic: Duration,
     ) -> SynchronizeOutcome {
-        let (mode, _) = sorted_time_mode(schedule.points(), clock);
-        self.mode = mode;
+        self.mode = Mode::Time(sorted_time_points(points));
         self.synchronize_inner(clock, monotonic, false)
     }
 
@@ -476,7 +483,7 @@ fn next_generation() -> u64 {
     NEXT_GENERATION.fetch_add(1, AtomicOrdering::Relaxed)
 }
 
-fn sorted_time_mode(points: &[TimePoint], clock: ClockSnapshot) -> (Mode, ImageReference) {
+fn sorted_time_points(points: &[TimePoint]) -> Vec<TimePoint> {
     let mut points = points.to_vec();
     points.sort_by(|left, right| {
         left.time
@@ -484,8 +491,7 @@ fn sorted_time_mode(points: &[TimePoint], clock: ClockSnapshot) -> (Mode, ImageR
             .partial_cmp(&right.time.value())
             .unwrap_or(Ordering::Equal)
     });
-    let selected = selected_point(&points, clock).image;
-    (Mode::Time(points), selected)
+    points
 }
 
 fn selected_point(points: &[TimePoint], clock: ClockSnapshot) -> TimePoint {
@@ -1417,7 +1423,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        let solar = Schedule::new(vec![point(5, 0.0)], None).unwrap();
+        let solar = vec![point(5, 0.0)];
 
         let automatic = Playback::with_solar(
             &metadata,
@@ -1468,14 +1474,14 @@ mod tests {
         );
         complete_initial(&mut playback, 10);
 
-        let unchanged = Schedule::new(vec![point(0, 0.0)], None).unwrap();
+        let unchanged = vec![point(0, 0.0)];
         let outcome = playback.set_solar_schedule(&unchanged, now, Duration::from_secs(1));
         assert!(!outcome.selection_changed);
         assert!(!outcome.presentation_changed);
         assert_eq!(playback.take_decode_request(), None);
         assert_eq!(playback.frame().unwrap().pixels[0], 10);
 
-        let changed = Schedule::new(vec![point(5, 0.0)], None).unwrap();
+        let changed = vec![point(5, 0.0)];
         let outcome = playback.set_solar_schedule(&changed, now, Duration::from_secs(2));
         assert!(outcome.selection_changed);
         let request = playback.take_decode_request().unwrap();
@@ -1504,7 +1510,6 @@ mod tests {
             Some(&mapped),
         );
         assert!(mapped
-            .points()
             .iter()
             .any(|point| point.image == playback.selected()));
         let request = playback.take_decode_request().unwrap();
