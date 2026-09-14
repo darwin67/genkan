@@ -1585,6 +1585,15 @@ mod tests {
             .as_ref()
             .expect("adopted a scheduled background");
         assert_eq!(background.dimensions(), (8, 8));
+
+        // A synthetic overlay lets the presentation rebuild a usable frame
+        // without shaping text, which the sandbox cannot do without fonts.
+        presentation.overlay = Some(
+            RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 0]))
+                .expect("synthetic overlay has valid dimensions"),
+        );
+        presentation.rebuild_frame();
+        assert!(presentation.frame().is_some());
     }
 
     #[cfg(feature = "lock-test")]
