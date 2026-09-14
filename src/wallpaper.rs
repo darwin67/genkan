@@ -138,6 +138,7 @@ pub(crate) struct State {
     frame: Option<image::Handle>,
     allocation: Option<Allocation>,
     allocation_pending: bool,
+    heic_adopted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +175,7 @@ impl State {
                 poster,
                 allocation: None,
                 allocation_pending: false,
+                heic_adopted: false,
             },
             Err(error) => {
                 diagnostic(&error);
@@ -194,6 +196,7 @@ impl State {
                 poster,
                 allocation: None,
                 allocation_pending: false,
+                heic_adopted: false,
             },
             Err(error) => {
                 diagnostic(&error);
@@ -210,6 +213,7 @@ impl State {
             poster,
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         }
     }
 
@@ -222,6 +226,7 @@ impl State {
             frame: None,
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         }
     }
 
@@ -253,6 +258,7 @@ impl State {
                     frame.height,
                     frame.pixels,
                 ));
+                self.note_heic_adoption();
                 Refresh::Frame
             }
             Update::Failed => {
@@ -260,6 +266,19 @@ impl State {
                 Refresh::Failed
             }
         }
+    }
+
+    /// Records the first dynamic-HEIC frame this consumer actually renders.
+    ///
+    /// The `lock-test` build emits one bounded line so a smoke test can prove
+    /// a decoded frame reached the locker instead of the source falling back.
+    fn note_heic_adoption(&mut self) {
+        if self.heic.is_none() || self.heic_adopted {
+            return;
+        }
+        self.heic_adopted = true;
+        #[cfg(feature = "lock-test")]
+        diagnostic("dynamic wallpaper frame adopted");
     }
 
     pub(crate) fn prepare_latest(&mut self) -> Option<image::Handle> {
@@ -300,6 +319,7 @@ impl State {
             Ok(allocation) => {
                 self.frame = Some(allocation.handle().clone());
                 self.allocation = Some(allocation);
+                self.note_heic_adoption();
                 Refresh::Frame
             }
             Err(error) => {
@@ -459,7 +479,6 @@ struct HeicShared {
     pending: Mutex<Option<Update>>,
     sequence: AtomicU64,
     failed: AtomicBool,
-    adopted: AtomicBool,
 }
 
 /// A dynamic HEIC source for login and lock.
@@ -481,9 +500,11 @@ impl std::fmt::Debug for HeicPlayer {
     }
 }
 
-/// The civil-time source a HEIC worker schedules against. Injectable so tests
-/// can drive boundaries deterministically.
-type HeicClock = dyn Fn() -> Option<ClockSnapshot> + Send + Sync;
+/// The civil and monotonic time source a HEIC worker schedules against.
+///
+/// Both values are produced by one call so a test clock cannot hand out a torn
+/// civil/monotonic pair and fake a clock discontinuity.
+type HeicTime = dyn Fn() -> (Option<ClockSnapshot>, Duration) + Send + Sync;
 
 impl HeicPlayer {
     fn start(
@@ -491,14 +512,20 @@ impl HeicPlayer {
         appearance: AppearancePreference,
         reduced_motion: bool,
     ) -> Result<Self, String> {
-        Self::start_with_clock(path, appearance, reduced_motion, Box::new(current_clock))
+        let started = Instant::now();
+        Self::start_with_time(
+            path,
+            appearance,
+            reduced_motion,
+            Box::new(move || (current_clock(), started.elapsed())),
+        )
     }
 
-    fn start_with_clock(
+    fn start_with_time(
         path: &Path,
         appearance: AppearancePreference,
         reduced_motion: bool,
-        clock: Box<HeicClock>,
+        time: Box<HeicTime>,
     ) -> Result<Self, String> {
         if !path.is_file() {
             return Err(pipeline_error("dynamic wallpaper file is unavailable"));
@@ -512,13 +539,11 @@ impl HeicPlayer {
         let worker = thread::Builder::new()
             .name("wallpaper-heic".into())
             .spawn(move || {
-                let started = Instant::now();
                 run_heic(
                     &worker_path,
                     appearance,
                     reduced_motion,
-                    clock.as_ref(),
-                    &|| started.elapsed(),
+                    time.as_ref(),
                     &worker_shared,
                     &signal_sender,
                     &worker_stopping,
@@ -639,11 +664,6 @@ fn emit_heic_frame(
     }));
     let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
     signal.send_replace(sequence);
-    if !shared.adopted.swap(true, Ordering::AcqRel) {
-        // One bounded, non-sensitive line per worker so a smoke test can prove
-        // the dynamic source was actually adopted rather than falling back.
-        diagnostic("dynamic wallpaper frame adopted");
-    }
     true
 }
 
@@ -734,13 +754,11 @@ fn finish_heic_decode(
     publish
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_heic(
     path: &Path,
     appearance: AppearancePreference,
     reduced_motion: bool,
-    clock_source: &HeicClock,
-    monotonic_source: &(dyn Fn() -> Duration + '_),
+    time_source: &HeicTime,
     shared: &Arc<HeicShared>,
     signal: &watch::Sender<u64>,
     stopping: &AtomicBool,
@@ -754,7 +772,7 @@ fn run_heic(
     };
     let mut suspend = SuspendDetector::new(suspend_clock_offset());
     let mut diagnostics = HeicDiagnostics::default();
-    let Some(initial_clock) = clock_source() else {
+    let (Some(initial_clock), initial_monotonic) = time_source() else {
         fail_heic(shared, signal);
         return;
     };
@@ -763,12 +781,12 @@ fn run_heic(
         document.primary_image(),
         appearance,
         initial_clock,
-        monotonic_source(),
+        initial_monotonic,
         reduced_motion,
     );
     while !stopping.load(Ordering::Acquire) {
-        let monotonic = monotonic_source();
-        let clock = clock_source().unwrap_or(initial_clock);
+        let (clock, monotonic) = time_source();
+        let clock = clock.unwrap_or(initial_clock);
         if apply_heic_schedule(&mut playback, clock, monotonic, suspend.sample()) {
             publish_heic(shared, signal, playback.frame());
         }
@@ -784,9 +802,10 @@ fn run_heic(
             }
             // Resample after the blocking decode: a request that crossed a
             // boundary or the dissolve window must be completed against the
-            // current time, not the time before the decode started.
-            let monotonic = monotonic_source();
-            let clock = clock_source().unwrap_or(clock);
+            // current time, not the time before the decode started. One call
+            // returns a coherent civil/monotonic pair.
+            let (clock, monotonic) = time_source();
+            let clock = clock.unwrap_or(initial_clock);
             if finish_heic_decode(
                 &mut playback,
                 request,
@@ -1696,14 +1715,14 @@ mod tests {
             *lock(&self.0) = (clock, monotonic);
         }
 
-        fn clock_source(&self) -> Box<HeicClock> {
+        /// One callback returning both samples under one lock, so a concurrent
+        /// `set` cannot produce a torn civil/monotonic pair.
+        fn time_source(&self) -> Box<HeicTime> {
             let time = self.clone();
-            Box::new(move || Some(lock(&time.0).0))
-        }
-
-        fn monotonic_source(&self) -> impl Fn() -> Duration {
-            let time = self.clone();
-            move || lock(&time.0).1
+            Box::new(move || {
+                let sample = lock(&time.0);
+                (Some(sample.0), sample.1)
+            })
         }
     }
 
@@ -1753,6 +1772,20 @@ mod tests {
             assert!(!state.decoder_is_stopped());
             assert_eq!(state.rgba_frame().unwrap().dimensions(), (8, 8));
         }
+    }
+
+    #[test]
+    fn heic_adoption_is_recorded_when_a_frame_is_consumed() {
+        let mut state = State::start(heic_settings(Some(heic_fixture()), true, true));
+        assert!(!state.heic_adopted);
+        assert_eq!(wait_for_heic(&mut state), Refresh::Frame);
+        assert!(
+            state.heic_adopted,
+            "consuming a HEIC frame records adoption"
+        );
+
+        let mov = State::start(heic_settings(None, false, false));
+        assert!(!mov.heic_adopted);
     }
 
     #[test]
@@ -1884,8 +1917,7 @@ mod tests {
     fn dynamic_heic_selects_the_scheduled_variant() {
         let path = heic_fixture();
         let time = FakeTime::new(clock_snapshot(13, 0, 0), Duration::ZERO);
-        let clock = time.clock_source();
-        let monotonic = time.monotonic_source();
+        let time_source = time.time_source();
         let shared = Arc::new(HeicShared::default());
         let (signal, _receiver) = watch::channel(0);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -1897,8 +1929,7 @@ mod tests {
                     &path,
                     AppearancePreference::Automatic,
                     true,
-                    clock.as_ref(),
-                    &monotonic,
+                    time_source.as_ref(),
                     &shared,
                     &signal,
                     &stopping,
@@ -1921,8 +1952,7 @@ mod tests {
     fn dynamic_heic_transitions_at_an_ordinary_boundary() {
         let path = heic_fixture();
         let time = FakeTime::new(clock_snapshot(0, 0, 0), Duration::ZERO);
-        let clock = time.clock_source();
-        let monotonic = time.monotonic_source();
+        let time_source = time.time_source();
         let shared = Arc::new(HeicShared::default());
         let (signal, _receiver) = watch::channel(0);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -1934,8 +1964,7 @@ mod tests {
                     &path,
                     AppearancePreference::Automatic,
                     true,
-                    clock.as_ref(),
-                    &monotonic,
+                    time_source.as_ref(),
                     &shared,
                     &signal,
                     &stopping,
@@ -1970,8 +1999,7 @@ mod tests {
     fn dynamic_heic_dissolves_at_an_ordinary_boundary() {
         let path = heic_fixture();
         let time = FakeTime::new(clock_snapshot(0, 0, 0), Duration::ZERO);
-        let clock = time.clock_source();
-        let monotonic = time.monotonic_source();
+        let time_source = time.time_source();
         let shared = Arc::new(HeicShared::default());
         let (signal, _receiver) = watch::channel(0);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -1983,8 +2011,7 @@ mod tests {
                     &path,
                     AppearancePreference::Automatic,
                     false,
-                    clock.as_ref(),
-                    &monotonic,
+                    time_source.as_ref(),
                     &shared,
                     &signal,
                     &stopping,
@@ -2266,6 +2293,7 @@ mod tests {
             frame: Some(poster),
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         };
         publish_frame(&shared, &signal_sender, frame(1, Duration::ZERO));
 
@@ -2354,6 +2382,7 @@ mod tests {
             frame: None,
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         };
 
         state.receive_latest();
@@ -2382,6 +2411,7 @@ mod tests {
             frame: Some(current),
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         };
 
         state.receive_latest();
@@ -2408,6 +2438,7 @@ mod tests {
             frame: Some(current),
             allocation: None,
             allocation_pending: true,
+            heic_adopted: false,
         };
         fail_once(&shared, &signal_sender, "expected allocation race failure");
 
