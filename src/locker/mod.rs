@@ -1569,6 +1569,13 @@ mod tests {
             display_name: "Preview User".into(),
         };
         let mut presentation = LockerPresentation::for_test(identity, settings);
+        // Install a transparent overlay before adoption so automatic rebuilding
+        // in `receive_deferred` produces the frame. A regression that stopped
+        // rebuilding would leave `frame()` empty and fail here.
+        presentation.overlay = Some(
+            RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 0]))
+                .expect("synthetic overlay has valid dimensions"),
+        );
 
         let mut adopted = false;
         for _ in 0..1000 {
@@ -1578,30 +1585,36 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-
         assert!(adopted, "the locker never adopted a scheduled HEIC frame");
+
+        let frame = presentation
+            .frame()
+            .expect("automatic rebuilding produced a presentation frame");
+        let rendered =
+            genkan_session_lock::render_preview(&frame, 4, 4).expect("render presentation");
         let background = presentation
             .background
             .as_ref()
             .expect("adopted a scheduled background");
         assert_eq!(background.dimensions(), (8, 8));
-        let pixels = background.pixels();
-        assert_eq!(pixels.len(), 8 * 8 * 4);
-        assert_eq!(pixels[3], 255);
-        assert!(
-            pixels[0] > 200 || pixels[1] > 200 || pixels[2] > 200,
-            "expected a solid fixture color, got {:?}",
-            &pixels[..4]
-        );
-
-        // A synthetic overlay lets the presentation rebuild a usable frame
-        // without shaping text, which the sandbox cannot do without fonts.
-        presentation.overlay = Some(
-            RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 0]))
-                .expect("synthetic overlay has valid dimensions"),
-        );
-        presentation.rebuild_frame();
-        assert!(presentation.frame().is_some());
+        assert_eq!(rendered.dimensions(), (4, 4));
+        assert_eq!(rendered.pixels()[3], 255);
+        // The authentication preview dims the background, but every rendered
+        // channel must still carry the fixture color rather than a fallback.
+        for channel in 0..3 {
+            let background_channel = u16::from(background.pixels()[channel]);
+            let rendered_channel = u16::from(rendered.pixels()[channel]);
+            assert!(
+                rendered_channel <= background_channel,
+                "render brightened channel {channel}"
+            );
+            assert!(
+                rendered_channel * 2 + 4 >= background_channel,
+                "render lost the fixture color at channel {channel}: {} vs {}",
+                rendered.pixels()[channel],
+                background.pixels()[channel]
+            );
+        }
     }
 
     #[cfg(feature = "lock-test")]
