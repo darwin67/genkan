@@ -527,9 +527,9 @@ impl HeicPlayer {
         reduced_motion: bool,
         time: Box<HeicTime>,
     ) -> Result<Self, String> {
-        if !path.is_file() {
-            return Err(pipeline_error("dynamic wallpaper file is unavailable"));
-        }
+        // Do not stat the path here: a stalled automount would block lock
+        // acquisition before READY. The worker's `Document::open` validates
+        // existence and regular-file status and reports a decorative failure.
         let (signal_sender, signal) = watch::channel(0);
         let shared = Arc::new(HeicShared::default());
         let stopping = Arc::new(AtomicBool::new(false));
@@ -1810,6 +1810,21 @@ mod tests {
         assert!(state.has_frame());
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn dynamic_heic_missing_file_falls_back_after_worker_failure() {
+        let path =
+            std::env::temp_dir().join(format!("genkan-heic-missing-{}.heic", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        // The player starts without a synchronous stat; the worker validates
+        // the path and reports a decorative failure.
+        let mut state = State::start(heic_settings(Some(path), true, false));
+        assert!(!state.decoder_is_stopped());
+        assert_eq!(wait_for_heic(&mut state), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert!(state.has_frame());
     }
 
     fn clock_snapshot(hour: u8, minute: u8, second: u8) -> ClockSnapshot {

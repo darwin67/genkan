@@ -224,18 +224,17 @@ fn parse_wallpaper_file(value: &str) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err("wallpaper file must be an absolute local path, not a URI or pipeline".into());
     }
-    if !path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("mov")
-                || extension.eq_ignore_ascii_case("heic")
-                || extension.eq_ignore_ascii_case("heif")
-        })
-    {
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    let is_movie = extension.is_some_and(|extension| extension.eq_ignore_ascii_case("mov"));
+    let is_heic = extension.is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("heic") || extension.eq_ignore_ascii_case("heif")
+    });
+    if !is_movie && !is_heic {
         return Err("wallpaper file must be a MOV, HEIC, or HEIF file".into());
     }
-    if !path.is_file() {
+    // HEIC existence and regular-file validation happen in the worker so a
+    // stalled FUSE or automount cannot delay compositor lock acquisition.
+    if is_movie && !path.is_file() {
         return Err("wallpaper file must name an existing regular file".into());
     }
     Ok(path)
@@ -950,6 +949,11 @@ mod tests {
             std::fs::remove_file(&path).unwrap();
             assert_eq!(parsed.unwrap().wallpaper_file, Some(path), "{extension}");
         }
+        // A HEIC path is only validated syntactically here; existence and
+        // regular-file checks happen in the worker so a stalled automount
+        // cannot delay compositor lock acquisition.
+        assert!(try_parse_login(["genkan", "--wallpaper-file", "/does/not/exist.heic"]).is_ok());
+        assert!(try_parse_login(["genkan", "--wallpaper-file", "/does/not/exist.heif"]).is_ok());
         for invalid in [
             "wallpaper.mov",
             "https://example.test/wallpaper.heic",
