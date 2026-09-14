@@ -410,12 +410,24 @@
         stop_sway()
         start_sway()
         start_lock(extra="--wallpaper-file ${fixture}")
+        # Prove the dynamic source was adopted rather than falling back.
+        machine.wait_until_succeeds(
+            "grep -F 'dynamic wallpaper frame adopted' /tmp/lock.log"
+        )
         wait_for_event("AUTH_PROMPT")
         send_response("/tmp/factor")
         wait_for_event("AUTH_PROMPT", 2)
         send_response("/tmp/password")
         wait_for_event("AUTH_SUCCESS")
         assert wait_for_status() == 0
+
+        # Relock on the same compositor with the dynamic source.
+        start_lock(extra="--wallpaper-file ${fixture}")
+        machine.wait_until_succeeds(
+            "grep -F 'dynamic wallpaper frame adopted' /tmp/lock.log"
+        )
+        stop_sway()
+        assert wait_for_status() == 1
 
     archive_observer()
     machine.succeed(

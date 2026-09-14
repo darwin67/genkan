@@ -1585,6 +1585,14 @@ mod tests {
             .as_ref()
             .expect("adopted a scheduled background");
         assert_eq!(background.dimensions(), (8, 8));
+        let pixels = background.pixels();
+        assert_eq!(pixels.len(), 8 * 8 * 4);
+        assert_eq!(pixels[3], 255);
+        assert!(
+            pixels[0] > 200 || pixels[1] > 200 || pixels[2] > 200,
+            "expected a solid fixture color, got {:?}",
+            &pixels[..4]
+        );
 
         // A synthetic overlay lets the presentation rebuild a usable frame
         // without shaping text, which the sandbox cannot do without fonts.
