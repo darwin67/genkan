@@ -1,4 +1,4 @@
-{ genkan }:
+{ genkan, fixture }:
 {
   name = "genkan-session-lock-vm";
 
@@ -405,6 +405,17 @@
         machine.execute(f"{as_alice('swaylock -f -c 000000')} >/tmp/swaylock.log 2>&1 &")
         machine.sleep(timedelta(seconds=1))
         assert_lock_unavailable()
+
+    with subtest("dynamic HEIC wallpaper locks, authenticates, and unlocks"):
+        stop_sway()
+        start_sway()
+        start_lock(extra="--wallpaper-file ${fixture}")
+        wait_for_event("AUTH_PROMPT")
+        send_response("/tmp/factor")
+        wait_for_event("AUTH_PROMPT", 2)
+        send_response("/tmp/password")
+        wait_for_event("AUTH_SUCCESS")
+        assert wait_for_status() == 0
 
     archive_observer()
     machine.succeed(
