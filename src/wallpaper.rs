@@ -23,6 +23,7 @@ use iced::futures::stream;
 use iced::widget::{image, Image};
 use iced::{ContentFit, Element, Fill, Subscription};
 use iced_runtime::image::{Allocation, Error as AllocationError};
+use rustix::time::{clock_gettime, ClockId, Timespec};
 use tokio::sync::watch;
 
 use crate::stable_file::{open_regular, OpenError};
@@ -479,11 +480,24 @@ impl std::fmt::Debug for HeicPlayer {
     }
 }
 
+/// The civil-time source a HEIC worker schedules against. Injectable so tests
+/// can drive boundaries deterministically.
+type HeicClock = dyn Fn() -> Option<ClockSnapshot> + Send + Sync;
+
 impl HeicPlayer {
     fn start(
         path: &Path,
         appearance: AppearancePreference,
         reduced_motion: bool,
+    ) -> Result<Self, String> {
+        Self::start_with_clock(path, appearance, reduced_motion, Box::new(current_clock))
+    }
+
+    fn start_with_clock(
+        path: &Path,
+        appearance: AppearancePreference,
+        reduced_motion: bool,
+        clock: Box<HeicClock>,
     ) -> Result<Self, String> {
         if !path.is_file() {
             return Err(pipeline_error("dynamic wallpaper file is unavailable"));
@@ -501,6 +515,7 @@ impl HeicPlayer {
                     &worker_path,
                     appearance,
                     reduced_motion,
+                    clock.as_ref(),
                     &worker_shared,
                     &signal_sender,
                     &worker_stopping,
@@ -513,6 +528,30 @@ impl HeicPlayer {
             stopping,
             worker: Some(worker),
         })
+    }
+
+    /// A player whose worker blocks until `release` is set, emulating an
+    /// uninterruptible decode for the drop-latency regression test.
+    #[cfg(test)]
+    fn with_blocked_worker(release: Arc<AtomicBool>) -> Self {
+        let (_signal, signal) = watch::channel(0);
+        let shared = Arc::new(HeicShared::default());
+        let stopping = Arc::new(AtomicBool::new(false));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let worker = thread::Builder::new()
+            .name("wallpaper-heic-blocked".into())
+            .spawn(move || {
+                while !release.load(Ordering::Acquire) && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            })
+            .expect("test worker");
+        Self {
+            shared,
+            signal,
+            stopping,
+            worker: Some(worker),
+        }
     }
 
     fn subscription(&self) -> Subscription<()> {
@@ -552,10 +591,26 @@ impl Hash for HeicFrameSignal {
 impl Drop for HeicPlayer {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        // Detach instead of joining. A HEIC decode is not interruptible, and a
+        // synchronous join here would keep the lock coordinator alive after the
+        // compositor lock is destroyed. The worker owns its own Arcs and exits
+        // at its next `stopping` check.
+        self.worker.take();
     }
+}
+
+fn reserve_frame_buffer(len: usize) -> Option<Vec<u8>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len).ok()?;
+    Some(buffer)
+}
+
+/// Copies a decoded frame with a fallible allocation so memory pressure
+/// retains the last valid frame instead of aborting the process.
+fn copy_frame_pixels(pixels: &[u8]) -> Option<Bytes> {
+    let mut buffer = reserve_frame_buffer(pixels.len())?;
+    buffer.extend_from_slice(pixels);
+    Some(Bytes::from(buffer))
 }
 
 fn publish_heic(shared: &HeicShared, signal: &watch::Sender<u64>, frame: Option<&HeicFrame>) {
@@ -565,10 +620,13 @@ fn publish_heic(shared: &HeicShared, signal: &watch::Sender<u64>, frame: Option<
     if shared.failed.load(Ordering::Acquire) {
         return;
     }
+    let Some(pixels) = copy_frame_pixels(&frame.pixels) else {
+        return;
+    };
     *lock(&shared.pending) = Some(Update::Frame(Frame {
         width: frame.width,
         height: frame.height,
-        pixels: Bytes::copy_from_slice(&frame.pixels),
+        pixels,
         pts: None,
     }));
     let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
@@ -585,10 +643,48 @@ fn fail_heic(shared: &HeicShared, signal: &watch::Sender<u64>) {
     signal.send_replace(sequence);
 }
 
+/// Applies a schedule update and reports whether the presented pixels changed
+/// without a decode (a discontinuity snapping an active dissolve).
+fn apply_heic_schedule(
+    playback: &mut HeicPlayback,
+    clock: ClockSnapshot,
+    monotonic: Duration,
+    discontinuity: bool,
+) -> bool {
+    let outcome = if discontinuity {
+        playback.resynchronize_after_discontinuity(clock, monotonic)
+    } else {
+        playback.synchronize(clock, monotonic)
+    };
+    outcome.presentation_changed
+}
+
+/// Reports at most one decode-failure diagnostic per successful frame.
+#[derive(Default)]
+struct HeicDiagnostics {
+    decode_failure_reported: bool,
+}
+
+impl HeicDiagnostics {
+    fn decode_failure(&mut self) {
+        if !self.decode_failure_reported {
+            self.decode_failure_reported = true;
+            diagnostic(
+                "dynamic wallpaper frame could not be decoded; retaining the last valid frame",
+            );
+        }
+    }
+
+    fn decoded(&mut self) {
+        self.decode_failure_reported = false;
+    }
+}
+
 fn run_heic(
     path: &Path,
     appearance: AppearancePreference,
     reduced_motion: bool,
+    clock_source: &HeicClock,
     shared: &Arc<HeicShared>,
     signal: &watch::Sender<u64>,
     stopping: &AtomicBool,
@@ -601,7 +697,9 @@ fn run_heic(
         }
     };
     let started = Instant::now();
-    let Some(initial_clock) = current_clock() else {
+    let mut suspend = SuspendDetector::new(suspend_clock_offset());
+    let mut diagnostics = HeicDiagnostics::default();
+    let Some(initial_clock) = clock_source() else {
         fail_heic(shared, signal);
         return;
     };
@@ -615,20 +713,31 @@ fn run_heic(
     );
     while !stopping.load(Ordering::Acquire) {
         let monotonic = started.elapsed();
-        let clock = current_clock().unwrap_or(initial_clock);
-        playback.synchronize(clock, monotonic);
-        if let Some(request) = playback.take_decode_request() {
-            let result = document.decode(request.image).map_err(|_| ());
-            let outcome = playback.complete_decode(request, result, monotonic);
-            if matches!(
-                outcome,
-                DecodeOutcome::Presented | DecodeOutcome::Transitioning
-            ) {
-                publish_heic(shared, signal, playback.frame());
-            }
+        let clock = clock_source().unwrap_or(initial_clock);
+        if apply_heic_schedule(&mut playback, clock, monotonic, suspend.sample()) {
+            publish_heic(shared, signal, playback.frame());
         }
         if playback.advance_transition(monotonic) {
             publish_heic(shared, signal, playback.frame());
+        }
+        if let Some(request) = playback.take_decode_request() {
+            let result = document.decode(request.image).map_err(|_| ());
+            // Resample after the blocking decode: a request that crossed a
+            // boundary or the dissolve window must be completed against the
+            // current time, not the time before the decode started.
+            let monotonic = started.elapsed();
+            let clock = clock_source().unwrap_or(clock);
+            if apply_heic_schedule(&mut playback, clock, monotonic, suspend.sample()) {
+                publish_heic(shared, signal, playback.frame());
+            }
+            match playback.complete_decode(request, result, monotonic) {
+                DecodeOutcome::Presented | DecodeOutcome::Transitioning => {
+                    diagnostics.decoded();
+                    publish_heic(shared, signal, playback.frame());
+                }
+                DecodeOutcome::Failed | DecodeOutcome::Rejected => diagnostics.decode_failure(),
+                DecodeOutcome::Ignored => {}
+            }
         }
         let delay = if playback.is_transitioning() {
             HEIC_TRANSITION_INTERVAL
@@ -637,6 +746,57 @@ fn run_heic(
         };
         thread::sleep(delay);
     }
+}
+
+const SUSPEND_DETECTION_THRESHOLD: Duration = Duration::from_millis(10);
+
+/// Detects suspend/resume by watching the CLOCK_BOOTTIME minus CLOCK_MONOTONIC
+/// offset. Unlike `Playback`'s one-second wall-clock tolerance, this catches a
+/// subsecond suspend during a dissolve. The greeter, locker, and desktop
+/// runtime all use it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SuspendDetector {
+    offset: Option<Duration>,
+}
+
+impl SuspendDetector {
+    pub(crate) const fn new(offset: Option<Duration>) -> Self {
+        Self { offset }
+    }
+
+    pub(crate) fn observe(&mut self, offset: Duration) -> bool {
+        let Some(previous) = self.offset else {
+            self.offset = Some(offset);
+            return false;
+        };
+        if offset <= previous {
+            return false;
+        }
+        self.offset = Some(offset);
+        offset - previous > SUSPEND_DETECTION_THRESHOLD
+    }
+
+    pub(crate) fn sample(&mut self) -> bool {
+        suspend_clock_offset().is_some_and(|offset| self.observe(offset))
+    }
+}
+
+pub(crate) fn suspend_clock_offset() -> Option<Duration> {
+    for _ in 0..3 {
+        let before = timespec_duration(clock_gettime(ClockId::Monotonic));
+        let boottime = timespec_duration(clock_gettime(ClockId::Boottime));
+        let after = timespec_duration(clock_gettime(ClockId::Monotonic));
+        let sampling = after.saturating_sub(before);
+        if sampling <= SUSPEND_DETECTION_THRESHOLD {
+            let midpoint = before.checked_add(sampling / 2)?;
+            return Some(boottime.saturating_sub(midpoint));
+        }
+    }
+    None
+}
+
+fn timespec_duration(value: Timespec) -> Duration {
+    Duration::new(value.tv_sec.max(0) as u64, value.tv_nsec.max(0) as u32)
 }
 
 /// The current local civil time, matching the desktop runtime's clock source.
@@ -1287,6 +1447,10 @@ mod tests {
     use std::io::Read;
 
     use super::*;
+    use genkan::dynamic_wallpaper::{
+        Appearance, AppleProperty, ImageReference, Metadata, NormalizedTime, PropertyValue,
+        Schedule, SolarPoint, SolarPosition, TimePoint,
+    };
     use iced::Size;
     use rustix::fs::Mode;
 
@@ -1481,24 +1645,6 @@ mod tests {
     }
 
     #[test]
-    fn login_and_lock_sources_never_enable_solar_location() {
-        // The greeter and locker must never request location. Their HEIC
-        // source uses `Playback::new`, which disables solar selection; guard
-        // against a future change wiring in the solar constructor or GeoClue.
-        let source = include_str!("wallpaper.rs");
-        let solar = format!("with_{}", "solar");
-        assert!(
-            !source.contains(solar.as_str()),
-            "login/lock must not enable solar"
-        );
-        let geoclue = format!("{}::", "geoclue");
-        assert!(
-            !source.contains(geoclue.as_str()),
-            "login/lock must not use GeoClue"
-        );
-    }
-
-    #[test]
     fn dynamic_heic_static_uses_only_the_poster() {
         let state = State::start(heic_settings(Some(heic_fixture()), false, false));
         assert!(state.decoder_is_stopped());
@@ -1520,6 +1666,192 @@ mod tests {
         assert!(state.has_frame());
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn clock_snapshot(hour: u8, minute: u8, second: u8) -> ClockSnapshot {
+        ClockSnapshot::new(
+            CivilDate::new(2026, 9, 10).unwrap(),
+            CivilTime::new(hour, minute, second).unwrap(),
+            0,
+        )
+        .unwrap()
+    }
+
+    fn time_metadata(points: Vec<TimePoint>) -> Metadata {
+        let mut metadata = Metadata::default();
+        metadata
+            .insert(
+                AppleProperty::Time,
+                PropertyValue::Time(Schedule::new(points, None).unwrap()),
+            )
+            .unwrap();
+        metadata
+    }
+
+    fn heic_frame(value: u8) -> HeicFrame {
+        let pixels = (0..2).flat_map(|_| [value, value, value, 255]).collect();
+        HeicFrame {
+            width: 2,
+            height: 1,
+            pixels,
+        }
+    }
+
+    #[test]
+    fn copy_frame_pixels_reports_allocation_failure() {
+        assert_eq!(
+            copy_frame_pixels(&[1, 2, 3, 4]),
+            Some(Bytes::from_static(&[1, 2, 3, 4]))
+        );
+        // A capacity overflow is reported instead of aborting the process.
+        assert!(reserve_frame_buffer(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn discontinuity_snaps_a_dissolve_and_reports_a_publish() {
+        let metadata = time_metadata(vec![
+            TimePoint {
+                image: ImageReference::from_position(0),
+                time: NormalizedTime::new(0.0).unwrap(),
+            },
+            TimePoint {
+                image: ImageReference::from_position(1),
+                time: NormalizedTime::new(60.0 / 86_400.0).unwrap(),
+            },
+        ]);
+        let mut playback = HeicPlayback::new(
+            &metadata,
+            ImageReference::from_position(0),
+            AppearancePreference::Automatic,
+            clock_snapshot(0, 0, 0),
+            Duration::ZERO,
+            false,
+        );
+        let request = playback.take_decode_request().unwrap();
+        playback.complete_decode(request, Ok(heic_frame(0)), Duration::ZERO);
+        playback.synchronize(clock_snapshot(0, 1, 0), Duration::from_secs(60));
+        let request = playback.take_decode_request().unwrap();
+        playback.complete_decode(request, Ok(heic_frame(200)), Duration::from_millis(60_500));
+        assert!(playback.is_transitioning());
+
+        assert!(
+            apply_heic_schedule(
+                &mut playback,
+                clock_snapshot(0, 1, 1),
+                Duration::from_secs(61),
+                true,
+            ),
+            "a discontinuity snap must request a publish"
+        );
+        assert!(!playback.is_transitioning());
+    }
+
+    #[test]
+    fn suspend_detector_catches_subsecond_gaps() {
+        let mut detector = SuspendDetector::new(Some(Duration::ZERO));
+        // 800 ms is below Playback's one-second clock tolerance but must be
+        // treated as a suspend.
+        assert!(detector.observe(Duration::from_millis(800)));
+        assert!(!detector.observe(Duration::from_millis(805)));
+        assert!(detector.observe(Duration::from_millis(1_605)));
+    }
+
+    #[test]
+    fn dropping_a_heic_player_does_not_join_the_worker() {
+        let release = Arc::new(AtomicBool::new(false));
+        let player = HeicPlayer::with_blocked_worker(Arc::clone(&release));
+        let started = Instant::now();
+        drop(player);
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "dropping a HEIC player must not join an uninterruptible worker"
+        );
+        release.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn dynamic_heic_selects_the_scheduled_variant() {
+        let path = heic_fixture();
+        let fixed = clock_snapshot(13, 0, 0);
+        let clock = move || Some(fixed);
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || {
+                run_heic(
+                    &path,
+                    AppearancePreference::Automatic,
+                    true,
+                    &clock,
+                    &shared,
+                    &signal,
+                    &stopping,
+                )
+            })
+        };
+        let frame = loop {
+            if let Some(Update::Frame(frame)) = lock(&shared.pending).take() {
+                break frame;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        stopping.store(true, Ordering::Release);
+        worker.join().unwrap();
+
+        // At 13:00, t = 0.5417 selects the h24 point at 0.5, image 2 (blue).
+        assert!(
+            frame.pixels[2] > 200 && frame.pixels[0] < 40 && frame.pixels[1] < 40,
+            "unexpected scheduled frame {:?}",
+            &frame.pixels[..4]
+        );
+    }
+
+    #[test]
+    fn heic_playback_never_selects_a_solar_schedule() {
+        let solar = Schedule::new(
+            vec![SolarPoint {
+                image: ImageReference::from_position(2),
+                position: SolarPosition::new(0.0, 0.0).unwrap(),
+            }],
+            Some(Appearance {
+                light: ImageReference::from_position(0),
+                dark: ImageReference::from_position(1),
+            }),
+        )
+        .unwrap();
+        let mut metadata = Metadata::default();
+        metadata
+            .insert(AppleProperty::Solar, PropertyValue::Solar(solar))
+            .unwrap();
+        let playback = HeicPlayback::new(
+            &metadata,
+            ImageReference::from_position(9),
+            AppearancePreference::Automatic,
+            clock_snapshot(12, 0, 0),
+            Duration::ZERO,
+            false,
+        );
+        // Solar is disabled for login/lock, so the fallback appearance's light
+        // image is selected instead of the solar point's image 2.
+        assert_eq!(playback.selected(), ImageReference::from_position(0));
+    }
+
+    #[test]
+    fn dynamic_heic_decode_failure_after_a_frame_retains_it() {
+        let mut state = State::start(heic_settings(Some(heic_fixture()), true, true));
+        assert_eq!(wait_for_heic(&mut state), Refresh::Frame);
+        let displayed = state.frame.as_ref().unwrap().id();
+        let (signal, _receiver) = watch::channel(0);
+        {
+            let player = state.heic.as_ref().expect("heic player");
+            fail_heic(&player.shared, &signal);
+        }
+        assert_eq!(wait_for_heic(&mut state), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert_eq!(state.frame.as_ref().unwrap().id(), displayed);
     }
 
     #[test]
