@@ -270,9 +270,10 @@ genkan lock --wallpaper-file /home/alice/Pictures/dynamic.heic
 A HEIC override uses the same parser, time-of-day scheduler, and RGBA frame path
 as the desktop wallpaper, but never requests location. `--appearance light` or
 `--appearance dark` selects a static appearance image; `automatic` (the default)
-uses the fallback's light image. For a HEIC, `--reduce-motion` keeps time-of-day
-scheduling but disables dissolves, whereas a MOV `--reduce-motion` shows the
-fixed poster. A parsed or decoded HEIC failure retains the poster or last valid
+uses a valid `h24` time schedule when present and otherwise falls back to the
+appearance metadata's light image, then the primary image. For a HEIC,
+`--reduce-motion` keeps time-of-day scheduling but disables dissolves, whereas a
+MOV `--reduce-motion` shows the fixed poster. A parsed or decoded HEIC failure retains the poster or last valid
 frame and cannot affect authentication, lock readiness, or unlock.
 
 The package installs immutable, hash-pinned wallpaper inputs; runtime playback

@@ -93,14 +93,10 @@ struct LoginArguments {
     #[arg(long, value_parser = parse_wallpaper_file)]
     wallpaper_file: Option<PathBuf>,
     /// Use a fixed MOV poster; for HEIC, disable dissolves but keep scheduling.
-    #[arg(
-        long,
-        visible_alias = "static-wallpaper",
-        conflicts_with = "animated_preview"
-    )]
+    #[arg(long, visible_alias = "static-wallpaper")]
     reduce_motion: bool,
     /// Enable real wallpaper playback while keeping preview services simulated.
-    #[arg(long, requires = "preview", conflicts_with = "reduce_motion")]
+    #[arg(long, requires = "preview")]
     animated_preview: bool,
     /// Select static appearance metadata for a dynamic HEIC wallpaper.
     #[arg(long, value_enum, default_value = "automatic")]
@@ -901,14 +897,19 @@ mod tests {
         }
         assert!(try_parse_login(["genkan", "--wallpaper", "unknown"]).is_err());
         assert!(try_parse_login(["genkan", "--animated-preview"]).is_err());
-        assert!(try_parse_login([
+        // A reduced-motion animated preview is valid: MOV still shows its
+        // poster, while HEIC schedules without dissolves.
+        let combined = try_parse_login([
             "genkan",
             "--windowed",
             "--preview",
             "--animated-preview",
             "--reduce-motion",
         ])
-        .is_err());
+        .expect("combined motion flags");
+        assert!(combined.animated_preview && combined.reduce_motion);
+        assert!(!login_wallpaper_animate(false, true, true, true));
+        assert!(login_wallpaper_animate(true, true, true, true));
         assert!(animate_wallpaper(false, false, false));
         assert!(!animate_wallpaper(true, false, false));
         assert!(animate_wallpaper(true, false, true));
