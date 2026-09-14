@@ -459,6 +459,7 @@ struct HeicShared {
     pending: Mutex<Option<Update>>,
     sequence: AtomicU64,
     failed: AtomicBool,
+    adopted: AtomicBool,
 }
 
 /// A dynamic HEIC source for login and lock.
@@ -511,11 +512,13 @@ impl HeicPlayer {
         let worker = thread::Builder::new()
             .name("wallpaper-heic".into())
             .spawn(move || {
+                let started = Instant::now();
                 run_heic(
                     &worker_path,
                     appearance,
                     reduced_motion,
                     clock.as_ref(),
+                    &|| started.elapsed(),
                     &worker_shared,
                     &signal_sender,
                     &worker_stopping,
@@ -636,6 +639,11 @@ fn emit_heic_frame(
     }));
     let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
     signal.send_replace(sequence);
+    if !shared.adopted.swap(true, Ordering::AcqRel) {
+        // One bounded, non-sensitive line per worker so a smoke test can prove
+        // the dynamic source was actually adopted rather than falling back.
+        diagnostic("dynamic wallpaper frame adopted");
+    }
     true
 }
 
@@ -726,11 +734,13 @@ fn finish_heic_decode(
     publish
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_heic(
     path: &Path,
     appearance: AppearancePreference,
     reduced_motion: bool,
     clock_source: &HeicClock,
+    monotonic_source: &(dyn Fn() -> Duration + '_),
     shared: &Arc<HeicShared>,
     signal: &watch::Sender<u64>,
     stopping: &AtomicBool,
@@ -742,7 +752,6 @@ fn run_heic(
             return;
         }
     };
-    let started = Instant::now();
     let mut suspend = SuspendDetector::new(suspend_clock_offset());
     let mut diagnostics = HeicDiagnostics::default();
     let Some(initial_clock) = clock_source() else {
@@ -754,11 +763,11 @@ fn run_heic(
         document.primary_image(),
         appearance,
         initial_clock,
-        started.elapsed(),
+        monotonic_source(),
         reduced_motion,
     );
     while !stopping.load(Ordering::Acquire) {
-        let monotonic = started.elapsed();
+        let monotonic = monotonic_source();
         let clock = clock_source().unwrap_or(initial_clock);
         if apply_heic_schedule(&mut playback, clock, monotonic, suspend.sample()) {
             publish_heic(shared, signal, playback.frame());
@@ -776,7 +785,7 @@ fn run_heic(
             // Resample after the blocking decode: a request that crossed a
             // boundary or the dissolve window must be completed against the
             // current time, not the time before the decode started.
-            let monotonic = started.elapsed();
+            let monotonic = monotonic_source();
             let clock = clock_source().unwrap_or(clock);
             if finish_heic_decode(
                 &mut playback,
@@ -1673,6 +1682,31 @@ mod tests {
         Refresh::Unchanged
     }
 
+    /// A test clock whose civil and monotonic samples advance together, so a
+    /// slow decode cannot be misread as a wall-clock discontinuity.
+    #[derive(Clone)]
+    struct FakeTime(Arc<Mutex<(ClockSnapshot, Duration)>>);
+
+    impl FakeTime {
+        fn new(clock: ClockSnapshot, monotonic: Duration) -> Self {
+            Self(Arc::new(Mutex::new((clock, monotonic))))
+        }
+
+        fn set(&self, clock: ClockSnapshot, monotonic: Duration) {
+            *lock(&self.0) = (clock, monotonic);
+        }
+
+        fn clock_source(&self) -> Box<HeicClock> {
+            let time = self.clone();
+            Box::new(move || Some(lock(&time.0).0))
+        }
+
+        fn monotonic_source(&self) -> impl Fn() -> Duration {
+            let time = self.clone();
+            move || lock(&time.0).1
+        }
+    }
+
     /// Bounded wait for a raw worker frame that fails immediately on a worker
     /// failure and on timeout instead of hanging the test suite.
     fn wait_for_heic_frame_labeled(shared: &HeicShared, timeout: Duration, label: &str) -> Frame {
@@ -1849,8 +1883,9 @@ mod tests {
     #[test]
     fn dynamic_heic_selects_the_scheduled_variant() {
         let path = heic_fixture();
-        let fixed = clock_snapshot(13, 0, 0);
-        let clock = move || Some(fixed);
+        let time = FakeTime::new(clock_snapshot(13, 0, 0), Duration::ZERO);
+        let clock = time.clock_source();
+        let monotonic = time.monotonic_source();
         let shared = Arc::new(HeicShared::default());
         let (signal, _receiver) = watch::channel(0);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -1862,7 +1897,8 @@ mod tests {
                     &path,
                     AppearancePreference::Automatic,
                     true,
-                    &clock,
+                    clock.as_ref(),
+                    &monotonic,
                     &shared,
                     &signal,
                     &stopping,
@@ -1882,19 +1918,11 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_heic_transitions_at_a_schedule_boundary() {
+    fn dynamic_heic_transitions_at_an_ordinary_boundary() {
         let path = heic_fixture();
-        let phase = Arc::new(AtomicBool::new(false));
-        let clock = {
-            let phase = Arc::clone(&phase);
-            move || {
-                Some(if phase.load(Ordering::Acquire) {
-                    clock_snapshot(6, 0, 0)
-                } else {
-                    clock_snapshot(0, 0, 0)
-                })
-            }
-        };
+        let time = FakeTime::new(clock_snapshot(0, 0, 0), Duration::ZERO);
+        let clock = time.clock_source();
+        let monotonic = time.monotonic_source();
         let shared = Arc::new(HeicShared::default());
         let (signal, _receiver) = watch::channel(0);
         let stopping = Arc::new(AtomicBool::new(false));
@@ -1906,7 +1934,8 @@ mod tests {
                     &path,
                     AppearancePreference::Automatic,
                     true,
-                    &clock,
+                    clock.as_ref(),
+                    &monotonic,
                     &shared,
                     &signal,
                     &stopping,
@@ -1922,13 +1951,64 @@ mod tests {
             &first.pixels[..4]
         );
 
-        phase.store(true, Ordering::Release);
+        // Civil and monotonic advance together six hours, which is an ordinary
+        // boundary rather than a clock discontinuity.
+        time.set(clock_snapshot(6, 0, 0), Duration::from_secs(6 * 3_600));
         // 06:00 crosses the boundary to the point at 0.25, image 1 (green).
         let second = wait_for_heic_frame_labeled(&shared, Duration::from_secs(10), "boundary");
         assert!(
             second.pixels[1] > 200 && second.pixels[0] < 40 && second.pixels[2] < 40,
             "unexpected boundary frame {:?}",
             &second.pixels[..4]
+        );
+
+        stopping.store(true, Ordering::Release);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn dynamic_heic_dissolves_at_an_ordinary_boundary() {
+        let path = heic_fixture();
+        let time = FakeTime::new(clock_snapshot(0, 0, 0), Duration::ZERO);
+        let clock = time.clock_source();
+        let monotonic = time.monotonic_source();
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || {
+                run_heic(
+                    &path,
+                    AppearancePreference::Automatic,
+                    false,
+                    clock.as_ref(),
+                    &monotonic,
+                    &shared,
+                    &signal,
+                    &stopping,
+                )
+            })
+        };
+
+        let first = wait_for_heic_frame_labeled(&shared, Duration::from_secs(10), "initial");
+        assert!(
+            first.pixels[0] > 200 && first.pixels[1] < 40 && first.pixels[2] < 40,
+            "unexpected initial frame {:?}",
+            &first.pixels[..4]
+        );
+
+        // One second past the boundary with a coherent monotonic sample: the
+        // two-second dissolve is halfway between red and green.
+        time.set(clock_snapshot(6, 0, 1), Duration::from_secs(6 * 3_600 + 1));
+        let blended = wait_for_heic_frame_labeled(&shared, Duration::from_secs(10), "dissolve");
+        assert!(
+            (60..=200).contains(&blended.pixels[0])
+                && (60..=200).contains(&blended.pixels[1])
+                && blended.pixels[2] < 40,
+            "expected a red/green dissolve blend, got {:?}",
+            &blended.pixels[..4]
         );
 
         stopping.store(true, Ordering::Release);
@@ -1989,11 +2069,9 @@ mod tests {
         let stale = playback.take_decode_request().unwrap();
         assert_eq!(stale.image, ImageReference::from_position(1));
 
-        // A later reselection invalidates the in-flight decode.
-        playback.synchronize(clock_snapshot(0, 2, 0), Duration::from_secs(120));
-        let current = playback.take_decode_request().unwrap();
-        assert_eq!(current.image, ImageReference::from_position(2));
-
+        // The helper's own synchronization crosses a second boundary and
+        // reselects image 2 before the stale result is completed, so it must be
+        // rejected without overwriting the displayed frame.
         let mut diagnostics = HeicDiagnostics::default();
         assert!(!finish_heic_decode(
             &mut playback,
@@ -2004,6 +2082,7 @@ mod tests {
             false,
             &mut diagnostics,
         ));
+        assert_eq!(playback.selected(), ImageReference::from_position(2));
         assert_eq!(playback.frame().unwrap().pixels[0], 10);
     }
 
