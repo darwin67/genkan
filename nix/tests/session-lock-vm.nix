@@ -90,6 +90,7 @@
 
   testScript = ''
     from datetime import timedelta
+    import shlex
 
     runtime = "/run/user/1000"
     probe_runtime = f"{runtime}/genkan-probe"
@@ -103,6 +104,27 @@
 
     def count(path, pattern):
         return int(machine.succeed(f"grep -Fc '{pattern}' {path} || true"))
+
+    def dump_diagnostics():
+        # A bounded wait must still leave a diagnosis behind: the driver only
+        # logs a command's output when the command fails, and these files are
+        # the only record of why the lock stopped making progress.
+        for path in [
+            "/tmp/observer",
+            "/tmp/lock.log",
+            "/tmp/sway.log",
+            "/tmp/lock.status",
+        ]:
+            machine.log(f"--- {path} ---")
+            output = machine.succeed(f"tail -n 200 {path} 2>/dev/null || true")
+            for line in output.splitlines():
+                machine.log(line)
+        machine.log("--- processes ---")
+        output = machine.succeed(
+            "ps -o pid,ppid,stat,etime,args -u alice 2>/dev/null || true"
+        )
+        for line in output.splitlines():
+            machine.log(line)
 
     def client_counts():
         return (
@@ -194,11 +216,47 @@
                 f"test $(grep -Fc 'committed first opaque buffer for output' /tmp/lock.log) -ge {outputs}"
             )
 
-    def send_response(path):
-        machine.succeed(as_alice(f'sh -c "cat {path} | wtype - -s 50 -k Return"'))
+    def inject_verified(command, label):
+        # Ephemeral virtual keyboards are occasionally dropped by headless
+        # Sway, so resend the command until the lock has observed a keypress.
+        # A response that is only partly delivered silently corrupts the
+        # attempt, and the conversation then waits forever for a result.
+        for _ in range(10):
+            before = count("/tmp/observer", "KEYBOARD")
+            machine.succeed(as_alice(command))
+            try:
+                machine.wait_until_succeeds(
+                    f"test $(grep -Fc KEYBOARD /tmp/observer) -gt {before}",
+                    timeout=timedelta(seconds=5),
+                )
+                return
+            except Exception:
+                machine.log(f"retrying {label}: the lock has not observed the keypress")
+                continue
+        dump_diagnostics()
+        raise Exception(f"the lock never observed injected {label}")
 
-    def wait_for_event(event, count=1):
-        machine.wait_until_succeeds(f"test $(grep -Fc {event} /tmp/observer) -ge {count}")
+    def submit_response():
+        inject_verified("wtype -s 50 -k Return", "Return")
+
+    def send_response(path):
+        text = machine.succeed(f"cat {path}").strip()
+        for character in text:
+            inject_verified(
+                f'sh -c "printf %s {shlex.quote(character)} | wtype -"',
+                f"character {character!r}",
+            )
+        submit_response()
+
+    def wait_for_event(event, count=1, timeout=timedelta(seconds=60)):
+        try:
+            machine.wait_until_succeeds(
+                f"test $(grep -Fc {event} /tmp/observer) -ge {count}",
+                timeout=timeout,
+            )
+        except Exception:
+            dump_diagnostics()
+            raise
 
     def wait_for_status(path="/tmp/lock.status"):
         machine.wait_until_succeeds(f"test -f {path} && grep -Eq '^[0-9]+$' {path}")
@@ -302,7 +360,7 @@
         wait_for_event("AUTH_FAILURE")
         machine.succeed("kill -0 $(cat /tmp/lock.pid)")
         assert inject_isolated("failed-auth-isolated") == client_baseline
-        machine.succeed(f"{as_alice('wtype -s 50 -k Return')}")
+        submit_response()
         wait_for_event("AUTH_RETRY")
         wait_for_event("AUTH_PROMPT", 3)
         send_response("/tmp/factor")
