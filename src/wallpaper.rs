@@ -1,8 +1,9 @@
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
@@ -38,6 +39,12 @@ const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const SEEK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const HEIC_TRANSITION_INTERVAL: Duration = Duration::from_millis(16);
 const HEIC_POLL_INTERVAL: Duration = Duration::from_millis(100);
+// The helper process relays a frame as a tag, a width/height/length header, and
+// tightly packed RGBA bytes. The ceiling matches `Playback`'s retained frame
+// bound so a corrupt or hostile worker cannot make the greeter allocate more.
+const HEIC_FRAME_TAG: u8 = b'F';
+const HEIC_FAILED_TAG: u8 = b'E';
+const MAX_HEIC_FRAME_BYTES: usize = 128 * 1024 * 1024;
 static POSTERS: [OnceLock<Result<image::Handle, String>>; 4] = [const { OnceLock::new() }; 4];
 
 #[derive(Debug, Clone, Copy)]
@@ -491,7 +498,7 @@ struct HeicPlayer {
     shared: Arc<HeicShared>,
     signal: watch::Receiver<u64>,
     stopping: Arc<AtomicBool>,
-    worker: Option<thread::JoinHandle<()>>,
+    child: Option<Child>,
 }
 
 impl std::fmt::Debug for HeicPlayer {
@@ -507,6 +514,28 @@ impl std::fmt::Debug for HeicPlayer {
 type HeicTime = dyn Fn() -> (Option<ClockSnapshot>, Duration) + Send + Sync;
 
 impl HeicPlayer {
+    #[cfg(not(test))]
+    fn start(
+        path: &Path,
+        appearance: AppearancePreference,
+        reduced_motion: bool,
+    ) -> Result<Self, String> {
+        // Do not stat the path here: a stalled automount would block lock
+        // acquisition before READY. The worker's `Document::open` validates
+        // existence and regular-file status and reports a decorative failure.
+        let executable = std::env::current_exe()
+            .map_err(|_| pipeline_error("could not locate the dynamic wallpaper worker"))?;
+        Self::start_command(worker_command(
+            &executable,
+            path,
+            appearance,
+            reduced_motion,
+        ))
+    }
+
+    /// Starts an in-process worker for tests that need a deterministic injected
+    /// clock. The production source always uses `start_command`.
+    #[cfg(test)]
     fn start(
         path: &Path,
         appearance: AppearancePreference,
@@ -521,31 +550,81 @@ impl HeicPlayer {
         )
     }
 
+    /// Spawns the worker as a resource-bounded child process and relays frames.
+    ///
+    /// Parsing and decoding run outside the lock-owning process, so an
+    /// allocation abort or crash in the parser or decoder cannot terminate the
+    /// greeter or locker. The relay reports a decorative failure that retains
+    /// the poster or last frame instead.
+    fn start_command(mut command: Command) -> Result<Self, String> {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = command
+            .spawn()
+            .map_err(|_| pipeline_error("could not start the dynamic wallpaper worker"))?;
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(pipeline_error("dynamic wallpaper worker has no output"));
+        };
+        let (signal_sender, signal) = watch::channel(0);
+        let shared = Arc::new(HeicShared::default());
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay_shared = Arc::clone(&shared);
+        let relay_stopping = Arc::clone(&stopping);
+        let relay = thread::Builder::new()
+            .name("wallpaper-heic-relay".into())
+            .spawn(move || {
+                run_heic_reader(
+                    std::io::BufReader::new(stdout),
+                    &relay_shared,
+                    &signal_sender,
+                    &relay_stopping,
+                )
+            });
+        if relay.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(pipeline_error(
+                "could not start the dynamic wallpaper relay",
+            ));
+        }
+        Ok(Self {
+            shared,
+            signal,
+            stopping,
+            child: Some(child),
+        })
+    }
+
+    #[cfg(test)]
     fn start_with_time(
         path: &Path,
         appearance: AppearancePreference,
         reduced_motion: bool,
         time: Box<HeicTime>,
     ) -> Result<Self, String> {
-        // Do not stat the path here: a stalled automount would block lock
-        // acquisition before READY. The worker's `Document::open` validates
-        // existence and regular-file status and reports a decorative failure.
         let (signal_sender, signal) = watch::channel(0);
         let shared = Arc::new(HeicShared::default());
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_shared = Arc::clone(&shared);
         let worker_stopping = Arc::clone(&stopping);
         let worker_path = path.to_owned();
-        let worker = thread::Builder::new()
+        let _ = thread::Builder::new()
             .name("wallpaper-heic".into())
             .spawn(move || {
-                run_heic(
+                let mut sink = SharedSink {
+                    shared: &worker_shared,
+                    signal: &signal_sender,
+                };
+                run_heic_with_sink(
                     &worker_path,
                     appearance,
                     reduced_motion,
                     time.as_ref(),
-                    &worker_shared,
-                    &signal_sender,
+                    &mut sink,
                     &worker_stopping,
                 )
             })
@@ -554,32 +633,8 @@ impl HeicPlayer {
             shared,
             signal,
             stopping,
-            worker: Some(worker),
+            child: None,
         })
-    }
-
-    /// A player whose worker blocks until `release` is set, emulating an
-    /// uninterruptible decode for the drop-latency regression test.
-    #[cfg(test)]
-    fn with_blocked_worker(release: Arc<AtomicBool>) -> Self {
-        let (_signal, signal) = watch::channel(0);
-        let shared = Arc::new(HeicShared::default());
-        let stopping = Arc::new(AtomicBool::new(false));
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let worker = thread::Builder::new()
-            .name("wallpaper-heic-blocked".into())
-            .spawn(move || {
-                while !release.load(Ordering::Acquire) && Instant::now() < deadline {
-                    thread::sleep(Duration::from_millis(5));
-                }
-            })
-            .expect("test worker");
-        Self {
-            shared,
-            signal,
-            stopping,
-            worker: Some(worker),
-        }
     }
 
     fn subscription(&self) -> Subscription<()> {
@@ -619,11 +674,115 @@ impl Hash for HeicFrameSignal {
 impl Drop for HeicPlayer {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Release);
-        // Detach instead of joining. A HEIC decode is not interruptible, and a
-        // synchronous join here would keep the lock coordinator alive after the
-        // compositor lock is destroyed. The worker owns its own Arcs and exits
-        // at its next `stopping` check.
-        self.worker.take();
+        // Do not wait for the worker. A HEIC decode is not interruptible, and a
+        // synchronous wait here would keep the lock coordinator alive after the
+        // compositor lock is destroyed. Signal the child, kill it immediately,
+        // and reap it on a detached thread so no zombie is left behind.
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = thread::Builder::new()
+                .name("wallpaper-heic-reap".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+        }
+    }
+}
+
+/// The command that runs the HEIC parser and decoder in a child process.
+fn worker_command(
+    executable: &Path,
+    path: &Path,
+    appearance: AppearancePreference,
+    reduced_motion: bool,
+) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .arg("heic-worker")
+        .arg("--file")
+        .arg(path)
+        .arg("--appearance")
+        .arg(appearance_argument(appearance));
+    if reduced_motion {
+        command.arg("--reduce-motion");
+    }
+    command
+}
+
+/// The CLI name of an appearance preference, matching `WallpaperAppearance`.
+fn appearance_argument(appearance: AppearancePreference) -> &'static str {
+    match appearance {
+        AppearancePreference::Automatic => "automatic",
+        AppearancePreference::Light => "light",
+        AppearancePreference::Dark => "dark",
+    }
+}
+
+/// The exact RGBA byte length of a relayed frame, bounded before allocating.
+fn expected_frame_bytes(width: u32, height: u32) -> Option<usize> {
+    let bytes = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?
+        .checked_mul(4)?;
+    (width > 0 && height > 0 && bytes <= MAX_HEIC_FRAME_BYTES).then_some(bytes)
+}
+
+/// Reads one frame with a fallible allocation so a hostile length cannot abort
+/// the lock-owning process.
+fn read_frame_buffer<R: Read>(reader: &mut R, length: usize) -> Option<Vec<u8>> {
+    let mut buffer = reserve_frame_buffer(length)?;
+    buffer.resize(length, 0);
+    reader.read_exact(&mut buffer).ok()?;
+    Some(buffer)
+}
+
+/// Relays frames from the worker process until it exits or fails.
+///
+/// Any unexpected end of stream, protocol violation, or refused buffer
+/// allocation is a decorative failure: the caller retains the poster or last
+/// frame. An OOM abort or crash in the worker therefore cannot affect lock
+/// readiness or unlock.
+fn run_heic_reader<R: Read>(
+    mut reader: R,
+    shared: &Arc<HeicShared>,
+    signal: &watch::Sender<u64>,
+    stopping: &AtomicBool,
+) {
+    loop {
+        let mut tag = [0u8; 1];
+        if reader.read_exact(&mut tag).is_err() {
+            break;
+        }
+        if tag[0] == HEIC_FAILED_TAG {
+            fail_heic(shared, signal);
+            return;
+        }
+        if tag[0] != HEIC_FRAME_TAG {
+            break;
+        }
+        let mut header = [0u8; 12];
+        if reader.read_exact(&mut header).is_err() {
+            break;
+        }
+        let width = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        let height = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+        let Some(expected) = expected_frame_bytes(width, height) else {
+            break;
+        };
+        if length != expected {
+            break;
+        }
+        let Some(pixels) = read_frame_buffer(&mut reader, length) else {
+            break;
+        };
+        emit_heic_frame(shared, signal, width, height, Some(Bytes::from(pixels)));
+        if stopping.load(Ordering::Acquire) {
+            break;
+        }
+    }
+    if !stopping.load(Ordering::Acquire) {
+        fail_heic(shared, signal);
     }
 }
 
@@ -635,6 +794,7 @@ fn reserve_frame_buffer(len: usize) -> Option<Vec<u8>> {
 
 /// Copies a decoded frame with a fallible allocation so memory pressure
 /// retains the last valid frame instead of aborting the process.
+#[cfg(test)]
 fn copy_frame_pixels(pixels: &[u8]) -> Option<Bytes> {
     let mut buffer = reserve_frame_buffer(pixels.len())?;
     buffer.extend_from_slice(pixels);
@@ -667,6 +827,7 @@ fn emit_heic_frame(
     true
 }
 
+#[cfg(test)]
 fn publish_heic(shared: &HeicShared, signal: &watch::Sender<u64>, frame: Option<&HeicFrame>) {
     let Some(frame) = frame else {
         return;
@@ -754,26 +915,113 @@ fn finish_heic_decode(
     publish
 }
 
-fn run_heic(
+/// Receives worker frames and terminal failures.
+///
+/// `publish` returns `false` when the consumer is gone, so a worker writing to
+/// a closed relay pipe stops instead of blocking forever.
+trait HeicSink {
+    fn publish(&mut self, frame: Option<&HeicFrame>) -> bool;
+    fn failed(&mut self);
+}
+
+/// The in-process sink used by the deterministic test worker.
+#[cfg(test)]
+struct SharedSink<'a> {
+    shared: &'a Arc<HeicShared>,
+    signal: &'a watch::Sender<u64>,
+}
+
+#[cfg(test)]
+impl HeicSink for SharedSink<'_> {
+    fn publish(&mut self, frame: Option<&HeicFrame>) -> bool {
+        publish_heic(self.shared, self.signal, frame);
+        true
+    }
+
+    fn failed(&mut self) {
+        fail_heic(self.shared, self.signal);
+    }
+}
+
+/// Serializes worker frames to the relay pipe for the lock-owning process.
+struct ProcessSink<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> HeicSink for ProcessSink<W> {
+    fn publish(&mut self, frame: Option<&HeicFrame>) -> bool {
+        let Some(frame) = frame else {
+            return true;
+        };
+        write_heic_frame(&mut self.writer, frame).is_ok()
+    }
+
+    fn failed(&mut self) {
+        let _ = self.writer.write_all(&[HEIC_FAILED_TAG]);
+        let _ = self.writer.flush();
+    }
+}
+
+/// Writes one length-checked frame to the relay pipe.
+fn write_heic_frame<W: Write>(writer: &mut W, frame: &HeicFrame) -> std::io::Result<()> {
+    let length = u32::try_from(frame.pixels.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "decoded frame is too large",
+        )
+    })?;
+    let mut header = [0u8; 13];
+    header[0] = HEIC_FRAME_TAG;
+    header[1..5].copy_from_slice(&frame.width.to_le_bytes());
+    header[5..9].copy_from_slice(&frame.height.to_le_bytes());
+    header[9..13].copy_from_slice(&length.to_le_bytes());
+    writer.write_all(&header)?;
+    writer.write_all(&frame.pixels)?;
+    writer.flush()
+}
+
+/// Runs the parser and decoder for the helper process, streaming frames to
+/// stdout for the lock-owning parent.
+///
+/// This is the only supported entry point for untrusted dynamic wallpapers in
+/// login and lock. Running it in a child process keeps an allocation abort or
+/// crash in quick-xml, base64, `plist`, or libheif from terminating the
+/// lock-owning process.
+pub(crate) fn run_heic_worker(path: &Path, appearance: AppearancePreference, reduced_motion: bool) {
+    let started = Instant::now();
+    let time_source: Box<HeicTime> = Box::new(move || (current_clock(), started.elapsed()));
+    let mut sink = ProcessSink {
+        writer: std::io::stdout().lock(),
+    };
+    run_heic_with_sink(
+        path,
+        appearance,
+        reduced_motion,
+        time_source.as_ref(),
+        &mut sink,
+        &AtomicBool::new(false),
+    );
+}
+
+fn run_heic_with_sink(
     path: &Path,
     appearance: AppearancePreference,
     reduced_motion: bool,
     time_source: &HeicTime,
-    shared: &Arc<HeicShared>,
-    signal: &watch::Sender<u64>,
+    sink: &mut dyn HeicSink,
     stopping: &AtomicBool,
 ) {
     let document = match Document::open(path) {
         Ok(document) => document,
         Err(_) => {
-            fail_heic(shared, signal);
+            sink.failed();
             return;
         }
     };
     let mut suspend = SuspendDetector::new(suspend_clock_offset());
     let mut diagnostics = HeicDiagnostics::default();
     let (Some(initial_clock), initial_monotonic) = time_source() else {
-        fail_heic(shared, signal);
+        sink.failed();
         return;
     };
     let mut playback = HeicPlayback::new(
@@ -787,11 +1035,13 @@ fn run_heic(
     while !stopping.load(Ordering::Acquire) {
         let (clock, monotonic) = time_source();
         let clock = clock.unwrap_or(initial_clock);
-        if apply_heic_schedule(&mut playback, clock, monotonic, suspend.sample()) {
-            publish_heic(shared, signal, playback.frame());
+        if apply_heic_schedule(&mut playback, clock, monotonic, suspend.sample())
+            && !sink.publish(playback.frame())
+        {
+            return;
         }
-        if playback.advance_transition(monotonic) {
-            publish_heic(shared, signal, playback.frame());
+        if playback.advance_transition(monotonic) && !sink.publish(playback.frame()) {
+            return;
         }
         if let Some(request) = playback.take_decode_request() {
             let result = document.decode(request.image).map_err(|_| ());
@@ -814,8 +1064,9 @@ fn run_heic(
                 monotonic,
                 suspend.sample(),
                 &mut diagnostics,
-            ) {
-                publish_heic(shared, signal, playback.frame());
+            ) && !sink.publish(playback.frame())
+            {
+                return;
             }
         }
         let delay = if playback.is_transitioning() {
@@ -825,6 +1076,28 @@ fn run_heic(
         };
         thread::sleep(delay);
     }
+}
+
+/// Runs the in-process worker used by deterministic unit tests.
+#[cfg(test)]
+fn run_heic(
+    path: &Path,
+    appearance: AppearancePreference,
+    reduced_motion: bool,
+    time_source: &HeicTime,
+    shared: &Arc<HeicShared>,
+    signal: &watch::Sender<u64>,
+    stopping: &AtomicBool,
+) {
+    let mut sink = SharedSink { shared, signal };
+    run_heic_with_sink(
+        path,
+        appearance,
+        reduced_motion,
+        time_source,
+        &mut sink,
+        stopping,
+    );
 }
 
 const SUSPEND_DETECTION_THRESHOLD: Duration = Duration::from_millis(10);
@@ -1916,16 +2189,191 @@ mod tests {
     }
 
     #[test]
-    fn dropping_a_heic_player_does_not_join_the_worker() {
-        let release = Arc::new(AtomicBool::new(false));
-        let player = HeicPlayer::with_blocked_worker(Arc::clone(&release));
+    fn blocked_worker_process_helper() {
+        if std::env::var_os("GENKAN_TEST_BLOCKED_WORKER").is_none() {
+            return;
+        }
+        thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    fn dropping_a_heic_player_does_not_wait_for_the_worker() {
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .env("GENKAN_TEST_BLOCKED_WORKER", "1")
+            .arg("--exact")
+            .arg("wallpaper::tests::blocked_worker_process_helper");
+        let player = HeicPlayer::start_command(command).expect("blocked worker");
         let started = Instant::now();
         drop(player);
         assert!(
             started.elapsed() < Duration::from_millis(200),
-            "dropping a HEIC player must not join an uninterruptible worker"
+            "dropping a HEIC player must not wait for an uninterruptible worker"
         );
-        release.store(true, Ordering::Release);
+    }
+
+    fn relay_frame_bytes(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![HEIC_FRAME_TAG];
+        bytes.extend_from_slice(&width.to_le_bytes());
+        bytes.extend_from_slice(&height.to_le_bytes());
+        bytes.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(pixels);
+        bytes
+    }
+
+    #[test]
+    fn heic_worker_command_forwards_file_appearance_and_motion() {
+        let command = worker_command(
+            Path::new("/usr/bin/genkan"),
+            Path::new("/home/alice/wallpaper.heic"),
+            AppearancePreference::Dark,
+            true,
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "/usr/bin/genkan");
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            [
+                "heic-worker",
+                "--file",
+                "/home/alice/wallpaper.heic",
+                "--appearance",
+                "dark",
+                "--reduce-motion"
+            ]
+        );
+    }
+
+    #[test]
+    fn heic_relay_adopts_a_framed_worker_frame() {
+        let (reader, mut writer) = std::io::pipe().expect("relay pipe");
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || run_heic_reader(reader, &shared, &signal, &stopping))
+        };
+        writer
+            .write_all(&relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]))
+            .expect("write frame");
+
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(5));
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.pixels.as_ref(), &[1, 2, 3, 255, 4, 5, 6, 255]);
+
+        stopping.store(true, Ordering::Release);
+        drop(writer);
+        relay.join().unwrap();
+        assert!(!shared.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn heic_relay_reports_a_worker_failure_tag() {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        run_heic_reader(
+            std::io::Cursor::new(vec![HEIC_FAILED_TAG]),
+            &shared,
+            &signal,
+            &stopping,
+        );
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert!(matches!(lock(&shared.pending).take(), Some(Update::Failed)));
+    }
+
+    #[test]
+    fn heic_relay_treats_a_truncated_worker_as_a_decorative_failure() {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        // A frame header that promises four pixels followed by an abrupt EOF,
+        // exactly what an allocation abort after the header looks like.
+        let mut bytes = vec![HEIC_FRAME_TAG];
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&[1, 2]);
+
+        run_heic_reader(std::io::Cursor::new(bytes), &shared, &signal, &stopping);
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert!(matches!(lock(&shared.pending).take(), Some(Update::Failed)));
+    }
+
+    #[test]
+    fn heic_relay_rejects_an_oversized_frame_without_allocating() {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let mut bytes = vec![HEIC_FRAME_TAG];
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+
+        run_heic_reader(std::io::Cursor::new(bytes), &shared, &signal, &stopping);
+        assert!(shared.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn process_sink_emits_a_length_checked_frame() {
+        let mut output = Vec::new();
+        let mut sink = ProcessSink {
+            writer: &mut output,
+        };
+        assert!(sink.publish(Some(&heic_frame(7))));
+        assert_eq!(output[0], HEIC_FRAME_TAG);
+
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let (reader, mut writer) = std::io::pipe().expect("relay pipe");
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || run_heic_reader(reader, &shared, &signal, &stopping))
+        };
+        writer.write_all(&output).expect("relay frame");
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(5));
+        assert_eq!(frame.pixels[0], 7);
+        stopping.store(true, Ordering::Release);
+        drop(writer);
+        relay.join().unwrap();
+    }
+
+    #[test]
+    fn aborting_worker_process_helper() {
+        if std::env::var_os("GENKAN_TEST_ABORT_WORKER").is_none() {
+            return;
+        }
+        std::process::abort();
+    }
+
+    #[test]
+    fn an_aborting_worker_is_a_decorative_failure() {
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .env("GENKAN_TEST_ABORT_WORKER", "1")
+            .arg("--exact")
+            .arg("wallpaper::tests::aborting_worker_process_helper");
+        let player = HeicPlayer::start_command(command).expect("worker process");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !player.has_failed() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            player.has_failed(),
+            "an aborted worker must report a decorative failure"
+        );
+        assert!(matches!(
+            lock(&player.shared.pending).take(),
+            Some(Update::Failed)
+        ));
     }
 
     #[test]

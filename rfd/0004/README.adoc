@@ -375,10 +375,12 @@ and lock consumers. Diagnostics are bounded, single-line, and exclude
 user-controlled metadata contents.
 
 HEIF parsing occurs in a worker isolated from interaction and Wayland dispatch.
-Frame and notification queues are bounded. Decoder retries and GeoClue retries
-use bounded delays and cannot create a busy loop. Wallpaper metadata never
-becomes a command, path, desktop identifier, D-Bus destination, log format, or
-shell input.
+For login and lock it is a resource-bounded helper process, so an allocation
+abort or crash in the parser or decoder terminates only the worker and surfaces
+as a bounded decorative failure. Frame and notification queues are bounded.
+Decoder retries and GeoClue retries use bounded delays and cannot create a busy
+loop. Wallpaper metadata never becomes a command, path, desktop identifier,
+D-Bus destination, log format, or shell input.
 
 == Verification
 

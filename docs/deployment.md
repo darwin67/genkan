@@ -273,8 +273,12 @@ as the desktop wallpaper, but never requests location. `--appearance light` or
 uses a valid `h24` time schedule when present and otherwise falls back to the
 appearance metadata's light image, then the primary image. For a HEIC,
 `--reduce-motion` keeps time-of-day scheduling but disables dissolves, whereas a
-MOV `--reduce-motion` shows the fixed poster. A parsed or decoded HEIC failure retains the poster or last valid
-frame and cannot affect authentication, lock readiness, or unlock.
+MOV `--reduce-motion` shows the fixed poster. For `login` and `lock`, parsing and
+decoding run in a resource-bounded `genkan heic-worker` child process; a parsed
+or decoded failure, or an allocation abort that can still occur inside a parser,
+base64, `plist`, or libheif dependency, terminates only that worker and retains
+the poster or last valid frame. It cannot affect authentication, lock readiness,
+or unlock.
 
 The package installs immutable, hash-pinned wallpaper inputs; runtime playback
 does not access the network. Asset provenance, delivery, integrity, and loop

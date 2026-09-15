@@ -138,15 +138,18 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
   and allocation path, selected only by a HEIC/HEIF ~--wallpaper-file~.
 - [X] Keep login, lock, and desktop top-level lifecycle and side effects
   separate while sharing only parser, scheduler, decoder, and frame types. The
-  login/lock source drives ~Document~, ~Playback~, and the HEIC ~RgbaFrame~; the
-  desktop keeps its own layer-shell runtime.
+  login/lock source drives ~Document~, ~Playback~, and the HEIC ~RgbaFrame~
+  inside a resource-bounded ~heic-worker~ child process that relays frames over
+  a pipe; the desktop keeps its own layer-shell runtime.
 - [X] Preserve the greeter's authentication-region dimming and leave the desktop
   wallpaper unobstructed. The HEIC source only replaces the background frame;
   the dimming overlay and desktop runtime are unchanged.
 - [X] Ensure HEIC parsing, scheduling, decoding, blending, and decorative-frame
   failures cannot affect authentication, session start, lock readiness,
-  failed-authentication recovery, or unlock authority. A document failure keeps
-  the poster or last frame and is reported as a decorative presentation failure.
+  failed-authentication recovery, or unlock authority. The parser and decoder
+  run below a process boundary, so an infallible allocation abort or crash in
+  quick-xml, base64, ~plist~, or libheif is contained in the child; the relay
+  reports a bounded failure that keeps the poster or last frame.
 - [X] Preserve RFD 3's fatal handling for mandatory lock-surface, configure,
   buffer, and renderer failures: abort without issuing ~unlock_and_destroy~.
 - [X] Verify that login and lock make no GeoClue request and that reduced-motion

@@ -35,6 +35,26 @@ enum Command {
     Lock(LockArguments),
     /// Display a dynamic HEIC wallpaper on a supported Wayland desktop.
     Wallpaper(WallpaperArguments),
+    /// Parse and decode a dynamic HEIC in a resource-bounded child process.
+    #[command(hide = true)]
+    HeicWorker(HeicWorkerArguments),
+}
+
+/// Internal relay worker for `login` and `lock` dynamic HEIC sources.
+///
+/// Parsing and decoding run here, in a child process, so an allocation abort or
+/// crash in the parser or decoder cannot terminate the greeter or locker.
+#[derive(Debug, Args)]
+struct HeicWorkerArguments {
+    /// Absolute local dynamic HEIC file.
+    #[arg(long)]
+    file: PathBuf,
+    /// Static appearance selection for the decoded frame.
+    #[arg(long, value_enum, default_value = "automatic")]
+    appearance: WallpaperAppearance,
+    /// Disable dissolves while retaining time-of-day frame changes.
+    #[arg(long)]
+    reduce_motion: bool,
 }
 
 #[derive(Debug, Args)]
@@ -292,6 +312,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Login(arguments) => run_login(arguments)?,
         Command::Lock(arguments) => run_lock(arguments)?,
         Command::Wallpaper(arguments) => run_wallpaper(arguments)?,
+        Command::HeicWorker(arguments) => wallpaper::run_heic_worker(
+            &arguments.file,
+            appearance_preference(arguments.appearance),
+            arguments.reduce_motion,
+        ),
     }
     Ok(())
 }
@@ -518,7 +543,7 @@ mod tests {
         let parsed = Arguments::try_parse_from(arguments)?;
         match parsed.command {
             Command::Login(arguments) => Ok(arguments),
-            Command::Lock(_) | Command::Wallpaper(_) => {
+            Command::Lock(_) | Command::Wallpaper(_) | Command::HeicWorker(_) => {
                 unreachable!("the helper always selects login")
             }
         }
@@ -531,7 +556,7 @@ mod tests {
         let parsed = Arguments::try_parse_from(arguments)?;
         match parsed.command {
             Command::Lock(arguments) => Ok(arguments),
-            Command::Login(_) | Command::Wallpaper(_) => {
+            Command::Login(_) | Command::Wallpaper(_) | Command::HeicWorker(_) => {
                 unreachable!("the helper always selects lock")
             }
         }
@@ -546,7 +571,7 @@ mod tests {
         let parsed = Arguments::try_parse_from(arguments)?;
         match parsed.command {
             Command::Wallpaper(arguments) => Ok(arguments),
-            Command::Login(_) | Command::Lock(_) => {
+            Command::Login(_) | Command::Lock(_) | Command::HeicWorker(_) => {
                 unreachable!("the helper always selects wallpaper")
             }
         }
