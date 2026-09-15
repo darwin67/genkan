@@ -315,7 +315,10 @@ in
   // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
     greetd-e2e = pkgs.testers.runNixOSTest (import ./tests/greetd.nix { genkanE2e = e2ePackage; });
     session-lock-vm = pkgs.testers.runNixOSTest (
-      import ./tests/session-lock-vm.nix { genkan = sessionLockTestPackage; }
+      import ./tests/session-lock-vm.nix {
+        genkan = sessionLockTestPackage;
+        fixture = ../tests/fixtures/dynamic-heic/synthetic-all-properties.heic;
+      }
     );
     geoclue-solar-vm = pkgs.testers.runNixOSTest (
       import ./tests/geoclue-solar-vm.nix {

@@ -462,6 +462,31 @@ fn property_name(namespace: ResolveResult<'_>, local: &str) -> Option<PropertyNa
     }
 }
 
+/// Reserves metadata-string capacity fallibly so memory pressure surfaces as a
+/// bounded error instead of aborting the process.
+fn reserve_metadata_string(buffer: &mut String, len: usize) -> Result<(), Error> {
+    buffer
+        .try_reserve(len)
+        .map_err(|_| Error::Limit("metadata text"))
+}
+
+fn append_metadata_text(buffer: &mut String, fragment: &str) -> Result<(), Error> {
+    reserve_metadata_string(buffer, fragment.len())?;
+    buffer.push_str(fragment);
+    Ok(())
+}
+
+fn push_property(
+    properties: &mut Vec<(PropertyName, Vec<u8>)>,
+    property: (PropertyName, Vec<u8>),
+) -> Result<(), Error> {
+    properties
+        .try_reserve(1)
+        .map_err(|_| Error::Limit("property count"))?;
+    properties.push(property);
+    Ok(())
+}
+
 fn parse_xmp(bytes: &[u8], limits: &Limits) -> Result<Vec<(PropertyName, Vec<u8>)>, Error> {
     let mut reader = NsReader::from_reader(bytes);
     reader.config_mut().trim_text(false);
@@ -497,7 +522,10 @@ fn parse_xmp(bytes: &[u8], limits: &Limits) -> Result<Vec<(PropertyName, Vec<u8>
                         let value = attribute
                             .normalized_value(XmlVersion::Implicit1_0)
                             .map_err(|error| Error::Metadata(error.to_string()))?;
-                        properties.push((name, decode_plist_base64(&value, limits)?));
+                        push_property(
+                            &mut properties,
+                            (name, decode_plist_base64(&value, limits)?),
+                        )?;
                     }
                 }
                 let (namespace, local) = reader.resolver().resolve_element(start.name());
@@ -523,29 +551,35 @@ fn parse_xmp(bytes: &[u8], limits: &Limits) -> Result<Vec<(PropertyName, Vec<u8>
                         let value = attribute
                             .normalized_value(XmlVersion::Implicit1_0)
                             .map_err(|error| Error::Metadata(error.to_string()))?;
-                        properties.push((name, decode_plist_base64(&value, limits)?));
+                        push_property(
+                            &mut properties,
+                            (name, decode_plist_base64(&value, limits)?),
+                        )?;
                     }
                 }
                 let (namespace, local) = reader.resolver().resolve_element(empty.name());
                 if let Some(name) = property_name(namespace, local.as_ref()) {
-                    properties.push((name, decode_plist_base64("", limits)?));
+                    push_property(&mut properties, (name, decode_plist_base64("", limits)?))?;
                 }
             }
             Event::Text(text) => {
                 if let Some((_, _, value)) = active.as_mut() {
-                    value.push_str(&text.xml_content(XmlVersion::Implicit1_0));
+                    append_metadata_text(value, &text.xml_content(XmlVersion::Implicit1_0))?;
                 }
             }
             Event::CData(data) => {
                 if let Some((_, _, value)) = active.as_mut() {
-                    value.push_str(&data.xml_content(XmlVersion::Implicit1_0));
+                    append_metadata_text(value, &data.xml_content(XmlVersion::Implicit1_0))?;
                 }
             }
             Event::End(_) => {
                 if let Some((_, property_depth, _)) = active.as_ref() {
                     if *property_depth == depth {
                         let (name, _, value) = active.take().unwrap();
-                        properties.push((name, decode_plist_base64(&value, limits)?));
+                        push_property(
+                            &mut properties,
+                            (name, decode_plist_base64(&value, limits)?),
+                        )?;
                     }
                 }
                 depth = depth
@@ -558,7 +592,9 @@ fn parse_xmp(bytes: &[u8], limits: &Limits) -> Result<Vec<(PropertyName, Vec<u8>
                     .resolve_char_ref()
                     .map_err(|error| Error::Metadata(error.to_string()))?
                     .ok_or_else(|| Error::Metadata("entity in Apple property".into()))?;
-                active.as_mut().unwrap().2.push(character);
+                let value = &mut active.as_mut().unwrap().2;
+                reserve_metadata_string(value, character.len_utf8())?;
+                value.push(character);
             }
             Event::Comment(_) | Event::PI(_) if active.is_some() => {
                 return Err(Error::Metadata("markup in Apple property".into()));
@@ -574,10 +610,14 @@ fn parse_xmp(bytes: &[u8], limits: &Limits) -> Result<Vec<(PropertyName, Vec<u8>
 }
 
 fn decode_plist_base64(value: &str, limits: &Limits) -> Result<Vec<u8>, Error> {
-    let compact: String = value
+    let mut compact = String::new();
+    reserve_metadata_string(&mut compact, value.len())?;
+    for character in value
         .chars()
         .filter(|character| !character.is_ascii_whitespace())
-        .collect();
+    {
+        compact.push(character);
+    }
     let encoded_limit = limits
         .max_plist_bytes
         .checked_add(2)
@@ -962,6 +1002,25 @@ mod tests {
         let mut bytes = Vec::new();
         value.to_writer_binary(&mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn metadata_buffers_reserve_fallibly() {
+        let mut buffer = String::new();
+        reserve_metadata_string(&mut buffer, 8).unwrap();
+        buffer.push_str("metadata");
+        append_metadata_text(&mut buffer, " more").unwrap();
+        assert_eq!(buffer, "metadata more");
+
+        // A reservation that cannot be satisfied returns an error instead of
+        // aborting the process under memory pressure.
+        assert!(matches!(
+            reserve_metadata_string(&mut buffer, usize::MAX),
+            Err(Error::Limit("metadata text"))
+        ));
+        let mut properties = Vec::new();
+        assert!(push_property(&mut properties, (PropertyName::H24, vec![1, 2, 3])).is_ok());
+        assert_eq!(properties.len(), 1);
     }
 
     fn h24_value(index: Value, time: Value) -> Value {

@@ -149,6 +149,35 @@ impl LockerPresentation {
         presentation
     }
 
+    /// A presentation without the authentication worker, for wallpaper
+    /// integration tests that do not exercise PAM.
+    ///
+    /// `rebuild` is deliberately skipped: it shapes text and needs a host
+    /// font, which the sandboxed package test environment does not provide.
+    /// The wallpaper path under test does not depend on the overlay.
+    #[cfg(test)]
+    fn for_test(identity: identity::Identity, wallpaper: wallpaper::Settings) -> Self {
+        Self {
+            wallpaper: wallpaper::State::start(wallpaper),
+            identity,
+            conversation: Conversation::new(),
+            auth: None,
+            prompt_id: None,
+            confirmed: false,
+            authorized: false,
+            background: None,
+            overlay: None,
+            frame: None,
+            fonts: FontSystem::new(),
+            glyphs: SwashCache::new(),
+            instruction_page: 0,
+            #[cfg(feature = "lock-test")]
+            fail_worker_after_ready: false,
+            #[cfg(feature = "lock-test")]
+            test_observer: None,
+        }
+    }
+
     fn receive_auth(&mut self) -> bool {
         if !self.confirmed {
             return false;
@@ -1521,6 +1550,71 @@ mod tests {
     fn authentication_input_is_disabled_before_compositor_confirmation() {
         assert!(!authentication_input_enabled(false));
         assert!(authentication_input_enabled(true));
+    }
+
+    #[test]
+    fn heic_lock_presentation_adopts_scheduled_frames() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dynamic-heic/synthetic-all-properties.heic");
+        let settings = wallpaper::Settings {
+            catalog: wallpaper::Catalog::TahoeBeach,
+            override_path: Some(fixture),
+            animate: true,
+            reduced_motion: true,
+            appearance: genkan::dynamic_wallpaper::AppearancePreference::Automatic,
+        };
+        let identity = identity::Identity {
+            uid: 1000,
+            username: "preview".into(),
+            display_name: "Preview User".into(),
+        };
+        let mut presentation = LockerPresentation::for_test(identity, settings);
+        // Install a transparent overlay before adoption so automatic rebuilding
+        // in `receive_deferred` produces the frame. A regression that stopped
+        // rebuilding would leave `frame()` empty and fail here.
+        presentation.overlay = Some(
+            RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 0]))
+                .expect("synthetic overlay has valid dimensions"),
+        );
+
+        let mut adopted = false;
+        for _ in 0..1000 {
+            if presentation.receive_deferred() == Refresh::Frame {
+                adopted = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(adopted, "the locker never adopted a scheduled HEIC frame");
+
+        let frame = presentation
+            .frame()
+            .expect("automatic rebuilding produced a presentation frame");
+        let rendered =
+            genkan_session_lock::render_preview(&frame, 4, 4).expect("render presentation");
+        let background = presentation
+            .background
+            .as_ref()
+            .expect("adopted a scheduled background");
+        assert_eq!(background.dimensions(), (8, 8));
+        assert_eq!(rendered.dimensions(), (4, 4));
+        assert_eq!(rendered.pixels()[3], 255);
+        // The authentication preview dims the background, but every rendered
+        // channel must still carry the fixture color rather than a fallback.
+        for channel in 0..3 {
+            let background_channel = u16::from(background.pixels()[channel]);
+            let rendered_channel = u16::from(rendered.pixels()[channel]);
+            assert!(
+                rendered_channel <= background_channel,
+                "render brightened channel {channel}"
+            );
+            assert!(
+                rendered_channel * 2 + 4 >= background_channel,
+                "render lost the fixture color at channel {channel}: {} vs {}",
+                rendered.pixels()[channel],
+                background.pixels()[channel]
+            );
+        }
     }
 
     #[cfg(feature = "lock-test")]

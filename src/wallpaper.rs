@@ -1,8 +1,9 @@
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
@@ -10,7 +11,11 @@ use std::time::{Duration, Instant};
 
 use ::image as image_rs;
 use bytes::Bytes;
+use chrono::{Datelike, Offset, Timelike};
 use clap::ValueEnum;
+use genkan::dynamic_wallpaper::heic::{Document, RgbaFrame as HeicFrame};
+use genkan::dynamic_wallpaper::playback::{DecodeOutcome, DecodeRequest, Playback as HeicPlayback};
+use genkan::dynamic_wallpaper::{AppearancePreference, CivilDate, CivilTime, ClockSnapshot};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -19,6 +24,7 @@ use iced::futures::stream;
 use iced::widget::{image, Image};
 use iced::{ContentFit, Element, Fill, Subscription};
 use iced_runtime::image::{Allocation, Error as AllocationError};
+use rustix::time::{clock_gettime, ClockId, Timespec};
 use tokio::sync::watch;
 
 use crate::stable_file::{open_regular, OpenError};
@@ -31,6 +37,17 @@ const AUTOMATIC_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SOFTWARE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const SEEK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+const HEIC_TRANSITION_INTERVAL: Duration = Duration::from_millis(16);
+const HEIC_POLL_INTERVAL: Duration = Duration::from_millis(100);
+// The helper process relays a frame as a tag, a width/height/length header, and
+// tightly packed RGBA bytes. The ceilings repeat `dynamic_wallpaper::heic`'s
+// per-axis and output-byte limits so a corrupt or hostile worker cannot make
+// the greeter allocate a frame the decoder would have refused.
+const HEIC_FRAME_TAG: u8 = b'F';
+const HEIC_FAILED_TAG: u8 = b'E';
+const HEIC_HEADER_BYTES: usize = 12;
+const MAX_HEIC_FRAME_DIMENSION: u32 = 16_384;
+const MAX_HEIC_FRAME_BYTES: usize = 128 * 1024 * 1024;
 static POSTERS: [OnceLock<Result<image::Handle, String>>; 4] = [const { OnceLock::new() }; 4];
 
 #[derive(Debug, Clone, Copy)]
@@ -97,15 +114,87 @@ pub(crate) struct Settings {
     pub(crate) catalog: Catalog,
     pub(crate) override_path: Option<PathBuf>,
     pub(crate) animate: bool,
+    /// Reduced-motion HEIC keeps time-of-day scheduling but switches frames
+    /// immediately instead of dissolving. It has no effect on MOV playback,
+    /// whose reduced-motion behavior is a fixed poster selected by `animate`.
+    pub(crate) reduced_motion: bool,
+    /// Explicit light or dark preference for a dynamic HEIC fallback.
+    pub(crate) appearance: AppearancePreference,
+}
+
+impl Settings {
+    /// The local dynamic HEIC override, if one was supplied.
+    pub(crate) fn heic_path(&self) -> Option<&Path> {
+        self.override_path
+            .as_deref()
+            .filter(|path| is_heic_path(path))
+    }
+}
+
+/// Whether a path names a dynamic HEIC/HEIF wallpaper by extension.
+pub(crate) fn is_heic_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("heic") || extension.eq_ignore_ascii_case("heif")
+        })
+}
+
+/// Whether these settings select an animated dynamic HEIC source.
+pub(crate) fn selects_dynamic_heic(settings: &Settings) -> bool {
+    settings.animate && settings.heic_path().is_some()
+}
+
+/// Whether an iced renderer backend may be given a child-decoded HEIC frame.
+///
+/// The iced renderer is chosen at runtime. The pinned `iced_tiny_skia` software
+/// backend converts a whole frame with `vec![0u32; width * height]` on the
+/// renderer thread, which aborts the greeter when that allocation fails, and
+/// there is no supported iced 0.14 API for supplying or bounding its private
+/// converted buffer. Login therefore keeps the poster instead of handing a
+/// child-decoded frame to that backend. This predicate is a denylist over the
+/// pinned renderer set, not a general capability probe: re-audit it when iced
+/// is upgraded. It says nothing about device-side or operating-system
+/// allocation behaviour, which the worker boundary does not contain.
+pub(crate) fn renderer_supports_dynamic_heic(backend: &str) -> bool {
+    match backend {
+        // The pinned software backend converts a whole frame with an
+        // infallible allocation, and the null renderer never draws.
+        "tiny-skia" | "Null" => false,
+        // An unreported backend is treated as unsafe: the greeter keeps the
+        // poster instead of risking an abort it cannot recover from.
+        "" => false,
+        _ => true,
+    }
+}
+
+/// Reports that the selected renderer cannot display a dynamic HEIC.
+///
+/// This runs on the iced event loop, where a slow or blocked stderr write would
+/// stall authentication input and close handling, so the write happens on a
+/// detached thread. If that thread cannot start, the message is dropped.
+pub(crate) fn report_unusable_heic_renderer(backend: &str) {
+    report_async(format!(
+        "dynamic wallpaper is unavailable on the {backend} renderer; retaining the poster"
+    ));
+}
+
+/// Emits a diagnostic without blocking the caller.
+fn report_async(message: String) {
+    let _ = thread::Builder::new()
+        .name("wallpaper-diagnostic".into())
+        .spawn(move || diagnostic(&message));
 }
 
 #[derive(Debug)]
 pub(crate) struct State {
     player: Option<Player>,
+    heic: Option<HeicPlayer>,
     poster: Option<image::Handle>,
     frame: Option<image::Handle>,
     allocation: Option<Allocation>,
     allocation_pending: bool,
+    heic_adopted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,20 +206,19 @@ pub(crate) enum Refresh {
 
 impl State {
     pub(crate) fn start(settings: Settings) -> Self {
-        let spec = settings.catalog.spec();
         let poster = load_poster(settings.catalog)
             .map_err(|error| diagnostic(&error))
             .ok();
-        if !settings.animate {
-            return Self {
-                player: None,
-                frame: poster.clone(),
-                poster,
-                allocation: None,
-                allocation_pending: false,
-            };
+
+        if let Some(path) = settings.heic_path().map(Path::to_owned) {
+            return Self::start_heic(settings, &path, poster);
         }
 
+        if !settings.animate {
+            return Self::poster_only(poster);
+        }
+
+        let spec = settings.catalog.spec();
         let result = settings
             .override_path
             .map_or_else(|| packaged_wallpaper_path(spec.install_name), Ok)
@@ -138,21 +226,86 @@ impl State {
         match result {
             Ok(player) => Self {
                 player: Some(player),
+                heic: None,
                 frame: poster.clone(),
                 poster,
                 allocation: None,
                 allocation_pending: false,
+                heic_adopted: false,
             },
             Err(error) => {
                 diagnostic(&error);
-                Self {
-                    player: None,
-                    frame: poster.clone(),
-                    poster,
-                    allocation: None,
-                    allocation_pending: false,
-                }
+                Self::poster_only(poster)
             }
+        }
+    }
+
+    fn start_heic(settings: Settings, path: &Path, poster: Option<image::Handle>) -> Self {
+        if !settings.animate {
+            return Self::poster_only(poster);
+        }
+        match HeicPlayer::start(path, settings.appearance, settings.reduced_motion) {
+            Ok(heic) => Self {
+                player: None,
+                heic: Some(heic),
+                frame: poster.clone(),
+                poster,
+                allocation: None,
+                allocation_pending: false,
+                heic_adopted: false,
+            },
+            Err(error) => {
+                diagnostic(&error);
+                Self::poster_only(poster)
+            }
+        }
+    }
+
+    /// Starts the poster and any packaged playback while leaving a dynamic HEIC
+    /// source for [`State::start_heic_source`].
+    ///
+    /// Login uses this because the iced renderer backend is only known once the
+    /// window exists, and the pinned software backend must never receive a
+    /// child-decoded frame: its whole-frame conversion is an infallible
+    /// allocation that can abort the greeter. The poster is displayed while the
+    /// backend is unknown, and stays if the backend cannot meet the contract.
+    /// Lock and desktop start their own renderers and use [`State::start`]
+    /// directly.
+    pub(crate) fn start_deferred(settings: &Settings) -> Self {
+        if !selects_dynamic_heic(settings) {
+            return Self::start(settings.clone());
+        }
+        let poster = load_poster(settings.catalog)
+            .map_err(|error| diagnostic(&error))
+            .ok();
+        Self::poster_only(poster)
+    }
+
+    /// Starts a dynamic HEIC source that [`State::start_deferred`] held back,
+    /// retaining the displayed poster until the first decoded frame arrives.
+    pub(crate) fn start_heic_source(&mut self, settings: &Settings) {
+        if self.heic.is_some() || self.player.is_some() || !selects_dynamic_heic(settings) {
+            return;
+        }
+        let Some(path) = settings.heic_path().map(Path::to_owned) else {
+            return;
+        };
+        match HeicPlayer::start(&path, settings.appearance, settings.reduced_motion) {
+            Ok(heic) => self.heic = Some(heic),
+            // This runs on the iced event loop; see `report_async`.
+            Err(error) => report_async(error),
+        }
+    }
+
+    fn poster_only(poster: Option<image::Handle>) -> Self {
+        Self {
+            player: None,
+            heic: None,
+            frame: poster.clone(),
+            poster,
+            allocation: None,
+            allocation_pending: false,
+            heic_adopted: false,
         }
     }
 
@@ -160,21 +313,32 @@ impl State {
     pub(crate) fn disabled() -> Self {
         Self {
             player: None,
+            heic: None,
             poster: None,
             frame: None,
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         }
     }
 
     pub(crate) fn subscription(&self) -> Subscription<()> {
+        match (&self.player, &self.heic) {
+            (Some(player), _) => player.subscription(),
+            (None, Some(heic)) => heic.subscription(),
+            (None, None) => Subscription::none(),
+        }
+    }
+
+    fn take_latest(&self) -> Option<Update> {
         self.player
             .as_ref()
-            .map_or_else(Subscription::none, Player::subscription)
+            .and_then(Player::take_latest)
+            .or_else(|| self.heic.as_ref().and_then(HeicPlayer::take_latest))
     }
 
     pub(crate) fn receive_latest(&mut self) -> Refresh {
-        let Some(update) = self.player.as_ref().and_then(Player::take_latest) else {
+        let Some(update) = self.take_latest() else {
             return Refresh::Unchanged;
         };
 
@@ -186,6 +350,7 @@ impl State {
                     frame.height,
                     frame.pixels,
                 ));
+                self.note_heic_adoption();
                 Refresh::Frame
             }
             Update::Failed => {
@@ -195,11 +360,24 @@ impl State {
         }
     }
 
+    /// Records the first dynamic-HEIC frame this consumer actually renders.
+    ///
+    /// The `lock-test` build emits one bounded line so a smoke test can prove
+    /// a decoded frame reached the locker instead of the source falling back.
+    fn note_heic_adoption(&mut self) {
+        if self.heic.is_none() || self.heic_adopted {
+            return;
+        }
+        self.heic_adopted = true;
+        #[cfg(feature = "lock-test")]
+        diagnostic("dynamic wallpaper frame adopted");
+    }
+
     pub(crate) fn prepare_latest(&mut self) -> Option<image::Handle> {
         if self.allocation_pending {
             return None;
         }
-        let update = self.player.as_ref().and_then(Player::take_latest)?;
+        let update = self.take_latest()?;
 
         match update {
             Update::Frame(frame) => {
@@ -233,6 +411,7 @@ impl State {
             Ok(allocation) => {
                 self.frame = Some(allocation.handle().clone());
                 self.allocation = Some(allocation);
+                self.note_heic_adoption();
                 Refresh::Frame
             }
             Err(error) => {
@@ -246,7 +425,9 @@ impl State {
     }
 
     fn stop_after_terminal_failure(&mut self) -> bool {
-        if !self.player.as_ref().is_some_and(Player::has_failed) {
+        let failed = self.player.as_ref().is_some_and(Player::has_failed)
+            || self.heic.as_ref().is_some_and(HeicPlayer::has_failed);
+        if !failed {
             return false;
         }
         self.stop_playback();
@@ -259,6 +440,7 @@ impl State {
             self.frame.clone_from(&self.poster);
         }
         self.player.take();
+        self.heic.take();
     }
 
     pub(crate) fn rgba_frame(&self) -> Option<genkan_session_lock::RgbaFrame> {
@@ -290,7 +472,7 @@ impl State {
 
     #[cfg(test)]
     pub(crate) fn decoder_is_stopped(&self) -> bool {
-        self.player.is_none()
+        self.player.is_none() && self.heic.is_none()
     }
 }
 
@@ -382,6 +564,825 @@ impl Drop for Player {
             let _ = worker.join();
         }
     }
+}
+
+#[derive(Default)]
+struct HeicShared {
+    pending: Mutex<Option<Update>>,
+    sequence: AtomicU64,
+    failed: AtomicBool,
+    /// Set once the supervisor has killed and reaped the worker.
+    ///
+    /// Tests need this barrier before probing reaping: `waitpid` is itself a
+    /// competing reaper, so probing before the supervisor has waited would
+    /// collect the zombie and misreport the supervisor.
+    #[cfg(test)]
+    cleanup_complete: AtomicBool,
+}
+
+/// A dynamic HEIC source for login and lock.
+///
+/// It reuses the shared `Document` reader, `Playback` scheduler, and RGBA
+/// frame type from `genkan::dynamic_wallpaper`. Location/solar selection is
+/// deliberately unavailable here: `Playback::new` disables solar, so login and
+/// lock never contact GeoClue.
+///
+/// A dedicated supervisor thread owns the worker process end to end: spawning,
+/// framing, termination, and reaping never run on the lock-owning thread. The
+/// only process operation the lock-owning thread performs is a non-blocking
+/// `kill` on cancellation.
+struct HeicPlayer {
+    shared: Arc<HeicShared>,
+    signal: watch::Receiver<u64>,
+    stopping: Arc<AtomicBool>,
+    /// The live worker, published by the supervisor before it reads. It is
+    /// never held across a blocking call, so cancellation cannot be delayed.
+    child: Arc<Mutex<Option<Child>>>,
+}
+
+impl std::fmt::Debug for HeicPlayer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("HeicPlayer").finish_non_exhaustive()
+    }
+}
+
+/// The civil and monotonic time source a HEIC worker schedules against.
+///
+/// Both values are produced by one call so a test clock cannot hand out a torn
+/// civil/monotonic pair and fake a clock discontinuity.
+type HeicTime = dyn Fn() -> (Option<ClockSnapshot>, Duration) + Send + Sync;
+
+impl HeicPlayer {
+    #[cfg(not(test))]
+    fn start(
+        path: &Path,
+        appearance: AppearancePreference,
+        reduced_motion: bool,
+    ) -> Result<Self, String> {
+        // Do not stat the path here: a stalled automount would block lock
+        // acquisition before READY. The worker's `Document::open` validates
+        // existence and regular-file status and reports a decorative failure.
+        let executable = std::env::current_exe()
+            .map_err(|_| pipeline_error("could not locate the dynamic wallpaper worker"))?;
+        Self::start_command(worker_command(
+            &executable,
+            path,
+            appearance,
+            reduced_motion,
+        ))
+    }
+
+    /// Starts an in-process worker for tests that need a deterministic injected
+    /// clock. The production source always uses `start_command`.
+    #[cfg(test)]
+    fn start(
+        path: &Path,
+        appearance: AppearancePreference,
+        reduced_motion: bool,
+    ) -> Result<Self, String> {
+        let started = Instant::now();
+        Self::start_with_time(
+            path,
+            appearance,
+            reduced_motion,
+            Box::new(move || (current_clock(), started.elapsed())),
+        )
+    }
+
+    /// Spawns the worker as a resource-bounded child process and relays frames.
+    ///
+    /// Parsing and decoding run outside the lock-owning process, so an
+    /// allocation abort or crash in the parser or decoder cannot terminate the
+    /// greeter or locker. The relay reports a decorative failure that retains
+    /// the poster or last frame instead.
+    ///
+    /// Only thread creation happens here. The supervisor thread performs the
+    /// process spawn, every read, and every termination and reap, so a slow
+    /// executable, a stalled filesystem, or an uninterruptible child cannot
+    /// delay lock acquisition or READY.
+    fn start_command(command: Command) -> Result<Self, String> {
+        let (signal_sender, signal) = watch::channel(0);
+        let shared = Arc::new(HeicShared::default());
+        let stopping = Arc::new(AtomicBool::new(false));
+        let child = Arc::new(Mutex::new(None));
+        {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            let child = Arc::clone(&child);
+            // The handle is dropped: the supervisor detaches, and `Drop` only
+            // signals cancellation. Nothing on this thread ever waits for it.
+            thread::Builder::new()
+                .name("wallpaper-heic-supervisor".into())
+                .spawn(move || {
+                    supervise_heic_worker(command, shared, signal_sender, stopping, child);
+                })
+                .map_err(|_| pipeline_error("could not start the dynamic wallpaper worker"))?;
+        }
+        Ok(Self {
+            shared,
+            signal,
+            stopping,
+            child,
+        })
+    }
+
+    #[cfg(test)]
+    fn start_with_time(
+        path: &Path,
+        appearance: AppearancePreference,
+        reduced_motion: bool,
+        time: Box<HeicTime>,
+    ) -> Result<Self, String> {
+        let (signal_sender, signal) = watch::channel(0);
+        let shared = Arc::new(HeicShared::default());
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_shared = Arc::clone(&shared);
+        let worker_stopping = Arc::clone(&stopping);
+        let worker_path = path.to_owned();
+        let _ = thread::Builder::new()
+            .name("wallpaper-heic".into())
+            .spawn(move || {
+                let mut sink = SharedSink {
+                    shared: &worker_shared,
+                    signal: &signal_sender,
+                };
+                run_heic_with_sink(
+                    &worker_path,
+                    appearance,
+                    reduced_motion,
+                    time.as_ref(),
+                    &mut sink,
+                    &worker_stopping,
+                )
+            })
+            .map_err(|_| pipeline_error("could not start the dynamic wallpaper worker"))?;
+        Ok(Self {
+            shared,
+            signal,
+            stopping,
+            child: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    fn subscription(&self) -> Subscription<()> {
+        Subscription::run_with(
+            HeicFrameSignal {
+                player: Arc::as_ptr(&self.shared) as usize,
+                receiver: self.signal.clone(),
+            },
+            |signal| {
+                stream::unfold(signal.receiver.clone(), |mut receiver| async move {
+                    receiver.changed().await.ok().map(|()| ((), receiver))
+                })
+            },
+        )
+    }
+
+    fn take_latest(&self) -> Option<Update> {
+        lock(&self.shared.pending).take()
+    }
+
+    fn has_failed(&self) -> bool {
+        self.shared.failed.load(Ordering::Acquire)
+    }
+}
+
+struct HeicFrameSignal {
+    player: usize,
+    receiver: watch::Receiver<u64>,
+}
+
+impl Hash for HeicFrameSignal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.player.hash(state);
+    }
+}
+
+impl Drop for HeicPlayer {
+    fn drop(&mut self) {
+        // Cancellation must not wait. A HEIC decode is not interruptible, so a
+        // synchronous wait here would keep the lock coordinator alive after the
+        // compositor lock is destroyed. `stopping` stops the relay from
+        // publishing, and the kill releases a child blocked in decode; the
+        // supervisor thread performs the wait and reap off this thread.
+        self.stopping.store(true, Ordering::Release);
+        signal_heic_child(&self.child);
+    }
+}
+
+/// Kills the live worker without waiting.
+///
+/// The supervisor removes the child from the slot before it waits, so a signal
+/// can never target a reaped and recycled process. The lock is held only for a
+/// non-blocking `kill`, never across a wait, so cancellation cannot block on
+/// the supervisor.
+fn signal_heic_child(child: &Mutex<Option<Child>>) {
+    if let Some(child) = lock(child).as_mut() {
+        let _ = child.kill();
+    }
+}
+
+/// Takes ownership of the worker and reaps it.
+///
+/// Only the supervisor calls this, after it has stopped reading, so the wait
+/// cannot block a reader or the lock-owning thread.
+fn reap_heic_child(child: &Mutex<Option<Child>>) {
+    let Some(mut child) = lock(child).take() else {
+        return;
+    };
+    let _ = child.wait();
+}
+
+/// Kills and reaps the worker when the supervisor leaves, including on unwind.
+///
+/// The supervisor is the only reaper, so the reap must not depend on reaching
+/// the end of the function: a panic in the relay or in a diagnostic would
+/// otherwise leave an exited child as a zombie with nobody left to wait for it.
+struct HeicWorkerGuard {
+    child: Arc<Mutex<Option<Child>>>,
+    #[cfg(test)]
+    shared: Arc<HeicShared>,
+}
+
+impl Drop for HeicWorkerGuard {
+    fn drop(&mut self) {
+        signal_heic_child(&self.child);
+        reap_heic_child(&self.child);
+        #[cfg(test)]
+        self.shared.cleanup_complete.store(true, Ordering::Release);
+    }
+}
+
+/// Owns the worker process for its whole lifetime.
+///
+/// Every blocking operation — `spawn`, the framing reads, `kill`, and `wait` —
+/// happens on this thread. The lock-owning thread only signals cancellation.
+fn supervise_heic_worker(
+    mut command: Command,
+    shared: Arc<HeicShared>,
+    signal: watch::Sender<u64>,
+    stopping: Arc<AtomicBool>,
+    child_slot: Arc<Mutex<Option<Child>>>,
+) {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            fail_heic(&shared, &signal);
+            diagnostic(HEIC_DECODE_FAILURE);
+            return;
+        }
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        fail_heic(&shared, &signal);
+        diagnostic(HEIC_DECODE_FAILURE);
+        return;
+    };
+    // Publish the child before reading so a concurrent cancellation can signal
+    // it. A cancellation that arrived first is honoured here, and the guard
+    // kills and reaps the worker on every exit path, including a panic.
+    *lock(&child_slot) = Some(child);
+    let reported = {
+        let _reap_on_exit = HeicWorkerGuard {
+            child: Arc::clone(&child_slot),
+            #[cfg(test)]
+            shared: Arc::clone(&shared),
+        };
+        if !stopping.load(Ordering::Acquire) {
+            run_heic_reader(std::io::BufReader::new(stdout), &shared, &signal, &stopping);
+        }
+        shared.failed.load(Ordering::Acquire)
+    };
+    // The worker is already killed and reaped, so a blocked diagnostic cannot
+    // delay cleanup. A published failure is always reported: a consumer that
+    // cancelled after observing it must not erase the obligation to log it.
+    if reported {
+        diagnostic(HEIC_DECODE_FAILURE);
+    }
+}
+
+/// The command that runs the HEIC parser and decoder in a child process.
+///
+/// The worker is told which process spawned it so it can bind its lifetime to
+/// the greeter: if the greeter is killed without running its own destructors,
+/// the worker must not outlive it.
+fn worker_command(
+    executable: &Path,
+    path: &Path,
+    appearance: AppearancePreference,
+    reduced_motion: bool,
+) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .arg("heic-worker")
+        .arg("--file")
+        .arg(path)
+        .arg("--appearance")
+        .arg(appearance_argument(appearance))
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string());
+    if reduced_motion {
+        command.arg("--reduce-motion");
+    }
+    command
+}
+
+/// Binds the helper to the greeter that spawned it.
+///
+/// `PR_SET_PDEATHSIG` covers termination after the request, and the `getppid`
+/// check closes the window where the parent died before `prctl` ran. A helper
+/// whose greeter is already gone must not open, parse, or decode the file.
+fn bind_to_parent(expected_parent: i32) -> bool {
+    // SAFETY: `PR_SET_PDEATHSIG` changes only this process, and `getppid` has
+    // no preconditions.
+    let requested = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
+    let parent = unsafe { libc::getppid() };
+    requested == 0 && parent == expected_parent
+}
+
+/// The CLI name of an appearance preference, matching `WallpaperAppearance`.
+fn appearance_argument(appearance: AppearancePreference) -> &'static str {
+    match appearance {
+        AppearancePreference::Automatic => "automatic",
+        AppearancePreference::Light => "light",
+        AppearancePreference::Dark => "dark",
+    }
+}
+
+/// The exact RGBA byte length of a relayed frame, bounded before allocating.
+fn expected_frame_bytes(width: u32, height: u32) -> Option<usize> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if width > MAX_HEIC_FRAME_DIMENSION || height > MAX_HEIC_FRAME_DIMENSION {
+        return None;
+    }
+    let bytes = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?
+        .checked_mul(4)?;
+    (bytes <= MAX_HEIC_FRAME_BYTES).then_some(bytes)
+}
+
+/// Reads one frame with a fallible allocation so a hostile length cannot abort
+/// the lock-owning process.
+fn read_frame_buffer<R: Read>(reader: &mut R, length: usize) -> Option<Vec<u8>> {
+    let mut buffer = reserve_frame_buffer(length)?;
+    buffer.resize(length, 0);
+    reader.read_exact(&mut buffer).ok()?;
+    Some(buffer)
+}
+
+/// Relays frames from the worker process until it exits or fails.
+///
+/// Any unexpected end of stream, protocol violation, or refused buffer
+/// allocation is a decorative failure: the caller retains the poster or last
+/// frame. An OOM abort or crash in the worker therefore cannot affect lock
+/// readiness or unlock.
+fn run_heic_reader<R: Read>(
+    mut reader: R,
+    shared: &Arc<HeicShared>,
+    signal: &watch::Sender<u64>,
+    stopping: &AtomicBool,
+) {
+    loop {
+        let mut tag = [0u8; 1];
+        if reader.read_exact(&mut tag).is_err() {
+            break;
+        }
+        if tag[0] == HEIC_FAILED_TAG {
+            fail_heic(shared, signal);
+            return;
+        }
+        if tag[0] != HEIC_FRAME_TAG {
+            break;
+        }
+        let mut header = [0u8; HEIC_HEADER_BYTES];
+        if reader.read_exact(&mut header).is_err() {
+            break;
+        }
+        let width = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        let height = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+        let Some(expected) = expected_frame_bytes(width, height) else {
+            break;
+        };
+        if length != expected {
+            break;
+        }
+        let Some(pixels) = read_frame_buffer(&mut reader, length) else {
+            break;
+        };
+        if stopping.load(Ordering::Acquire) {
+            // Cancellation wins over a frame that was already read: the
+            // consumer is going away, so publishing it has no owner.
+            break;
+        }
+        emit_heic_frame(shared, signal, width, height, Some(Bytes::from(pixels)));
+    }
+    if !stopping.load(Ordering::Acquire) {
+        fail_heic(shared, signal);
+    }
+}
+
+fn reserve_frame_buffer(len: usize) -> Option<Vec<u8>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len).ok()?;
+    Some(buffer)
+}
+
+/// Copies a decoded frame with a fallible allocation so memory pressure
+/// retains the last valid frame instead of aborting the process.
+#[cfg(test)]
+fn copy_frame_pixels(pixels: &[u8]) -> Option<Bytes> {
+    let mut buffer = reserve_frame_buffer(pixels.len())?;
+    buffer.extend_from_slice(pixels);
+    Some(Bytes::from(buffer))
+}
+
+/// Stores a frame only when its handoff allocation succeeded. A refused
+/// allocation leaves the previous pending frame untouched.
+fn emit_heic_frame(
+    shared: &HeicShared,
+    signal: &watch::Sender<u64>,
+    width: u32,
+    height: u32,
+    pixels: Option<Bytes>,
+) -> bool {
+    let Some(pixels) = pixels else {
+        return false;
+    };
+    if shared.failed.load(Ordering::Acquire) {
+        return false;
+    }
+    *lock(&shared.pending) = Some(Update::Frame(Frame {
+        width,
+        height,
+        pixels,
+        pts: None,
+    }));
+    let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+    signal.send_replace(sequence);
+    true
+}
+
+#[cfg(test)]
+fn publish_heic(shared: &HeicShared, signal: &watch::Sender<u64>, frame: Option<&HeicFrame>) {
+    let Some(frame) = frame else {
+        return;
+    };
+    if shared.failed.load(Ordering::Acquire) {
+        return;
+    }
+    emit_heic_frame(
+        shared,
+        signal,
+        frame.width,
+        frame.height,
+        copy_frame_pixels(&frame.pixels),
+    );
+}
+
+/// Publishes a terminal decorative failure exactly once.
+///
+/// This only updates shared state. The supervisor emits the diagnostic after
+/// the worker is reaped, so a blocked or failing stderr cannot delay cleanup.
+fn fail_heic(shared: &HeicShared, signal: &watch::Sender<u64>) {
+    if shared.failed.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    *lock(&shared.pending) = Some(Update::Failed);
+    let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+    signal.send_replace(sequence);
+}
+
+const HEIC_DECODE_FAILURE: &str =
+    "dynamic wallpaper could not be decoded; retaining current background";
+
+/// Applies a schedule update and reports whether the presented pixels changed
+/// without a decode (a discontinuity snapping an active dissolve).
+fn apply_heic_schedule(
+    playback: &mut HeicPlayback,
+    clock: ClockSnapshot,
+    monotonic: Duration,
+    discontinuity: bool,
+) -> bool {
+    let outcome = if discontinuity {
+        playback.resynchronize_after_discontinuity(clock, monotonic)
+    } else {
+        playback.synchronize(clock, monotonic)
+    };
+    outcome.presentation_changed
+}
+
+/// Reports at most one decode-failure diagnostic per successful frame.
+#[derive(Default)]
+struct HeicDiagnostics {
+    decode_failure_reported: bool,
+}
+
+impl HeicDiagnostics {
+    fn decode_failure(&mut self) {
+        if !self.decode_failure_reported {
+            self.decode_failure_reported = true;
+            diagnostic(
+                "dynamic wallpaper frame could not be decoded; retaining the last valid frame",
+            );
+        }
+    }
+
+    fn decoded(&mut self) {
+        self.decode_failure_reported = false;
+    }
+}
+
+/// Completes a decode against the freshly sampled time and reports whether the
+/// presented frame should be published. `clock` and `monotonic` must be
+/// sampled after the decode returned.
+fn finish_heic_decode(
+    playback: &mut HeicPlayback,
+    request: DecodeRequest,
+    result: Result<HeicFrame, ()>,
+    clock: ClockSnapshot,
+    monotonic: Duration,
+    discontinuity: bool,
+    diagnostics: &mut HeicDiagnostics,
+) -> bool {
+    let mut publish = apply_heic_schedule(playback, clock, monotonic, discontinuity);
+    match playback.complete_decode(request, result, monotonic) {
+        DecodeOutcome::Presented | DecodeOutcome::Transitioning => {
+            diagnostics.decoded();
+            publish = true;
+        }
+        DecodeOutcome::Failed | DecodeOutcome::Rejected => diagnostics.decode_failure(),
+        DecodeOutcome::Ignored => {}
+    }
+    publish
+}
+
+/// Receives worker frames and terminal failures.
+///
+/// `publish` returns `false` when the consumer is gone, so a worker writing to
+/// a closed relay pipe stops instead of blocking forever.
+trait HeicSink {
+    fn publish(&mut self, frame: Option<&HeicFrame>) -> bool;
+    fn failed(&mut self);
+}
+
+/// The in-process sink used by the deterministic test worker.
+#[cfg(test)]
+struct SharedSink<'a> {
+    shared: &'a Arc<HeicShared>,
+    signal: &'a watch::Sender<u64>,
+}
+
+#[cfg(test)]
+impl HeicSink for SharedSink<'_> {
+    fn publish(&mut self, frame: Option<&HeicFrame>) -> bool {
+        publish_heic(self.shared, self.signal, frame);
+        true
+    }
+
+    fn failed(&mut self) {
+        fail_heic(self.shared, self.signal);
+    }
+}
+
+/// Serializes worker frames to the relay pipe for the lock-owning process.
+struct ProcessSink<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> HeicSink for ProcessSink<W> {
+    fn publish(&mut self, frame: Option<&HeicFrame>) -> bool {
+        let Some(frame) = frame else {
+            return true;
+        };
+        write_heic_frame(&mut self.writer, frame).is_ok()
+    }
+
+    fn failed(&mut self) {
+        let _ = self.writer.write_all(&[HEIC_FAILED_TAG]);
+        let _ = self.writer.flush();
+    }
+}
+
+/// Writes one length-checked frame to the relay pipe.
+fn write_heic_frame<W: Write>(writer: &mut W, frame: &HeicFrame) -> std::io::Result<()> {
+    let length = u32::try_from(frame.pixels.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "decoded frame is too large",
+        )
+    })?;
+    let mut header = [0u8; 13];
+    header[0] = HEIC_FRAME_TAG;
+    header[1..5].copy_from_slice(&frame.width.to_le_bytes());
+    header[5..9].copy_from_slice(&frame.height.to_le_bytes());
+    header[9..13].copy_from_slice(&length.to_le_bytes());
+    writer.write_all(&header)?;
+    writer.write_all(&frame.pixels)?;
+    writer.flush()
+}
+
+/// Runs the parser and decoder for the helper process, streaming frames to
+/// stdout for the lock-owning parent.
+///
+/// This is the only supported entry point for untrusted dynamic wallpapers in
+/// login and lock. Running it in a child process keeps an allocation abort or
+/// crash in quick-xml, base64, `plist`, or libheif from terminating the
+/// lock-owning process. The helper binds its own lifetime to `parent_pid`
+/// before touching the file, so a greeter killed without unwinding cannot leave
+/// a decoder polling forever.
+pub(crate) fn run_heic_worker(
+    path: &Path,
+    appearance: AppearancePreference,
+    reduced_motion: bool,
+    parent_pid: i32,
+) {
+    if !bind_to_parent(parent_pid) {
+        return;
+    }
+    let started = Instant::now();
+    let time_source: Box<HeicTime> = Box::new(move || (current_clock(), started.elapsed()));
+    let mut sink = ProcessSink {
+        writer: std::io::stdout().lock(),
+    };
+    run_heic_with_sink(
+        path,
+        appearance,
+        reduced_motion,
+        time_source.as_ref(),
+        &mut sink,
+        &AtomicBool::new(false),
+    );
+}
+
+fn run_heic_with_sink(
+    path: &Path,
+    appearance: AppearancePreference,
+    reduced_motion: bool,
+    time_source: &HeicTime,
+    sink: &mut dyn HeicSink,
+    stopping: &AtomicBool,
+) {
+    let document = match Document::open(path) {
+        Ok(document) => document,
+        Err(_) => {
+            sink.failed();
+            return;
+        }
+    };
+    let mut suspend = SuspendDetector::new(suspend_clock_offset());
+    let mut diagnostics = HeicDiagnostics::default();
+    let (Some(initial_clock), initial_monotonic) = time_source() else {
+        sink.failed();
+        return;
+    };
+    let mut playback = HeicPlayback::new(
+        document.metadata(),
+        document.primary_image(),
+        appearance,
+        initial_clock,
+        initial_monotonic,
+        reduced_motion,
+    );
+    while !stopping.load(Ordering::Acquire) {
+        let (clock, monotonic) = time_source();
+        let clock = clock.unwrap_or(initial_clock);
+        if apply_heic_schedule(&mut playback, clock, monotonic, suspend.sample())
+            && !sink.publish(playback.frame())
+        {
+            return;
+        }
+        if playback.advance_transition(monotonic) && !sink.publish(playback.frame()) {
+            return;
+        }
+        if let Some(request) = playback.take_decode_request() {
+            let result = document.decode(request.image).map_err(|_| ());
+            // The consumer may have dropped while the decode was running; do
+            // not synchronize, blend, copy, or publish work nobody can adopt.
+            if stopping.load(Ordering::Acquire) {
+                return;
+            }
+            // Resample after the blocking decode: a request that crossed a
+            // boundary or the dissolve window must be completed against the
+            // current time, not the time before the decode started. One call
+            // returns a coherent civil/monotonic pair.
+            let (clock, monotonic) = time_source();
+            let clock = clock.unwrap_or(initial_clock);
+            if finish_heic_decode(
+                &mut playback,
+                request,
+                result,
+                clock,
+                monotonic,
+                suspend.sample(),
+                &mut diagnostics,
+            ) && !sink.publish(playback.frame())
+            {
+                return;
+            }
+        }
+        let delay = if playback.is_transitioning() {
+            HEIC_TRANSITION_INTERVAL
+        } else {
+            HEIC_POLL_INTERVAL
+        };
+        thread::sleep(delay);
+    }
+}
+
+/// Runs the in-process worker used by deterministic unit tests.
+#[cfg(test)]
+fn run_heic(
+    path: &Path,
+    appearance: AppearancePreference,
+    reduced_motion: bool,
+    time_source: &HeicTime,
+    shared: &Arc<HeicShared>,
+    signal: &watch::Sender<u64>,
+    stopping: &AtomicBool,
+) {
+    let mut sink = SharedSink { shared, signal };
+    run_heic_with_sink(
+        path,
+        appearance,
+        reduced_motion,
+        time_source,
+        &mut sink,
+        stopping,
+    );
+}
+
+const SUSPEND_DETECTION_THRESHOLD: Duration = Duration::from_millis(10);
+
+/// Detects suspend/resume by watching the CLOCK_BOOTTIME minus CLOCK_MONOTONIC
+/// offset. Unlike `Playback`'s one-second wall-clock tolerance, this catches a
+/// subsecond suspend during a dissolve. The greeter, locker, and desktop
+/// runtime all use it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SuspendDetector {
+    offset: Option<Duration>,
+}
+
+impl SuspendDetector {
+    pub(crate) const fn new(offset: Option<Duration>) -> Self {
+        Self { offset }
+    }
+
+    pub(crate) fn observe(&mut self, offset: Duration) -> bool {
+        let Some(previous) = self.offset else {
+            self.offset = Some(offset);
+            return false;
+        };
+        if offset <= previous {
+            return false;
+        }
+        self.offset = Some(offset);
+        offset - previous > SUSPEND_DETECTION_THRESHOLD
+    }
+
+    pub(crate) fn sample(&mut self) -> bool {
+        suspend_clock_offset().is_some_and(|offset| self.observe(offset))
+    }
+}
+
+pub(crate) fn suspend_clock_offset() -> Option<Duration> {
+    for _ in 0..3 {
+        let before = timespec_duration(clock_gettime(ClockId::Monotonic));
+        let boottime = timespec_duration(clock_gettime(ClockId::Boottime));
+        let after = timespec_duration(clock_gettime(ClockId::Monotonic));
+        let sampling = after.saturating_sub(before);
+        if sampling <= SUSPEND_DETECTION_THRESHOLD {
+            let midpoint = before.checked_add(sampling / 2)?;
+            return Some(boottime.saturating_sub(midpoint));
+        }
+    }
+    None
+}
+
+fn timespec_duration(value: Timespec) -> Duration {
+    Duration::new(value.tv_sec.max(0) as u64, value.tv_nsec.max(0) as u32)
+}
+
+/// The current local civil time, matching the desktop runtime's clock source.
+pub(crate) fn current_clock() -> Option<ClockSnapshot> {
+    let now = chrono::Local::now();
+    let date = CivilDate::new(now.year(), now.month() as u8, now.day() as u8).ok()?;
+    let time = CivilTime::new(now.hour() as u8, now.minute() as u8, now.second() as u8).ok()?;
+    ClockSnapshot::new_with_nanosecond(
+        date,
+        time,
+        now.nanosecond(),
+        now.offset().fix().local_minus_utc(),
+    )
+    .ok()
 }
 
 #[derive(Default)]
@@ -991,7 +1992,10 @@ fn pipeline_error(reason: &str) -> String {
 }
 
 fn diagnostic(message: &str) {
-    eprintln!("genkan: {}", bounded_text(message));
+    // A diagnostic must never panic. The supervisor's cleanup and the greeter's
+    // lifecycle must not depend on a writable stderr, and a failed write must
+    // not skip the reap that follows a terminal relay failure.
+    let _ = writeln!(std::io::stderr(), "genkan: {}", bounded_text(message));
 }
 
 fn bounded_text(message: &str) -> String {
@@ -1015,9 +2019,14 @@ fn bounded_text(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
+    use std::io::{ErrorKind, Read};
+    use std::sync::atomic::AtomicUsize;
 
     use super::*;
+    use genkan::dynamic_wallpaper::{
+        Appearance, AppleProperty, ImageReference, Metadata, NormalizedTime, PropertyValue,
+        Schedule, SolarPoint, SolarPosition, TimePoint,
+    };
     use iced::Size;
     use rustix::fs::Mode;
 
@@ -1156,10 +2165,1474 @@ mod tests {
                 catalog: *catalog,
                 override_path: None,
                 animate: false,
+                reduced_motion: false,
+                appearance: AppearancePreference::Automatic,
             });
             assert!(state.decoder_is_stopped(), "{catalog:?}");
             assert!(state.has_frame(), "{catalog:?}");
         }
+    }
+
+    fn heic_fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dynamic-heic/synthetic-all-properties.heic")
+    }
+
+    fn heic_settings(path: Option<PathBuf>, animate: bool, reduced_motion: bool) -> Settings {
+        Settings {
+            catalog: Catalog::TahoeBeach,
+            override_path: path,
+            animate,
+            reduced_motion,
+            appearance: AppearancePreference::Automatic,
+        }
+    }
+
+    fn wait_for_heic(state: &mut State) -> Refresh {
+        for _ in 0..1000 {
+            match state.receive_latest() {
+                Refresh::Unchanged => thread::sleep(Duration::from_millis(10)),
+                other => return other,
+            }
+        }
+        Refresh::Unchanged
+    }
+
+    /// A test clock whose civil and monotonic samples advance together, so a
+    /// slow decode cannot be misread as a wall-clock discontinuity.
+    #[derive(Clone)]
+    struct FakeTime(Arc<Mutex<(ClockSnapshot, Duration)>>);
+
+    impl FakeTime {
+        fn new(clock: ClockSnapshot, monotonic: Duration) -> Self {
+            Self(Arc::new(Mutex::new((clock, monotonic))))
+        }
+
+        fn set(&self, clock: ClockSnapshot, monotonic: Duration) {
+            *lock(&self.0) = (clock, monotonic);
+        }
+
+        /// One callback returning both samples under one lock, so a concurrent
+        /// `set` cannot produce a torn civil/monotonic pair.
+        fn time_source(&self) -> Box<HeicTime> {
+            let time = self.clone();
+            Box::new(move || {
+                let sample = lock(&time.0);
+                (Some(sample.0), sample.1)
+            })
+        }
+    }
+
+    /// Bounded wait for a raw worker frame that fails immediately on a worker
+    /// failure and on timeout instead of hanging the test suite.
+    fn wait_for_heic_frame_labeled(shared: &HeicShared, timeout: Duration, label: &str) -> Frame {
+        let deadline = Instant::now() + timeout;
+        loop {
+            // Bind the taken update before matching so the mutex guard is
+            // released before the sleep; holding it would starve the worker.
+            let pending = lock(&shared.pending).take();
+            match pending {
+                Some(Update::Frame(frame)) => return frame,
+                Some(Update::Failed) => panic!("HEIC worker reported a failure instead of a frame"),
+                None => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for a HEIC worker frame ({label})"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    fn wait_for_heic_frame(shared: &HeicShared, timeout: Duration) -> Frame {
+        wait_for_heic_frame_labeled(shared, timeout, "frame")
+    }
+
+    #[test]
+    fn heic_paths_are_detected_case_insensitively() {
+        assert!(is_heic_path(Path::new("/tmp/wallpaper.heic")));
+        assert!(is_heic_path(Path::new("/tmp/wallpaper.HEIF")));
+        assert!(!is_heic_path(Path::new("/tmp/wallpaper.mov")));
+        assert!(!is_heic_path(Path::new("/tmp/wallpaper")));
+    }
+
+    #[test]
+    fn only_wgpu_renderer_backends_may_receive_a_whole_frame() {
+        // The pinned software backend converts a whole frame with an
+        // infallible allocation, and the null renderer never draws.
+        assert!(!renderer_supports_dynamic_heic("tiny-skia"));
+        assert!(!renderer_supports_dynamic_heic("Null"));
+        assert!(!renderer_supports_dynamic_heic(""));
+        // The wgpu backends, including software Vulkan implementations such as
+        // lavapipe, do not make the whole-frame CPU conversion.
+        for backend in ["Vulkan", "Metal", "Dx12", "Gl", "BrowserWebGpu"] {
+            assert!(
+                renderer_supports_dynamic_heic(backend),
+                "{backend} must be usable"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dynamic_heic_source_is_deferred_until_the_backend_is_known() {
+        let settings = heic_settings(Some(heic_fixture()), true, false);
+        assert!(selects_dynamic_heic(&settings));
+
+        let mut state = State::start_deferred(&settings);
+        // The poster is displayed while the renderer backend is unknown, and
+        // no decoder has been started.
+        assert!(state.has_frame());
+        assert!(state.decoder_is_stopped());
+
+        state.start_heic_source(&settings);
+        assert_eq!(wait_for_heic(&mut state), Refresh::Frame);
+        assert!(!state.decoder_is_stopped());
+    }
+
+    #[test]
+    fn a_deferred_source_is_not_started_for_non_heic_settings() {
+        let mov = heic_settings(None, false, false);
+        assert!(!selects_dynamic_heic(&mov));
+        let mut state = State::start_deferred(&mov);
+        state.start_heic_source(&mov);
+        assert!(state.decoder_is_stopped());
+
+        // A static HEIC has no dynamic source to defer either.
+        let static_heic = heic_settings(Some(heic_fixture()), false, false);
+        assert!(!selects_dynamic_heic(&static_heic));
+    }
+
+    #[test]
+    fn a_started_heic_source_is_not_restarted() {
+        let settings = heic_settings(Some(heic_fixture()), true, true);
+        let mut state = State::start_deferred(&settings);
+        state.start_heic_source(&settings);
+        assert_eq!(wait_for_heic(&mut state), Refresh::Frame);
+        let started = Arc::as_ptr(&state.heic.as_ref().expect("heic source").shared);
+        // A second start must not replace the running source.
+        state.start_heic_source(&settings);
+        assert_eq!(
+            Arc::as_ptr(&state.heic.as_ref().expect("heic source").shared),
+            started
+        );
+    }
+
+    #[test]
+    fn dynamic_heic_source_produces_scheduled_frames() {
+        for reduced_motion in [false, true] {
+            let mut state = State::start(heic_settings(Some(heic_fixture()), true, reduced_motion));
+            assert_eq!(
+                wait_for_heic(&mut state),
+                Refresh::Frame,
+                "reduced_motion={reduced_motion}"
+            );
+            assert!(!state.decoder_is_stopped());
+            assert_eq!(state.rgba_frame().unwrap().dimensions(), (8, 8));
+        }
+    }
+
+    #[test]
+    fn heic_adoption_is_recorded_when_a_frame_is_consumed() {
+        let mut state = State::start(heic_settings(Some(heic_fixture()), true, true));
+        assert!(!state.heic_adopted);
+        assert_eq!(wait_for_heic(&mut state), Refresh::Frame);
+        assert!(
+            state.heic_adopted,
+            "consuming a HEIC frame records adoption"
+        );
+
+        let mov = State::start(heic_settings(None, false, false));
+        assert!(!mov.heic_adopted);
+    }
+
+    #[test]
+    fn dynamic_heic_static_uses_only_the_poster() {
+        let state = State::start(heic_settings(Some(heic_fixture()), false, false));
+        assert!(state.decoder_is_stopped());
+        assert!(state.has_frame());
+    }
+
+    #[test]
+    fn dynamic_heic_failure_retains_the_poster() {
+        let directory =
+            std::env::temp_dir().join(format!("genkan-heic-failure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("broken.heic");
+        std::fs::write(&path, b"not a heic container").unwrap();
+
+        let mut state = State::start(heic_settings(Some(path), true, false));
+        assert_eq!(wait_for_heic(&mut state), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert!(state.has_frame());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn dynamic_heic_missing_file_falls_back_after_worker_failure() {
+        let path =
+            std::env::temp_dir().join(format!("genkan-heic-missing-{}.heic", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        // The player starts without a synchronous stat; the worker validates
+        // the path and reports a decorative failure.
+        let mut state = State::start(heic_settings(Some(path), true, false));
+        assert!(!state.decoder_is_stopped());
+        assert_eq!(wait_for_heic(&mut state), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert!(state.has_frame());
+    }
+
+    fn clock_snapshot(hour: u8, minute: u8, second: u8) -> ClockSnapshot {
+        ClockSnapshot::new(
+            CivilDate::new(2026, 9, 10).unwrap(),
+            CivilTime::new(hour, minute, second).unwrap(),
+            0,
+        )
+        .unwrap()
+    }
+
+    fn time_metadata(points: Vec<TimePoint>) -> Metadata {
+        let mut metadata = Metadata::default();
+        metadata
+            .insert(
+                AppleProperty::Time,
+                PropertyValue::Time(Schedule::new(points, None).unwrap()),
+            )
+            .unwrap();
+        metadata
+    }
+
+    fn heic_frame(value: u8) -> HeicFrame {
+        let pixels = (0..2).flat_map(|_| [value, value, value, 255]).collect();
+        HeicFrame {
+            width: 2,
+            height: 1,
+            pixels,
+        }
+    }
+
+    #[test]
+    fn copy_frame_pixels_reports_allocation_failure() {
+        assert_eq!(
+            copy_frame_pixels(&[1, 2, 3, 4]),
+            Some(Bytes::from_static(&[1, 2, 3, 4]))
+        );
+        // A capacity overflow is reported instead of aborting the process.
+        assert!(reserve_frame_buffer(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn discontinuity_snaps_a_dissolve_and_reports_a_publish() {
+        let metadata = time_metadata(vec![
+            TimePoint {
+                image: ImageReference::from_position(0),
+                time: NormalizedTime::new(0.0).unwrap(),
+            },
+            TimePoint {
+                image: ImageReference::from_position(1),
+                time: NormalizedTime::new(60.0 / 86_400.0).unwrap(),
+            },
+        ]);
+        let mut playback = HeicPlayback::new(
+            &metadata,
+            ImageReference::from_position(0),
+            AppearancePreference::Automatic,
+            clock_snapshot(0, 0, 0),
+            Duration::ZERO,
+            false,
+        );
+        let request = playback.take_decode_request().unwrap();
+        playback.complete_decode(request, Ok(heic_frame(0)), Duration::ZERO);
+        playback.synchronize(clock_snapshot(0, 1, 0), Duration::from_secs(60));
+        let request = playback.take_decode_request().unwrap();
+        playback.complete_decode(request, Ok(heic_frame(200)), Duration::from_millis(60_500));
+        assert!(playback.is_transitioning());
+
+        assert!(
+            apply_heic_schedule(
+                &mut playback,
+                clock_snapshot(0, 1, 1),
+                Duration::from_secs(61),
+                true,
+            ),
+            "a discontinuity snap must request a publish"
+        );
+        assert!(!playback.is_transitioning());
+    }
+
+    #[test]
+    fn suspend_detector_catches_subsecond_gaps() {
+        let mut detector = SuspendDetector::new(Some(Duration::ZERO));
+        // 800 ms is below Playback's one-second clock tolerance but must be
+        // treated as a suspend.
+        assert!(detector.observe(Duration::from_millis(800)));
+        assert!(!detector.observe(Duration::from_millis(805)));
+        assert!(detector.observe(Duration::from_millis(1_605)));
+    }
+
+    /// The relay framing of one opaque 1x1 RGBA frame, as POSIX `printf`
+    /// escapes for a harness-free shell helper. A real helper must never share
+    /// stdout with a test harness, because harness output is not protocol.
+    const SHELL_FRAME: &str =
+        r"\106\001\000\000\000\001\000\000\000\004\000\000\000\001\002\003\377";
+
+    /// A harness-free protocol helper: a shell that writes relay bytes on its
+    /// own stdout and then `exec`s a blocking program, so the tracked process
+    /// stays alive until it is signalled.
+    fn shell_worker(frame: bool) -> Command {
+        let script = if frame {
+            format!("printf '{SHELL_FRAME}'; exec sleep 300")
+        } else {
+            "exec sleep 300".to_owned()
+        };
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script);
+        command
+    }
+
+    fn worker_pid(player: &HeicPlayer) -> u32 {
+        lock(&player.child)
+            .as_ref()
+            .map(Child::id)
+            .expect("the supervisor publishes the worker before reading")
+    }
+
+    /// Cancels a supervisor and signals its worker on every exit path.
+    ///
+    /// A handshake that only completes on the success path leaves the helper
+    /// running when an assertion fails, so cancellation must be unwind-safe.
+    /// Signalling is a no-op once the supervisor has reaped, because reaping
+    /// clears the child slot before waiting.
+    struct SupervisorCancel {
+        stopping: Arc<AtomicBool>,
+        child: Arc<Mutex<Option<Child>>>,
+    }
+
+    impl Drop for SupervisorCancel {
+        fn drop(&mut self) {
+            self.stopping.store(true, Ordering::Release);
+            signal_heic_child(&self.child);
+        }
+    }
+
+    /// Waits for the supervisor to finish killing and reaping the worker.
+    ///
+    /// The reaping probe must not run before this: `waitpid` is a competing
+    /// reaper, so an early probe would collect the zombie itself and misreport
+    /// a correct supervisor.
+    fn wait_for_supervisor_cleanup(shared: &HeicShared, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if shared.cleanup_complete.load(Ordering::Acquire) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Whether the supervisor has already reaped the worker.
+    ///
+    /// A reaped pid is no longer waitable (`ECHILD`), while a running worker
+    /// reports no state change. A zombie means the supervisor exited without
+    /// waiting, which is reported as a failure and never retried: the probe
+    /// itself would have collected that zombie.
+    fn probe_child_reaped(pid: u32) -> bool {
+        let mut status = 0;
+        // SAFETY: `waitpid` is called with a specific pid and a valid out
+        // pointer, and `WNOHANG` keeps it from blocking.
+        let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+        assert_ne!(
+            result, pid as i32,
+            "the worker was still a zombie, so the supervisor never reaped it"
+        );
+        if result == 0 {
+            return false;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            return false;
+        }
+        assert_eq!(
+            error.raw_os_error(),
+            Some(libc::ECHILD),
+            "unexpected waitpid result for the worker"
+        );
+        true
+    }
+
+    /// Waits for the supervisor to reap the worker. This needs no procfs, and a
+    /// pid cannot be recycled while it is still waitable.
+    fn wait_for_reap(pid: u32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if probe_child_reaped(pid) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Waits for the terminal failure update to be *published*.
+    ///
+    /// `has_failed` is set before the pending update and its notification, so
+    /// it is not a publication barrier for a consumer.
+    fn wait_for_failure(shared: &HeicShared, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if matches!(lock(&shared.pending).as_ref(), Some(Update::Failed)) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Waits for the supervisor to publish the worker without blocking on it.
+    fn wait_for_worker_pid(child: &Mutex<Option<Child>>, timeout: Duration) -> u32 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(pid) = lock(child).as_ref().map(Child::id) {
+                return pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the supervisor did not publish a worker"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_for_worker(player: &HeicPlayer, timeout: Duration) -> u32 {
+        wait_for_worker_pid(&player.child, timeout)
+    }
+
+    #[test]
+    fn dropping_a_heic_player_kills_and_reaps_the_worker() {
+        let player = HeicPlayer::start_command(shell_worker(true)).expect("blocked worker process");
+        let pid = wait_for_worker(&player, Duration::from_secs(5));
+        // Prove the helper reached its blocked state before dropping, so the
+        // cleanup below cannot pass on a process that never started.
+        wait_for_heic_frame(&player.shared, Duration::from_secs(5));
+
+        // A generous bound: this is a sanity check that Drop performs no
+        // unbounded work, not a proof that Drop never waits. The structural
+        // guarantee is that only the supervisor thread calls `wait`, which
+        // `a_supervisor_reaps_the_worker` exercises.
+        let shared = Arc::clone(&player.shared);
+        let started = Instant::now();
+        drop(player);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "dropping a HEIC player must not block on the worker"
+        );
+        assert!(
+            wait_for_supervisor_cleanup(&shared, Duration::from_secs(10)),
+            "the supervisor must finish cleaning up"
+        );
+        assert!(
+            wait_for_reap(pid, Duration::from_secs(10)),
+            "the supervisor must reap the killed worker"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_supervisor_publishes_nothing() {
+        // Cancellation that arrives before the worker is read must leave the
+        // shared state untouched and clear the child slot. This asserts the
+        // observable outcome of the startup race `Drop` can lose; the reap
+        // itself is proven by `a_supervisor_reaps_the_worker`.
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(true));
+        let child = Arc::new(Mutex::new(None));
+
+        supervise_heic_worker(
+            shell_worker(true),
+            Arc::clone(&shared),
+            signal,
+            Arc::clone(&stopping),
+            Arc::clone(&child),
+        );
+
+        assert!(lock(&child).is_none());
+        assert!(lock(&shared.pending).is_none());
+        assert!(!shared.failed.load(Ordering::Acquire));
+        assert_eq!(shared.sequence.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn a_supervisor_reaps_the_worker() {
+        // The helper holds its stdout open until the test releases it, so the
+        // supervisor blocks in its framing read and the published child is
+        // observable without a timing race. Once released, the supervisor must
+        // reap it: an unreaped worker would still be waitable here.
+        let release = std::env::temp_dir().join(format!(
+            "genkan-heic-supervisor-release-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&release);
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let child = Arc::new(Mutex::new(None));
+        // The release handshake only completes on the success path, so a failed
+        // assertion before it must still stop the helper. This guard is
+        // installed before the supervisor exists; a supervisor that publishes
+        // after the test unwinds observes the cancellation and reaps the child.
+        let _cancel = SupervisorCancel {
+            stopping: Arc::clone(&stopping),
+            child: Arc::clone(&child),
+        };
+        let supervisor = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            let child = Arc::clone(&child);
+            let release = release.clone();
+            thread::spawn(move || {
+                let script = format!(
+                    "printf '{SHELL_FRAME}'; while [ ! -e '{}' ]; do sleep 0.02; done",
+                    release.display()
+                );
+                let mut command = Command::new("sh");
+                command.arg("-c").arg(script);
+                supervise_heic_worker(command, shared, signal, stopping, child);
+            })
+        };
+        let pid = wait_for_worker_pid(&child, Duration::from_secs(5));
+        std::fs::write(&release, b"release").expect("release the helper");
+        supervisor.join().unwrap();
+        let _ = std::fs::remove_file(&release);
+
+        assert!(
+            wait_for_supervisor_cleanup(&shared, Duration::from_secs(10)),
+            "the supervisor must finish cleaning up"
+        );
+        assert!(
+            wait_for_reap(pid, Duration::from_secs(10)),
+            "the supervisor must reap the worker"
+        );
+        assert!(lock(&child).is_none());
+    }
+
+    #[test]
+    fn a_crashing_worker_is_a_decorative_failure_that_is_reaped() {
+        let player = HeicPlayer::start_command(shell_worker(true)).expect("worker process");
+        let pid = wait_for_worker(&player, Duration::from_secs(5));
+        let frame = wait_for_heic_frame(&player.shared, Duration::from_secs(5));
+        assert_eq!((frame.width, frame.height), (1, 1));
+
+        // A crash after a valid frame: the relay must report a bounded
+        // decorative failure instead of a frame.
+        // SAFETY: `pid` is the live worker published above.
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGABRT) }, 0);
+
+        assert!(
+            wait_for_failure(&player.shared, Duration::from_secs(10)),
+            "an aborted worker must publish a decorative failure"
+        );
+        assert!(player.has_failed());
+        assert!(matches!(
+            lock(&player.shared.pending).take(),
+            Some(Update::Failed)
+        ));
+        assert!(
+            wait_for_supervisor_cleanup(&player.shared, Duration::from_secs(10)),
+            "the supervisor must finish cleaning up"
+        );
+        assert!(
+            wait_for_reap(pid, Duration::from_secs(10)),
+            "a crashed worker must still be reaped"
+        );
+    }
+
+    #[test]
+    fn a_worker_that_cannot_spawn_is_a_decorative_failure() {
+        let mut command = Command::new("/nonexistent/genkan-heic-worker");
+        command.arg("--file").arg("/tmp/missing.heic");
+        let player = HeicPlayer::start_command(command).expect("the supervisor still starts");
+
+        assert!(
+            wait_for_failure(&player.shared, Duration::from_secs(10)),
+            "a worker that cannot be spawned is a decorative failure"
+        );
+        assert!(lock(&player.child).is_none());
+    }
+
+    #[test]
+    fn a_worker_that_exits_after_a_frame_retains_the_poster() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(format!("printf '{SHELL_FRAME}'"));
+        let mut state = State {
+            player: None,
+            heic: Some(HeicPlayer::start_command(command).expect("worker process")),
+            poster: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            frame: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            allocation: None,
+            allocation_pending: false,
+            heic_adopted: false,
+        };
+        let poster_id = state.frame.as_ref().unwrap().id();
+
+        // Wait for the terminal failure to be published *before* consuming, so
+        // this covers the ordering where the failure wins the race with the
+        // frame. The frame was never adopted, so the poster stays and no
+        // decoder is left behind.
+        let shared = Arc::clone(&state.heic.as_ref().expect("heic source").shared);
+        assert!(
+            wait_for_failure(&shared, Duration::from_secs(10)),
+            "the worker exit was not reported"
+        );
+        assert_eq!(state.receive_latest(), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert_eq!(state.frame.as_ref().unwrap().id(), poster_id);
+    }
+
+    #[test]
+    fn a_crashed_worker_after_adoption_retains_the_adopted_frame() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("printf '{SHELL_FRAME}'; exec sleep 300"));
+        let mut state = State {
+            player: None,
+            heic: Some(HeicPlayer::start_command(command).expect("worker process")),
+            poster: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            frame: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            allocation: None,
+            allocation_pending: false,
+            heic_adopted: false,
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.receive_latest() != Refresh::Frame {
+            assert!(
+                Instant::now() < deadline,
+                "the worker never delivered a frame"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let adopted_id = state.frame.as_ref().unwrap().id();
+        let shared = Arc::clone(&state.heic.as_ref().expect("heic source").shared);
+        let pid = worker_pid(state.heic.as_ref().unwrap());
+        // SAFETY: `pid` is the live worker published by the supervisor.
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGABRT) }, 0);
+
+        assert!(
+            wait_for_failure(&shared, Duration::from_secs(10)),
+            "the crash was not reported"
+        );
+        assert_eq!(state.receive_latest(), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert_eq!(state.frame.as_ref().unwrap().id(), adopted_id);
+    }
+
+    fn relay_frame_bytes(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![HEIC_FRAME_TAG];
+        bytes.extend_from_slice(&width.to_le_bytes());
+        bytes.extend_from_slice(&height.to_le_bytes());
+        bytes.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(pixels);
+        bytes
+    }
+
+    /// A raw tag and header with no payload, for malformed-protocol cases.
+    fn relay_header_bytes(tag: u8, width: u32, height: u32, length: u32) -> Vec<u8> {
+        let mut bytes = vec![tag];
+        bytes.extend_from_slice(&width.to_le_bytes());
+        bytes.extend_from_slice(&height.to_le_bytes());
+        bytes.extend_from_slice(&length.to_le_bytes());
+        bytes
+    }
+
+    /// Drives the production reader over `bytes` and asserts that its only
+    /// published update is a terminal failure.
+    ///
+    /// The notification sequence distinguishes "no frame was ever adopted"
+    /// from "a frame was published and then superseded": a published frame
+    /// would leave the sequence above one.
+    fn relay_fails_without_a_frame(bytes: Vec<u8>) {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        run_heic_reader(std::io::Cursor::new(bytes), &shared, &signal, &stopping);
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert_eq!(
+            shared.sequence.load(Ordering::Acquire),
+            1,
+            "a malformed stream must publish exactly one terminal failure"
+        );
+        assert!(matches!(lock(&shared.pending).take(), Some(Update::Failed)));
+    }
+
+    /// Yields a fixed prefix and then fails every further read, recording that
+    /// a payload read was attempted at all.
+    struct PayloadProbe {
+        prefix: Vec<u8>,
+        offset: usize,
+        payload_reads: Arc<AtomicUsize>,
+    }
+
+    impl Read for PayloadProbe {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset < self.prefix.len() {
+                let available = (self.prefix.len() - self.offset).min(buffer.len());
+                buffer[..available]
+                    .copy_from_slice(&self.prefix[self.offset..self.offset + available]);
+                self.offset += available;
+                return Ok(available);
+            }
+            self.payload_reads.fetch_add(1, Ordering::AcqRel);
+            Err(std::io::Error::new(
+                ErrorKind::WouldBlock,
+                "the relay read a payload it should have refused",
+            ))
+        }
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_payload_above_the_byte_cap_without_reading_it() {
+        // 8192 by 8192 RGBA is 256 MiB: above the 128 MiB ceiling without
+        // overflowing, so only the byte ceiling can refuse it.
+        assert!(expected_frame_bytes(8_192, 8_192).is_none());
+        let payload_reads = Arc::new(AtomicUsize::new(0));
+        let mut reader = PayloadProbe {
+            prefix: relay_header_bytes(HEIC_FRAME_TAG, 8_192, 8_192, 256 * 1024 * 1024),
+            offset: 0,
+            payload_reads: Arc::clone(&payload_reads),
+        };
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert_eq!(
+            payload_reads.load(Ordering::Acquire),
+            0,
+            "an over-cap payload must be refused before it is read or reserved"
+        );
+    }
+
+    #[test]
+    fn heic_relay_rejects_an_over_long_axis_before_allocating() {
+        // Within the byte ceiling but past the decoder's per-axis limit.
+        let width = MAX_HEIC_FRAME_DIMENSION + 1;
+        let height = 1;
+        let mut reader =
+            std::io::Cursor::new(relay_header_bytes(HEIC_FRAME_TAG, width, height, width * 4));
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert_eq!(reader.position(), (1 + HEIC_HEADER_BYTES) as u64);
+        assert!(expected_frame_bytes(MAX_HEIC_FRAME_DIMENSION, 1).is_some());
+        assert!(expected_frame_bytes(MAX_HEIC_FRAME_DIMENSION + 1, 1).is_none());
+    }
+
+    #[test]
+    fn heic_relay_rejects_an_unknown_tag() {
+        relay_fails_without_a_frame(vec![b'X']);
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_short_header() {
+        let mut bytes = vec![HEIC_FRAME_TAG];
+        bytes.extend_from_slice(&[1, 2, 3]);
+        relay_fails_without_a_frame(bytes);
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_short_payload() {
+        let mut bytes = relay_header_bytes(HEIC_FRAME_TAG, 1, 1, 4);
+        bytes.extend_from_slice(&[1, 2]);
+        relay_fails_without_a_frame(bytes);
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_length_mismatch() {
+        // Two RGBA pixels are eight bytes, not four.
+        relay_fails_without_a_frame(relay_header_bytes(HEIC_FRAME_TAG, 2, 1, 4));
+        // A shorter payload than the header's exact length is also a failure.
+        let mut bytes = relay_header_bytes(HEIC_FRAME_TAG, 1, 1, 8);
+        bytes.extend_from_slice(&[1, 2, 3, 255]);
+        relay_fails_without_a_frame(bytes);
+    }
+
+    #[test]
+    fn heic_relay_rejects_zero_dimensions() {
+        relay_fails_without_a_frame(relay_header_bytes(HEIC_FRAME_TAG, 0, 0, 0));
+        relay_fails_without_a_frame(relay_header_bytes(HEIC_FRAME_TAG, 1, 0, 0));
+        relay_fails_without_a_frame(relay_header_bytes(HEIC_FRAME_TAG, 0, 1, 0));
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_frame_the_decoder_would_have_refused() {
+        // The relay's ceilings mirror `dynamic_wallpaper::heic`'s limits.
+        assert_eq!(expected_frame_bytes(3_840, 2_160), Some(3_840 * 2_160 * 4));
+        assert!(expected_frame_bytes(0, 2_160).is_none());
+        assert!(expected_frame_bytes(3_840, 0).is_none());
+        assert!(expected_frame_bytes(16_385, 1).is_none());
+        assert!(expected_frame_bytes(1, 16_385).is_none());
+        assert!(expected_frame_bytes(u32::MAX, u32::MAX).is_none());
+    }
+
+    /// A reader that never returns more than one byte per call, so framing
+    /// must survive arbitrary fragmentation. A pipe cannot guarantee this:
+    /// write boundaries are not read boundaries.
+    struct OneByteReader {
+        bytes: Vec<u8>,
+        offset: usize,
+    }
+
+    impl Read for OneByteReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset >= self.bytes.len() || buffer.is_empty() {
+                return Ok(0);
+            }
+            buffer[0] = self.bytes[self.offset];
+            self.offset += 1;
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn heic_relay_assembles_a_frame_from_single_byte_reads() {
+        let (reader, mut writer) = std::io::pipe().expect("relay pipe");
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || run_heic_reader(reader, &shared, &signal, &stopping))
+        };
+
+        // Hold the pipe open until the frame is adopted so the terminal EOF
+        // cannot overwrite the pending frame.
+        writer
+            .write_all(&relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]))
+            .expect("relay frame");
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(5));
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.pixels.as_ref(), &[1, 2, 3, 255, 4, 5, 6, 255]);
+
+        stopping.store(true, Ordering::Release);
+        drop(writer);
+        relay.join().unwrap();
+        assert!(!shared.failed.load(Ordering::Acquire));
+
+        // The same stream delivered one byte per read must frame identically.
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let bytes = relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]);
+        let mut reader = OneByteReader { bytes, offset: 0 };
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+        assert_eq!(
+            shared.sequence.load(Ordering::Acquire),
+            2,
+            "the fragmented frame must be adopted before the EOF failure"
+        );
+        assert!(shared.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn heic_relay_treats_eof_after_a_frame_as_a_terminal_failure() {
+        let (reader, mut writer) = std::io::pipe().expect("relay pipe");
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || run_heic_reader(reader, &shared, &signal, &stopping))
+        };
+
+        writer
+            .write_all(&relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]))
+            .expect("relay frame");
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(5));
+        assert_eq!((frame.width, frame.height), (2, 1));
+
+        // The worker exited after a valid frame: the consumer has already
+        // adopted it, so the terminal failure must not discard it.
+        drop(writer);
+        relay.join().unwrap();
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert!(matches!(lock(&shared.pending).take(), Some(Update::Failed)));
+    }
+
+    /// A reader that delivers one header and then, once the payload read
+    /// starts, records cancellation and reports end of stream.
+    struct CancellingReader {
+        header: Vec<u8>,
+        offset: usize,
+        stopping: Arc<AtomicBool>,
+    }
+
+    impl Read for CancellingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset < self.header.len() {
+                let available = (self.header.len() - self.offset).min(buffer.len());
+                buffer[..available]
+                    .copy_from_slice(&self.header[self.offset..self.offset + available]);
+                self.offset += available;
+                return Ok(available);
+            }
+            // Cancellation lands mid-payload: the stream is abandoned and no
+            // terminal failure may be published. The production reader also
+            // checks cancellation before publishing a frame it already read.
+            self.stopping.store(true, Ordering::Release);
+            Ok(0)
+        }
+    }
+
+    /// A reader that delivers a complete frame and records cancellation while
+    /// returning the final payload bytes.
+    struct CancellingPayloadReader {
+        bytes: Vec<u8>,
+        offset: usize,
+        stopping: Arc<AtomicBool>,
+    }
+
+    impl Read for CancellingPayloadReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset >= self.bytes.len() || buffer.is_empty() {
+                return Ok(0);
+            }
+            let available = (self.bytes.len() - self.offset).min(buffer.len());
+            let completes_frame = self.offset + available == self.bytes.len();
+            buffer[..available].copy_from_slice(&self.bytes[self.offset..self.offset + available]);
+            self.offset += available;
+            if completes_frame {
+                self.stopping.store(true, Ordering::Release);
+            }
+            Ok(available)
+        }
+    }
+
+    #[test]
+    fn heic_relay_cancellation_wins_over_a_read_frame() {
+        // The payload is delivered completely, but cancellation lands before
+        // the frame can be published: a consumer that is going away must not
+        // receive it.
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let mut reader = CancellingPayloadReader {
+            bytes: relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]),
+            offset: 0,
+            stopping: Arc::clone(&stopping),
+        };
+
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+
+        assert!(stopping.load(Ordering::Acquire));
+        assert_eq!(shared.sequence.load(Ordering::Acquire), 0);
+        assert!(lock(&shared.pending).is_none());
+        assert!(!shared.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn heic_relay_cancellation_mid_payload_is_not_a_failure() {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let header = relay_header_bytes(HEIC_FRAME_TAG, 2, 1, 8);
+        let mut reader = CancellingReader {
+            header,
+            offset: 0,
+            stopping: Arc::clone(&stopping),
+        };
+
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+
+        assert!(stopping.load(Ordering::Acquire));
+        assert!(!shared.failed.load(Ordering::Acquire));
+        assert!(lock(&shared.pending).is_none());
+    }
+
+    #[test]
+    fn heic_worker_command_forwards_file_appearance_motion_and_parent() {
+        let command = worker_command(
+            Path::new("/usr/bin/genkan"),
+            Path::new("/home/alice/wallpaper.heic"),
+            AppearancePreference::Dark,
+            true,
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "/usr/bin/genkan");
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let mut expected = vec![
+            "heic-worker".to_owned(),
+            "--file".to_owned(),
+            "/home/alice/wallpaper.heic".to_owned(),
+            "--appearance".to_owned(),
+            "dark".to_owned(),
+            "--parent-pid".to_owned(),
+            std::process::id().to_string(),
+            "--reduce-motion".to_owned(),
+        ];
+        assert_eq!(arguments, expected);
+
+        // The parent binding is required, not optional: a helper that cannot
+        // bind its lifetime to the greeter must not run.
+        expected.retain(|argument| argument != "--reduce-motion");
+        let without_motion = worker_command(
+            Path::new("/usr/bin/genkan"),
+            Path::new("/home/alice/wallpaper.heic"),
+            AppearancePreference::Dark,
+            false,
+        );
+        assert_eq!(
+            without_motion
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn heic_relay_adopts_a_framed_worker_frame() {
+        let (reader, mut writer) = std::io::pipe().expect("relay pipe");
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || run_heic_reader(reader, &shared, &signal, &stopping))
+        };
+        writer
+            .write_all(&relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]))
+            .expect("write frame");
+
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(5));
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.pixels.as_ref(), &[1, 2, 3, 255, 4, 5, 6, 255]);
+
+        stopping.store(true, Ordering::Release);
+        drop(writer);
+        relay.join().unwrap();
+        assert!(!shared.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn heic_relay_reports_a_worker_failure_tag() {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        run_heic_reader(
+            std::io::Cursor::new(vec![HEIC_FAILED_TAG]),
+            &shared,
+            &signal,
+            &stopping,
+        );
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert!(matches!(lock(&shared.pending).take(), Some(Update::Failed)));
+    }
+
+    #[test]
+    fn heic_relay_treats_a_truncated_worker_as_a_decorative_failure() {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        // A frame header that promises four pixels followed by an abrupt EOF,
+        // exactly what an allocation abort after the header looks like.
+        let mut bytes = vec![HEIC_FRAME_TAG];
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&[1, 2]);
+
+        run_heic_reader(std::io::Cursor::new(bytes), &shared, &signal, &stopping);
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert!(matches!(lock(&shared.pending).take(), Some(Update::Failed)));
+    }
+
+    #[test]
+    fn heic_relay_rejects_an_oversized_frame_without_allocating() {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let mut bytes = vec![HEIC_FRAME_TAG];
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+
+        run_heic_reader(std::io::Cursor::new(bytes), &shared, &signal, &stopping);
+        assert!(shared.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn process_sink_emits_a_length_checked_frame() {
+        let mut output = Vec::new();
+        let mut sink = ProcessSink {
+            writer: &mut output,
+        };
+        assert!(sink.publish(Some(&heic_frame(7))));
+        assert_eq!(output[0], HEIC_FRAME_TAG);
+
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let (reader, mut writer) = std::io::pipe().expect("relay pipe");
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || run_heic_reader(reader, &shared, &signal, &stopping))
+        };
+        writer.write_all(&output).expect("relay frame");
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(5));
+        assert_eq!(frame.pixels[0], 7);
+        stopping.store(true, Ordering::Release);
+        drop(writer);
+        relay.join().unwrap();
+    }
+
+    #[test]
+    fn dynamic_heic_selects_the_scheduled_variant() {
+        let path = heic_fixture();
+        let time = FakeTime::new(clock_snapshot(13, 0, 0), Duration::ZERO);
+        let time_source = time.time_source();
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || {
+                run_heic(
+                    &path,
+                    AppearancePreference::Automatic,
+                    true,
+                    time_source.as_ref(),
+                    &shared,
+                    &signal,
+                    &stopping,
+                )
+            })
+        };
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(10));
+        stopping.store(true, Ordering::Release);
+        worker.join().unwrap();
+
+        // At 13:00, t = 0.5417 selects the h24 point at 0.5, image 2 (blue).
+        assert!(
+            frame.pixels[2] > 200 && frame.pixels[0] < 40 && frame.pixels[1] < 40,
+            "unexpected scheduled frame {:?}",
+            &frame.pixels[..4]
+        );
+    }
+
+    #[test]
+    fn dynamic_heic_transitions_at_an_ordinary_boundary() {
+        let path = heic_fixture();
+        let time = FakeTime::new(clock_snapshot(0, 0, 0), Duration::ZERO);
+        let time_source = time.time_source();
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || {
+                run_heic(
+                    &path,
+                    AppearancePreference::Automatic,
+                    true,
+                    time_source.as_ref(),
+                    &shared,
+                    &signal,
+                    &stopping,
+                )
+            })
+        };
+
+        // 00:00 selects the h24 point at 0.0, image 0 (red).
+        let first = wait_for_heic_frame_labeled(&shared, Duration::from_secs(10), "initial");
+        assert!(
+            first.pixels[0] > 200 && first.pixels[1] < 40 && first.pixels[2] < 40,
+            "unexpected initial frame {:?}",
+            &first.pixels[..4]
+        );
+
+        // Civil and monotonic advance together six hours, which is an ordinary
+        // boundary rather than a clock discontinuity.
+        time.set(clock_snapshot(6, 0, 0), Duration::from_secs(6 * 3_600));
+        // 06:00 crosses the boundary to the point at 0.25, image 1 (green).
+        let second = wait_for_heic_frame_labeled(&shared, Duration::from_secs(10), "boundary");
+        assert!(
+            second.pixels[1] > 200 && second.pixels[0] < 40 && second.pixels[2] < 40,
+            "unexpected boundary frame {:?}",
+            &second.pixels[..4]
+        );
+
+        stopping.store(true, Ordering::Release);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn dynamic_heic_dissolves_at_an_ordinary_boundary() {
+        let path = heic_fixture();
+        let time = FakeTime::new(clock_snapshot(0, 0, 0), Duration::ZERO);
+        let time_source = time.time_source();
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || {
+                run_heic(
+                    &path,
+                    AppearancePreference::Automatic,
+                    false,
+                    time_source.as_ref(),
+                    &shared,
+                    &signal,
+                    &stopping,
+                )
+            })
+        };
+
+        let first = wait_for_heic_frame_labeled(&shared, Duration::from_secs(10), "initial");
+        assert!(
+            first.pixels[0] > 200 && first.pixels[1] < 40 && first.pixels[2] < 40,
+            "unexpected initial frame {:?}",
+            &first.pixels[..4]
+        );
+
+        // One second past the boundary with a coherent monotonic sample: the
+        // two-second dissolve is halfway between red and green.
+        time.set(clock_snapshot(6, 0, 1), Duration::from_secs(6 * 3_600 + 1));
+        let blended = wait_for_heic_frame_labeled(&shared, Duration::from_secs(10), "dissolve");
+        assert!(
+            (60..=200).contains(&blended.pixels[0])
+                && (60..=200).contains(&blended.pixels[1])
+                && blended.pixels[2] < 40,
+            "expected a red/green dissolve blend, got {:?}",
+            &blended.pixels[..4]
+        );
+
+        stopping.store(true, Ordering::Release);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn refused_frame_allocation_retains_the_previous_frame() {
+        let shared = HeicShared::default();
+        let (signal, _receiver) = watch::channel(0);
+        assert!(emit_heic_frame(
+            &shared,
+            &signal,
+            1,
+            1,
+            Some(Bytes::from_static(&[1, 2, 3, 4]))
+        ));
+        let sequence = shared.sequence.load(Ordering::Acquire);
+
+        // A refused handoff allocation must not replace the pending frame.
+        assert!(!emit_heic_frame(&shared, &signal, 1, 1, None));
+        let pending = lock(&shared.pending);
+        let Some(Update::Frame(frame)) = pending.as_ref() else {
+            panic!("valid pending frame must remain");
+        };
+        assert_eq!(frame.pixels[0], 1);
+        assert_eq!(shared.sequence.load(Ordering::Acquire), sequence);
+    }
+
+    #[test]
+    fn stale_decode_after_reselection_is_ignored() {
+        let metadata = time_metadata(vec![
+            TimePoint {
+                image: ImageReference::from_position(0),
+                time: NormalizedTime::new(0.0).unwrap(),
+            },
+            TimePoint {
+                image: ImageReference::from_position(1),
+                time: NormalizedTime::new(60.0 / 86_400.0).unwrap(),
+            },
+            TimePoint {
+                image: ImageReference::from_position(2),
+                time: NormalizedTime::new(120.0 / 86_400.0).unwrap(),
+            },
+        ]);
+        let mut playback = HeicPlayback::new(
+            &metadata,
+            ImageReference::from_position(0),
+            AppearancePreference::Automatic,
+            clock_snapshot(0, 0, 0),
+            Duration::ZERO,
+            false,
+        );
+        let initial = playback.take_decode_request().unwrap();
+        playback.complete_decode(initial, Ok(heic_frame(10)), Duration::ZERO);
+
+        playback.synchronize(clock_snapshot(0, 1, 0), Duration::from_secs(60));
+        let stale = playback.take_decode_request().unwrap();
+        assert_eq!(stale.image, ImageReference::from_position(1));
+
+        // The helper's own synchronization crosses a second boundary and
+        // reselects image 2 before the stale result is completed, so it must be
+        // rejected without overwriting the displayed frame.
+        let mut diagnostics = HeicDiagnostics::default();
+        assert!(!finish_heic_decode(
+            &mut playback,
+            stale,
+            Ok(heic_frame(200)),
+            clock_snapshot(0, 2, 0),
+            Duration::from_secs(120),
+            false,
+            &mut diagnostics,
+        ));
+        assert_eq!(playback.selected(), ImageReference::from_position(2));
+        assert_eq!(playback.frame().unwrap().pixels[0], 10);
+    }
+
+    #[test]
+    fn decode_failure_retains_the_last_frame() {
+        let metadata = time_metadata(vec![
+            TimePoint {
+                image: ImageReference::from_position(0),
+                time: NormalizedTime::new(0.0).unwrap(),
+            },
+            TimePoint {
+                image: ImageReference::from_position(1),
+                time: NormalizedTime::new(60.0 / 86_400.0).unwrap(),
+            },
+        ]);
+        let mut playback = HeicPlayback::new(
+            &metadata,
+            ImageReference::from_position(0),
+            AppearancePreference::Automatic,
+            clock_snapshot(0, 0, 0),
+            Duration::ZERO,
+            false,
+        );
+        let initial = playback.take_decode_request().unwrap();
+        playback.complete_decode(initial, Ok(heic_frame(10)), Duration::ZERO);
+
+        playback.synchronize(clock_snapshot(0, 1, 0), Duration::from_secs(60));
+        let request = playback.take_decode_request().unwrap();
+        let mut diagnostics = HeicDiagnostics::default();
+        assert!(!finish_heic_decode(
+            &mut playback,
+            request,
+            Err(()),
+            clock_snapshot(0, 1, 0),
+            Duration::from_secs(60),
+            false,
+            &mut diagnostics,
+        ));
+        assert_eq!(playback.frame().unwrap().pixels[0], 10);
+        assert!(diagnostics.decode_failure_reported);
+    }
+
+    #[test]
+    fn late_decode_after_the_dissolve_window_switches_immediately() {
+        let metadata = time_metadata(vec![
+            TimePoint {
+                image: ImageReference::from_position(0),
+                time: NormalizedTime::new(0.0).unwrap(),
+            },
+            TimePoint {
+                image: ImageReference::from_position(1),
+                time: NormalizedTime::new(60.0 / 86_400.0).unwrap(),
+            },
+        ]);
+        let mut playback = HeicPlayback::new(
+            &metadata,
+            ImageReference::from_position(0),
+            AppearancePreference::Automatic,
+            clock_snapshot(0, 0, 0),
+            Duration::ZERO,
+            false,
+        );
+        let initial = playback.take_decode_request().unwrap();
+        playback.complete_decode(initial, Ok(heic_frame(10)), Duration::ZERO);
+        playback.synchronize(clock_snapshot(0, 1, 0), Duration::from_secs(60));
+        let request = playback.take_decode_request().unwrap();
+
+        // The decode finished five seconds after its boundary, past the
+        // two-second dissolve window, so it must switch immediately rather than
+        // starting an expired dissolve. The civil clock advances coherently
+        // with the monotonic sample so this is not a clock discontinuity.
+        let mut diagnostics = HeicDiagnostics::default();
+        assert!(finish_heic_decode(
+            &mut playback,
+            request,
+            Ok(heic_frame(200)),
+            clock_snapshot(0, 1, 5),
+            Duration::from_secs(65),
+            false,
+            &mut diagnostics,
+        ));
+        assert!(!playback.is_transitioning());
+        assert_eq!(playback.frame().unwrap().pixels[0], 200);
+    }
+
+    #[test]
+    fn heic_playback_never_selects_a_solar_schedule() {
+        let solar = Schedule::new(
+            vec![SolarPoint {
+                image: ImageReference::from_position(2),
+                position: SolarPosition::new(0.0, 0.0).unwrap(),
+            }],
+            Some(Appearance {
+                light: ImageReference::from_position(0),
+                dark: ImageReference::from_position(1),
+            }),
+        )
+        .unwrap();
+        let mut metadata = Metadata::default();
+        metadata
+            .insert(AppleProperty::Solar, PropertyValue::Solar(solar))
+            .unwrap();
+        let playback = HeicPlayback::new(
+            &metadata,
+            ImageReference::from_position(9),
+            AppearancePreference::Automatic,
+            clock_snapshot(12, 0, 0),
+            Duration::ZERO,
+            false,
+        );
+        // Solar is disabled for login/lock, so the fallback appearance's light
+        // image is selected instead of the solar point's image 2.
+        assert_eq!(playback.selected(), ImageReference::from_position(0));
+    }
+
+    #[test]
+    fn dynamic_heic_decode_failure_after_a_frame_retains_it() {
+        let mut state = State::start(heic_settings(Some(heic_fixture()), true, true));
+        assert_eq!(wait_for_heic(&mut state), Refresh::Frame);
+        let displayed = state.frame.as_ref().unwrap().id();
+        let (signal, _receiver) = watch::channel(0);
+        {
+            let player = state.heic.as_ref().expect("heic player");
+            fail_heic(&player.shared, &signal);
+        }
+        assert_eq!(wait_for_heic(&mut state), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert_eq!(state.frame.as_ref().unwrap().id(), displayed);
     }
 
     #[test]
@@ -1210,10 +3683,12 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            heic: None,
             poster: Some(poster.clone()),
             frame: Some(poster),
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         };
         publish_frame(&shared, &signal_sender, frame(1, Duration::ZERO));
 
@@ -1297,10 +3772,12 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            heic: None,
             poster: Some(poster),
             frame: None,
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         };
 
         state.receive_latest();
@@ -1324,10 +3801,12 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            heic: None,
             poster: Some(poster),
             frame: Some(current),
             allocation: None,
             allocation_pending: false,
+            heic_adopted: false,
         };
 
         state.receive_latest();
@@ -1349,10 +3828,12 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 worker: None,
             }),
+            heic: None,
             poster: None,
             frame: Some(current),
             allocation: None,
             allocation_pending: true,
+            heic_adopted: false,
         };
         fail_once(&shared, &signal_sender, "expected allocation race failure");
 

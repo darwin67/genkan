@@ -95,6 +95,12 @@ pub(crate) struct App {
     selected_session: Option<Session>,
     session_menu_open: bool,
     wallpaper: wallpaper::State,
+    /// A dynamic HEIC source that waits for the iced renderer backend.
+    ///
+    /// The backend is only known once the window exists, and the pinned
+    /// software backend must never receive a child-decoded frame. The poster is
+    /// displayed until the backend is known.
+    pending_heic: Option<wallpaper::Settings>,
     started_at: Instant,
     now: chrono::DateTime<Local>,
     power_state: PowerState,
@@ -112,6 +118,9 @@ pub(crate) enum Message {
     Tick,
     WallpaperFrameReady,
     WallpaperAllocated(Result<iced_runtime::image::Allocation, iced_runtime::image::Error>),
+    /// The selected iced renderer backend, used to decide whether a dynamic
+    /// HEIC frame may be handed to the renderer at all.
+    RendererInformation(iced::system::Information),
     InputChanged(String),
     Submit,
     Retry,
@@ -203,7 +212,9 @@ impl App {
             sessions,
             selected_session,
             session_menu_open: false,
-            wallpaper: wallpaper::State::start(config.wallpaper),
+            wallpaper: wallpaper::State::start_deferred(&config.wallpaper),
+            pending_heic: wallpaper::selects_dynamic_heic(&config.wallpaper)
+                .then(|| config.wallpaper.clone()),
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
@@ -224,6 +235,17 @@ impl App {
             }
             StartupMode::DiscoverAccounts => discover_accounts(),
             StartupMode::MissingSession => app.focus_first(),
+        };
+        // Ask for the renderer backend only when a dynamic HEIC source is
+        // waiting on it. The poster is displayed until the answer arrives, and
+        // authentication never depends on it.
+        let task = if app.pending_heic.is_some() {
+            Task::batch([
+                task,
+                iced::system::information().map(Message::RendererInformation),
+            ])
+        } else {
+            task
         };
         (app, task)
     }
@@ -280,6 +302,7 @@ impl App {
                     Message::Tick
                     | Message::WallpaperFrameReady
                     | Message::WallpaperAllocated(_)
+                    | Message::RendererInformation(_)
                     | Message::OutputLayoutChanged
                     | Message::AuthResult { .. }
                     | Message::AccountsResult(_)
@@ -305,6 +328,10 @@ impl App {
             Message::WallpaperAllocated(result) => {
                 self.wallpaper.finish_allocation(result);
                 self.prepare_wallpaper_frame()
+            }
+            Message::RendererInformation(information) => {
+                self.apply_renderer_information(&information);
+                Task::none()
             }
             Message::Tick if self.preview => Task::none(),
             Message::Tick => {
@@ -621,6 +648,22 @@ impl App {
             })
     }
 
+    /// Starts or refuses the deferred dynamic HEIC source.
+    ///
+    /// The pinned software backend must never receive a child-decoded frame, so
+    /// the poster stays instead. Nothing here touches authentication, session
+    /// selection, or lock readiness.
+    fn apply_renderer_information(&mut self, information: &iced::system::Information) {
+        let Some(settings) = self.pending_heic.take() else {
+            return;
+        };
+        if wallpaper::renderer_supports_dynamic_heic(&information.graphics_backend) {
+            self.wallpaper.start_heic_source(&settings);
+        } else {
+            wallpaper::report_unusable_heic_renderer(&information.graphics_backend);
+        }
+    }
+
     fn select_account(&mut self, account: Account) -> Task<Message> {
         let replacing_account = !self.username.is_empty();
         self.username = account.username;
@@ -854,6 +897,7 @@ mod tests {
             selected_session: Some(session()),
             session_menu_open: false,
             wallpaper: wallpaper::State::disabled(),
+            pending_heic: None,
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
@@ -869,6 +913,64 @@ mod tests {
 
     fn account(username: &str) -> Account {
         Account::override_account(username.into(), Some(username.to_uppercase()))
+    }
+
+    fn renderer_information(backend: &str) -> iced::system::Information {
+        iced::system::Information {
+            system_name: Some("Linux".into()),
+            system_kernel: None,
+            system_version: None,
+            system_short_version: None,
+            cpu_brand: "test".into(),
+            cpu_cores: Some(1),
+            memory_total: 0,
+            memory_used: None,
+            graphics_backend: backend.into(),
+            graphics_adapter: "test".into(),
+        }
+    }
+
+    fn dynamic_heic_settings() -> wallpaper::Settings {
+        wallpaper::Settings {
+            catalog: wallpaper::Catalog::TahoeBeach,
+            override_path: Some(std::path::PathBuf::from("/tmp/genkan-app-gate.heic")),
+            animate: true,
+            reduced_motion: false,
+            appearance: genkan::dynamic_wallpaper::AppearancePreference::Automatic,
+        }
+    }
+
+    #[test]
+    fn a_software_renderer_never_starts_a_dynamic_heic_source() {
+        let mut app = app();
+        app.pending_heic = Some(dynamic_heic_settings());
+
+        app.apply_renderer_information(&renderer_information("tiny-skia"));
+
+        assert!(app.pending_heic.is_none());
+        assert!(
+            app.wallpaper.decoder_is_stopped(),
+            "the infallible software upload must never receive a decoded frame"
+        );
+    }
+
+    #[test]
+    fn a_hardware_renderer_starts_the_deferred_dynamic_heic_source() {
+        let mut app = app();
+        app.pending_heic = Some(dynamic_heic_settings());
+
+        app.apply_renderer_information(&renderer_information("Vulkan"));
+
+        assert!(app.pending_heic.is_none());
+        assert!(!app.wallpaper.decoder_is_stopped());
+    }
+
+    #[test]
+    fn renderer_information_without_a_deferred_source_is_ignored() {
+        let mut app = app();
+        app.apply_renderer_information(&renderer_information("Vulkan"));
+        assert!(app.pending_heic.is_none());
+        assert!(app.wallpaper.decoder_is_stopped());
     }
 
     #[test]

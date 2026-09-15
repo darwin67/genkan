@@ -1,4 +1,4 @@
-{ genkan }:
+{ genkan, fixture }:
 {
   name = "genkan-session-lock-vm";
 
@@ -90,6 +90,7 @@
 
   testScript = ''
     from datetime import timedelta
+    import shlex
 
     runtime = "/run/user/1000"
     probe_runtime = f"{runtime}/genkan-probe"
@@ -103,6 +104,55 @@
 
     def count(path, pattern):
         return int(machine.succeed(f"grep -Fc '{pattern}' {path} || true"))
+
+    def dump_diagnostics():
+        # A bounded wait must still leave a diagnosis behind: the driver only
+        # logs a command's output when the command fails, and these files are
+        # the only record of why the lock stopped making progress.
+        for path in [
+            "/tmp/observer",
+            "/tmp/lock.log",
+            "/tmp/sway.log",
+            "/tmp/lock.status",
+            "/tmp/client-events",
+        ]:
+            machine.log(f"--- {path} ---")
+            output = machine.succeed(
+                f"tail -n 200 {path} 2>/dev/null || true",
+                timeout=timedelta(seconds=30),
+            )
+            for line in output.splitlines():
+                machine.log(line)
+        machine.log("--- processes ---")
+        output = machine.succeed(
+            "ps -o pid,ppid,stat,etime,args -u alice 2>/dev/null || true",
+            timeout=timedelta(seconds=30),
+        )
+        for line in output.splitlines():
+            machine.log(line)
+        machine.log("--- lock threads ---")
+        output = machine.succeed(
+            "ps -L -o tid,stat,wchan:32,comm -p $(cat /tmp/lock.pid 2>/dev/null) "
+            "2>/dev/null || true",
+            timeout=timedelta(seconds=30),
+        )
+        for line in output.splitlines():
+            machine.log(line)
+
+    def probe_responsiveness():
+        # Separate a dropped key from a lock that stopped reading input. A
+        # modifier cannot corrupt a response and cannot submit one.
+        before = count("/tmp/observer", "KEYBOARD")
+        try:
+            machine.succeed(as_alice("wtype -k Shift_L"), timeout=timedelta(seconds=30))
+            machine.sleep(timedelta(seconds=2))
+        except Exception:
+            machine.log("responsiveness probe: the modifier could not be injected")
+            return
+        machine.log(
+            "responsiveness probe: the lock observed "
+            f"{count('/tmp/observer', 'KEYBOARD') - before} keypress(es) afterwards"
+        )
 
     def client_counts():
         return (
@@ -194,11 +244,79 @@
                 f"test $(grep -Fc 'committed first opaque buffer for output' /tmp/lock.log) -ge {outputs}"
             )
 
-    def send_response(path):
-        machine.succeed(as_alice(f'sh -c "cat {path} | wtype - -s 50 -k Return"'))
+    def observe_keypresses(before, expected, label, timeout):
+        try:
+            machine.wait_until_succeeds(
+                f"test $(grep -Fc KEYBOARD /tmp/observer) -eq {before + expected}",
+                timeout=timeout,
+            )
+        except Exception as error:
+            observed = count("/tmp/observer", "KEYBOARD") - before
+            probe_responsiveness()
+            dump_diagnostics()
+            raise Exception(
+                f"the lock observed {observed} of {expected} injected "
+                f"keypress(es) for {label}"
+            ) from error
 
-    def wait_for_event(event, count=1):
-        machine.wait_until_succeeds(f"test $(grep -Fc {event} /tmp/observer) -ge {count}")
+    def inject_key(command, label):
+        # A timed-out observation is not proof that a key was dropped: replaying
+        # it could duplicate a key that was merely delayed, and a replayed
+        # Return can submit an empty response for the next prompt. Inject once
+        # and report what the lock observed instead.
+        before = count("/tmp/observer", "KEYBOARD")
+        try:
+            machine.succeed(as_alice(command), timeout=timedelta(seconds=30))
+        except Exception as error:
+            probe_responsiveness()
+            dump_diagnostics()
+            raise Exception(f"could not inject {label}") from error
+        observe_keypresses(before, 1, label, timedelta(seconds=15))
+
+    def submit_response():
+        inject_key("wtype -s 50 -k Return", "Return")
+
+    def send_response(path):
+        # Type the response and its Return in one virtual-keyboard session.
+        # Headless Sway loses keys from ephemeral virtual keyboards, and every
+        # session is another chance to lose one, so the response shares a single
+        # session and paces its keys. The lock records every keypress it handles
+        # as KEYBOARD, and the injection is only accepted once the lock observed
+        # exactly one keypress per character and for the Return: a short or long
+        # delivery fails the test with diagnostics instead of being taken for a
+        # submitted response. Return is part of the session, so a partial
+        # response can still reach PAM; what the check rules out is the test
+        # treating that delivery as a valid response.
+        text = machine.succeed(
+            f"cat {shlex.quote(path)}", timeout=timedelta(seconds=30)
+        ).strip()
+        script = f"wtype -d 50 - -s 50 -k Return < {shlex.quote(path)}"
+        before = count("/tmp/observer", "KEYBOARD")
+        try:
+            machine.succeed(
+                as_alice("sh -c " + shlex.quote(script)),
+                timeout=timedelta(seconds=60),
+            )
+        except Exception as error:
+            probe_responsiveness()
+            dump_diagnostics()
+            raise Exception(f"could not inject the response from {path}") from error
+        observe_keypresses(
+            before,
+            len(text) + 1,
+            f"the response from {path}",
+            timedelta(seconds=20),
+        )
+
+    def wait_for_event(event, count=1, timeout=timedelta(seconds=60)):
+        try:
+            machine.wait_until_succeeds(
+                f"test $(grep -Fc {event} /tmp/observer) -ge {count}",
+                timeout=timeout,
+            )
+        except Exception:
+            dump_diagnostics()
+            raise
 
     def wait_for_status(path="/tmp/lock.status"):
         machine.wait_until_succeeds(f"test -f {path} && grep -Eq '^[0-9]+$' {path}")
@@ -302,7 +420,7 @@
         wait_for_event("AUTH_FAILURE")
         machine.succeed("kill -0 $(cat /tmp/lock.pid)")
         assert inject_isolated("failed-auth-isolated") == client_baseline
-        machine.succeed(f"{as_alice('wtype -s 50 -k Return')}")
+        submit_response()
         wait_for_event("AUTH_RETRY")
         wait_for_event("AUTH_PROMPT", 3)
         send_response("/tmp/factor")
@@ -405,6 +523,29 @@
         machine.execute(f"{as_alice('swaylock -f -c 000000')} >/tmp/swaylock.log 2>&1 &")
         machine.sleep(timedelta(seconds=1))
         assert_lock_unavailable()
+
+    with subtest("dynamic HEIC wallpaper locks, authenticates, and unlocks"):
+        stop_sway()
+        start_sway()
+        start_lock(extra="--wallpaper-file ${fixture}")
+        # Prove the dynamic source was adopted rather than falling back.
+        machine.wait_until_succeeds(
+            "grep -F 'dynamic wallpaper frame adopted' /tmp/lock.log"
+        )
+        wait_for_event("AUTH_PROMPT")
+        send_response("/tmp/factor")
+        wait_for_event("AUTH_PROMPT", 2)
+        send_response("/tmp/password")
+        wait_for_event("AUTH_SUCCESS")
+        assert wait_for_status() == 0
+
+        # Relock on the same compositor with the dynamic source.
+        start_lock(extra="--wallpaper-file ${fixture}")
+        machine.wait_until_succeeds(
+            "grep -F 'dynamic wallpaper frame adopted' /tmp/lock.log"
+        )
+        stop_sway()
+        assert wait_for_status() == 1
 
     archive_observer()
     machine.succeed(

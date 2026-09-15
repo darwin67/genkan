@@ -6,21 +6,20 @@ use std::time::{Duration, Instant};
 use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, Mode, PostAction};
 use calloop_wayland_source::WaylandSource;
-use chrono::{Datelike, Local, Offset, Timelike};
 use genkan::dynamic_wallpaper::heic::{Document, RgbaFrame};
 use genkan::dynamic_wallpaper::playback::{
     DecodeOutcome, DecodeRequest, Playback, SynchronizeOutcome,
 };
 use genkan::dynamic_wallpaper::solar;
 use genkan::dynamic_wallpaper::{
-    AppearancePreference, CivilDate, CivilTime, ClockSnapshot, ImageReference, Location, Metadata,
-    TimePoint,
+    AppearancePreference, CivilDate, ClockSnapshot, ImageReference, Location, Metadata, TimePoint,
 };
 
 use crate::geoclue::{self, GeoClueError, GeoLocation};
+use crate::wallpaper::{suspend_clock_offset, SuspendDetector};
 use rustix::time::{
-    clock_gettime, timerfd_create, timerfd_settime, ClockId, Itimerspec, TimerfdClockId,
-    TimerfdFlags, TimerfdTimerFlags, Timespec,
+    timerfd_create, timerfd_settime, Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags,
+    Timespec,
 };
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputInfo, OutputState};
@@ -44,7 +43,6 @@ const BUFFER_COUNT: usize = 2;
 const MAX_BUFFER_BYTES: usize = 256 * 1024 * 1024;
 const MAX_SURFACE_DIMENSION: u32 = 16_384;
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(20);
-const SUSPEND_DETECTION_THRESHOLD: Duration = Duration::from_millis(10);
 const FALLBACK_RGB: [u8; 3] = [5, 9, 24];
 const LOCATION_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCATION_REFRESH: Duration = Duration::from_secs(6 * 60 * 60);
@@ -168,33 +166,6 @@ impl PresentationState {
         self.geometry_redraw = false;
         self.frame_ready = false;
         self.disabled = true;
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct SuspendDetector {
-    offset: Option<Duration>,
-}
-
-impl SuspendDetector {
-    const fn new(offset: Option<Duration>) -> Self {
-        Self { offset }
-    }
-
-    fn observe(&mut self, offset: Duration) -> bool {
-        let Some(previous) = self.offset else {
-            self.offset = Some(offset);
-            return false;
-        };
-        if offset <= previous {
-            return false;
-        }
-        self.offset = Some(offset);
-        offset - previous > SUSPEND_DETECTION_THRESHOLD
-    }
-
-    fn sample(&mut self) -> bool {
-        suspend_clock_offset().is_some_and(|offset| self.observe(offset))
     }
 }
 
@@ -1496,35 +1467,9 @@ fn resume_timer() -> Result<File, Error> {
     Ok(File::from(timer))
 }
 
-fn suspend_clock_offset() -> Option<Duration> {
-    for _ in 0..3 {
-        let before = timespec_duration(clock_gettime(ClockId::Monotonic));
-        let boottime = timespec_duration(clock_gettime(ClockId::Boottime));
-        let after = timespec_duration(clock_gettime(ClockId::Monotonic));
-        let sampling = after.saturating_sub(before);
-        if sampling <= SUSPEND_DETECTION_THRESHOLD {
-            let midpoint = before.checked_add(sampling / 2)?;
-            return Some(boottime.saturating_sub(midpoint));
-        }
-    }
-    None
-}
-
-fn timespec_duration(value: Timespec) -> Duration {
-    Duration::new(value.tv_sec.max(0) as u64, value.tv_nsec.max(0) as u32)
-}
-
 fn current_clock() -> Result<ClockSnapshot, Error> {
-    let now = Local::now();
-    ClockSnapshot::new_with_nanosecond(
-        CivilDate::new(now.year(), now.month() as u8, now.day() as u8)
-            .map_err(|error| Error::Runtime(error.to_string()))?,
-        CivilTime::new(now.hour() as u8, now.minute() as u8, now.second() as u8)
-            .map_err(|error| Error::Runtime(error.to_string()))?,
-        now.nanosecond(),
-        now.offset().fix().local_minus_utc(),
-    )
-    .map_err(|error| Error::Runtime(error.to_string()))
+    crate::wallpaper::current_clock()
+        .ok_or_else(|| Error::Runtime("system clock is unavailable".into()))
 }
 
 /// Maps the file's authored solar points onto the current day's trajectory.
@@ -1586,7 +1531,7 @@ fn render_cover_argb(target: &mut [u8], width: u32, height: u32, frame: Option<&
 mod tests {
     use super::*;
     use genkan::dynamic_wallpaper::{
-        Appearance, AppleProperty, NormalizedTime, PropertyValue, Schedule, TimePoint,
+        Appearance, AppleProperty, CivilTime, NormalizedTime, PropertyValue, Schedule, TimePoint,
     };
 
     fn image(position: usize) -> ImageReference {

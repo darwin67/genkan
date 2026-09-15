@@ -118,7 +118,9 @@ pub(super) fn build(
         sessions,
         selected_session,
         session_menu_open: fixture == Fixture::SessionMenu,
-        wallpaper: wallpaper::State::start(wallpaper_settings),
+        wallpaper: wallpaper::State::start_deferred(&wallpaper_settings),
+        pending_heic: wallpaper::selects_dynamic_heic(&wallpaper_settings)
+            .then(|| wallpaper_settings.clone()),
         started_at: Instant::now(),
         now: preview_now(),
         power_state: PowerState::Idle,
@@ -142,6 +144,16 @@ pub(super) fn build(
         app.blur_input()
     } else {
         app.focus_first()
+    };
+    // A preview of a dynamic HEIC waits for the same renderer-backend answer
+    // the production login path waits for.
+    let task = if app.pending_heic.is_some() {
+        Task::batch([
+            task,
+            iced::system::information().map(super::Message::RendererInformation),
+        ])
+    } else {
+        task
     };
     (app, task)
 }
@@ -310,6 +322,8 @@ mod tests {
                 catalog: wallpaper::Catalog::TahoeBeach,
                 override_path: None,
                 animate: false,
+                reduced_motion: false,
+                appearance: genkan::dynamic_wallpaper::AppearancePreference::Automatic,
             },
             None,
         )
@@ -365,6 +379,8 @@ mod tests {
                 catalog: wallpaper::Catalog::TahoeBeach,
                 override_path: Some(path.clone()),
                 animate: true,
+                reduced_motion: false,
+                appearance: genkan::dynamic_wallpaper::AppearancePreference::Automatic,
             },
             None,
         );

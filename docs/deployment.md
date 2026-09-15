@@ -259,6 +259,40 @@ background when the poster is unavailable. After playback begins, a failure
 retains the last displayed frame instead of briefly replacing it with the
 poster.
 
+`login` and `lock` also accept an absolute local dynamic HEIC through the same
+`--wallpaper-file` option:
+
+```sh
+genkan login --wallpaper-file /home/alice/Pictures/dynamic.heic
+genkan lock --wallpaper-file /home/alice/Pictures/dynamic.heic
+```
+
+A HEIC override uses the same parser, time-of-day scheduler, and RGBA frame path
+as the desktop wallpaper, but never requests location. `--appearance light` or
+`--appearance dark` selects a static appearance image; `automatic` (the default)
+uses a valid `h24` time schedule when present and otherwise falls back to the
+appearance metadata's light image, then the primary image. For a HEIC,
+`--reduce-motion` keeps time-of-day scheduling but disables dissolves, whereas a
+MOV `--reduce-motion` shows the fixed poster. For `login` and `lock`, parsing and
+decoding run in a resource-bounded `genkan heic-worker` child process; a parsed
+or decoded failure, or an allocation abort that can still occur inside a parser,
+base64, `plist`, or libheif dependency, terminates only that worker and retains
+the poster or last valid frame. It cannot affect authentication, lock readiness,
+or unlock. The helper asks the kernel to signal it when the greeter dies
+(`PR_SET_PDEATHSIG`) before it opens the file. While the greeter lives, its
+supervisor thread reaps the helper; after the greeter dies, the helper is
+reparented and its adopter is responsible for reaping it, because a dead
+greeter's supervisor cannot. Termination and reaping are subject to kernel
+scheduling rather than being instantaneous. The relay repeats the decoder's
+per-axis and byte ceilings, so a corrupt or hostile worker cannot make the
+greeter allocate a frame the decoder would have refused. Login additionally
+waits for the iced renderer to report its backend and starts a dynamic HEIC
+source only on iced's wgpu renderer; on the pinned software backend, which
+converts a whole frame with an infallible allocation, the poster is retained
+instead. These are process and protocol limits, not an operating-system memory
+sandbox: a whole-system or cgroup out-of-memory kill, a device failure, or a
+compositor disconnect can still terminate the greeter.
+
 The package installs immutable, hash-pinned wallpaper inputs; runtime playback
 does not access the network. Asset provenance, delivery, integrity, and loop
 behavior are documented in [RFD 2](../rfd/0002/README.adoc).
