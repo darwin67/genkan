@@ -14,7 +14,7 @@ use smithay_client_toolkit::presentation_time::{
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::registry_handlers;
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+    KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers, RawModifiers,
 };
 #[cfg(feature = "lock-test")]
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerHandler};
@@ -1369,7 +1369,12 @@ impl SeatHandler for Runtime {
             && !self.keyboards.iter().any(|(known, _)| known == &seat)
         {
             match self.seat_state.get_keyboard(qh, &seat, None) {
-                Ok(keyboard) => self.keyboards.push((seat.clone(), keyboard)),
+                Ok(keyboard) => {
+                    #[cfg(feature = "lock-test")]
+                    self.test_observer
+                        .record(TestEvent::KeyboardAcquired(keyboard.id().protocol_id()));
+                    self.keyboards.push((seat.clone(), keyboard));
+                }
                 Err(error) => self.fail(Error::Runtime(format!(
                     "could not acquire lock keyboard: {error}"
                 ))),
@@ -1402,6 +1407,9 @@ impl SeatHandler for Runtime {
                     retained.push((known, keyboard));
                     continue;
                 }
+                #[cfg(feature = "lock-test")]
+                self.test_observer
+                    .record(TestEvent::KeyboardReleased(keyboard.id().protocol_id()));
                 keyboard.release();
             }
             self.keyboards = retained;
@@ -1429,21 +1437,27 @@ impl KeyboardHandler for Runtime {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _keyboard: &wl_keyboard::WlKeyboard,
         _: &wl_surface::WlSurface,
         _: u32,
         _: &[u32],
         _: &[Keysym],
     ) {
+        #[cfg(feature = "lock-test")]
+        self.test_observer
+            .record(TestEvent::KeyboardEnter(_keyboard.id().protocol_id()));
     }
     fn leave(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        _keyboard: &wl_keyboard::WlKeyboard,
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
+        #[cfg(feature = "lock-test")]
+        self.test_observer
+            .record(TestEvent::KeyboardLeave(_keyboard.id().protocol_id()));
     }
     fn press_key(
         &mut self,
@@ -1484,6 +1498,21 @@ impl KeyboardHandler for Runtime {
         _: RawModifiers,
         _: u32,
     ) {
+    }
+    fn update_keymap(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _: Keymap<'_>,
+    ) {
+        // SCTK only calls this after it compiled a usable xkb state for the
+        // keyboard. A resource that is acquired but never keymapped silently
+        // drops every key event, so the fixture needs this to tell the two
+        // apart.
+        #[cfg(feature = "lock-test")]
+        self.test_observer
+            .record(TestEvent::KeyboardKeymap(_keyboard.id().protocol_id()));
     }
 }
 
@@ -2166,6 +2195,16 @@ enum TestEvent {
     Keyboard,
     Pointer,
     Geometry,
+    /// Wayland keyboard lifecycle, correlated by the keyboard object's
+    /// protocol id. The fixture uses these to attribute a keypress that never
+    /// arrived to a specific keyboard resource, and to tell a resource that
+    /// was never keymapped from one that was. They are fixed, non-secret
+    /// names: only the object id varies.
+    KeyboardAcquired(u32),
+    KeyboardKeymap(u32),
+    KeyboardEnter(u32),
+    KeyboardLeave(u32),
+    KeyboardReleased(u32),
 }
 
 #[cfg(feature = "lock-test")]
@@ -2175,20 +2214,25 @@ impl TestObserver {
     }
 
     fn record(&mut self, event: TestEvent) {
-        if let Some(output) = self.0.as_mut() {
-            let event = match event {
-                TestEvent::Locked => "LOCKED",
-                TestEvent::Finished => "FINISHED",
-                TestEvent::Failed => "FAILED",
-                TestEvent::OutputAdded => "OUTPUT_ADDED",
-                TestEvent::OutputRemoved => "OUTPUT_REMOVED",
-                TestEvent::Keyboard => "KEYBOARD",
-                TestEvent::Pointer => "POINTER",
-                TestEvent::Geometry => "GEOMETRY",
-            };
-            let _ = writeln!(output, "{event}");
-            let _ = output.flush();
-        }
+        let Some(output) = self.0.as_mut() else {
+            return;
+        };
+        let _ = match event {
+            TestEvent::Locked => writeln!(output, "LOCKED"),
+            TestEvent::Finished => writeln!(output, "FINISHED"),
+            TestEvent::Failed => writeln!(output, "FAILED"),
+            TestEvent::OutputAdded => writeln!(output, "OUTPUT_ADDED"),
+            TestEvent::OutputRemoved => writeln!(output, "OUTPUT_REMOVED"),
+            TestEvent::Keyboard => writeln!(output, "KEYBOARD"),
+            TestEvent::Pointer => writeln!(output, "POINTER"),
+            TestEvent::Geometry => writeln!(output, "GEOMETRY"),
+            TestEvent::KeyboardAcquired(id) => writeln!(output, "KBD_ACQUIRED {id}"),
+            TestEvent::KeyboardKeymap(id) => writeln!(output, "KBD_KEYMAP {id}"),
+            TestEvent::KeyboardEnter(id) => writeln!(output, "KBD_ENTER {id}"),
+            TestEvent::KeyboardLeave(id) => writeln!(output, "KBD_LEAVE {id}"),
+            TestEvent::KeyboardReleased(id) => writeln!(output, "KBD_RELEASED {id}"),
+        };
+        let _ = output.flush();
     }
 }
 
@@ -2881,6 +2925,11 @@ mod tests {
             TestEvent::Keyboard,
             TestEvent::Pointer,
             TestEvent::Geometry,
+            TestEvent::KeyboardAcquired(11),
+            TestEvent::KeyboardKeymap(11),
+            TestEvent::KeyboardEnter(11),
+            TestEvent::KeyboardLeave(11),
+            TestEvent::KeyboardReleased(11),
         ] {
             observer.record(event);
         }
@@ -2890,7 +2939,8 @@ mod tests {
         reader.read_to_string(&mut events).unwrap();
         assert_eq!(
             events,
-            "LOCKED\nFINISHED\nFAILED\nOUTPUT_ADDED\nOUTPUT_REMOVED\nKEYBOARD\nPOINTER\nGEOMETRY\n"
+            "LOCKED\nFINISHED\nFAILED\nOUTPUT_ADDED\nOUTPUT_REMOVED\nKEYBOARD\nPOINTER\nGEOMETRY\n\
+             KBD_ACQUIRED 11\nKBD_KEYMAP 11\nKBD_ENTER 11\nKBD_LEAVE 11\nKBD_RELEASED 11\n"
         );
     }
 
