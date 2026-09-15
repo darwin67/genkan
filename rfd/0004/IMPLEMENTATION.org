@@ -140,7 +140,9 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
   separate while sharing only parser, scheduler, decoder, and frame types. The
   login/lock source drives ~Document~, ~Playback~, and the HEIC ~RgbaFrame~
   inside a resource-bounded ~heic-worker~ child process that relays frames over
-  a pipe; the desktop keeps its own layer-shell runtime.
+  a pipe; a dedicated supervisor thread owns the worker's spawn, reads,
+  termination, and reap so no blocking process operation runs on the
+  lock-owning thread; the desktop keeps its own layer-shell runtime.
 - [X] Preserve the greeter's authentication-region dimming and leave the desktop
   wallpaper unobstructed. The HEIC source only replaces the background frame;
   the dimming overlay and desktop runtime are unchanged.
@@ -149,7 +151,14 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
   failed-authentication recovery, or unlock authority. The parser and decoder
   run below a process boundary, so an infallible allocation abort or crash in
   quick-xml, base64, ~plist~, or libheif is contained in the child; the relay
-  reports a bounded failure that keeps the poster or last frame.
+  repeats the decoder's per-axis and byte ceilings, the helper asks for a
+  parent-death signal with ~PR_SET_PDEATHSIG~ before opening the file (the
+  greeter's supervisor reaps it while the greeter lives; after greeter death the
+  adopter of the reparented helper reaps it), and login
+  starts the source only on iced's wgpu renderer (the software backend keeps the
+  poster). A refused backend or a worker failure reports a bounded decorative
+  failure that keeps the poster or last frame. These are process and protocol
+  limits, not an operating-system memory sandbox.
 - [X] Preserve RFD 3's fatal handling for mandatory lock-surface, configure,
   buffer, and renderer failures: abort without issuing ~unlock_and_destroy~.
 - [X] Verify that login and lock make no GeoClue request and that reduced-motion

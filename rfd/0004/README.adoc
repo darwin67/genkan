@@ -359,6 +359,16 @@ the last valid content or selects the static fallback. It must not terminate a
 login or lock screen, release a session lock, affect PAM, or prevent greetd from
 starting a selected session.
 
+The parser, scheduler, decoder, and relay limits described above are process and
+protocol limits, not an operating-system memory sandbox. A whole-system or
+cgroup out-of-memory kill, a device or driver failure, or a compositor
+disconnect can still terminate the greeter, the locker, or the desktop command,
+and the worker boundary does not contain those. The worker boundary contains an
+allocation abort, panic, or crash inside the parser, the property-list and
+Base64 decoders, or libheif, and the parent-side renderer contract additionally
+keeps a child-decoded frame away from a renderer backend whose whole-frame
+upload is not fallible.
+
 This recoverability does not weaken RFD 3. Failure of a mandatory lock surface,
 its compositor configure lifecycle, a required lock buffer, or the lock
 renderer remains a fatal availability failure. The locker aborts without
@@ -375,12 +385,18 @@ and lock consumers. Diagnostics are bounded, single-line, and exclude
 user-controlled metadata contents.
 
 HEIF parsing occurs in a worker isolated from interaction and Wayland dispatch.
-For login and lock it is a resource-bounded helper process, so an allocation
-abort or crash in the parser or decoder terminates only the worker and surfaces
-as a bounded decorative failure. Frame and notification queues are bounded.
-Decoder retries and GeoClue retries use bounded delays and cannot create a busy
-loop. Wallpaper metadata never becomes a command, path, desktop identifier,
-D-Bus destination, log format, or shell input.
+For login and lock it is a resource-bounded helper process that binds its
+lifetime to the greeter before it opens the file, so an allocation abort or
+crash in the parser or decoder terminates only the worker and surfaces as a
+bounded decorative failure, and a greeter killed without unwinding cannot leave
+a decoder behind it. The relay repeats the decoder's per-axis and byte ceilings.
+Login starts a dynamic HEIC source only after the iced renderer reports its
+backend, and only on iced's wgpu renderer; the pinned software backend converts
+a whole frame with an infallible allocation, so login retains the poster there
+instead. Frame and notification queues are bounded. Decoder retries and
+GeoClue retries use bounded delays and cannot create a busy loop. Wallpaper
+metadata never becomes a command, path, desktop identifier, D-Bus destination,
+log format, or shell input.
 
 == Verification
 

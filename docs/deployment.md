@@ -278,7 +278,20 @@ decoding run in a resource-bounded `genkan heic-worker` child process; a parsed
 or decoded failure, or an allocation abort that can still occur inside a parser,
 base64, `plist`, or libheif dependency, terminates only that worker and retains
 the poster or last valid frame. It cannot affect authentication, lock readiness,
-or unlock.
+or unlock. The helper asks the kernel to signal it when the greeter dies
+(`PR_SET_PDEATHSIG`) before it opens the file. While the greeter lives, its
+supervisor thread reaps the helper; after the greeter dies, the helper is
+reparented and its adopter is responsible for reaping it, because a dead
+greeter's supervisor cannot. Termination and reaping are subject to kernel
+scheduling rather than being instantaneous. The relay repeats the decoder's
+per-axis and byte ceilings, so a corrupt or hostile worker cannot make the
+greeter allocate a frame the decoder would have refused. Login additionally
+waits for the iced renderer to report its backend and starts a dynamic HEIC
+source only on iced's wgpu renderer; on the pinned software backend, which
+converts a whole frame with an infallible allocation, the poster is retained
+instead. These are process and protocol limits, not an operating-system memory
+sandbox: a whole-system or cgroup out-of-memory kill, a device failure, or a
+compositor disconnect can still terminate the greeter.
 
 The package installs immutable, hash-pinned wallpaper inputs; runtime playback
 does not access the network. Asset provenance, delivery, integrity, and loop
