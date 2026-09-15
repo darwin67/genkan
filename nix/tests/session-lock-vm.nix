@@ -114,17 +114,37 @@
             "/tmp/lock.log",
             "/tmp/sway.log",
             "/tmp/lock.status",
+            "/tmp/client-events",
         ]:
             machine.log(f"--- {path} ---")
-            output = machine.succeed(f"tail -n 200 {path} 2>/dev/null || true")
+            output = machine.succeed(
+                f"tail -n 200 {path} 2>/dev/null || true",
+                timeout=timedelta(seconds=30),
+            )
             for line in output.splitlines():
                 machine.log(line)
         machine.log("--- processes ---")
         output = machine.succeed(
-            "ps -o pid,ppid,stat,etime,args -u alice 2>/dev/null || true"
+            "ps -o pid,ppid,stat,etime,args -u alice 2>/dev/null || true",
+            timeout=timedelta(seconds=30),
         )
         for line in output.splitlines():
             machine.log(line)
+
+    def probe_responsiveness():
+        # Separate a dropped key from a lock that stopped reading input. A
+        # modifier cannot corrupt a response and cannot submit one.
+        before = count("/tmp/observer", "KEYBOARD")
+        try:
+            machine.succeed(as_alice("wtype -k Shift_L"), timeout=timedelta(seconds=30))
+            machine.sleep(timedelta(seconds=2))
+        except Exception:
+            machine.log("responsiveness probe: the modifier could not be injected")
+            return
+        machine.log(
+            "responsiveness probe: the lock observed "
+            f"{count('/tmp/observer', 'KEYBOARD') - before} keypress(es) afterwards"
+        )
 
     def client_counts():
         return (
@@ -216,36 +236,36 @@
                 f"test $(grep -Fc 'committed first opaque buffer for output' /tmp/lock.log) -ge {outputs}"
             )
 
-    def inject_verified(command, label):
+    def inject_key(command, label):
         # Ephemeral virtual keyboards are occasionally dropped by headless
-        # Sway, so resend the command until the lock has observed a keypress.
-        # A response that is only partly delivered silently corrupts the
-        # attempt, and the conversation then waits forever for a result.
-        for _ in range(10):
-            before = count("/tmp/observer", "KEYBOARD")
-            machine.succeed(as_alice(command))
-            try:
-                machine.wait_until_succeeds(
-                    f"test $(grep -Fc KEYBOARD /tmp/observer) -gt {before}",
-                    timeout=timedelta(seconds=5),
-                )
-                return
-            except Exception:
-                machine.log(f"retrying {label}: the lock has not observed the keypress")
-                continue
-        dump_diagnostics()
-        raise Exception(f"the lock never observed injected {label}")
+        # Sway, so confirm that the lock observed each keypress. A response that
+        # is only partly delivered corrupts the attempt, and the test then waits
+        # for an authentication result that cannot arrive.
+        #
+        # Every key is injected once. Resending one could duplicate a key that
+        # was merely delayed, and a resent Return could submit an empty response
+        # for the next prompt, so a keypress the lock never observed fails the
+        # test with diagnostics instead of being replayed.
+        before = count("/tmp/observer", "KEYBOARD")
+        try:
+            machine.succeed(as_alice(command), timeout=timedelta(seconds=30))
+            machine.wait_until_succeeds(
+                f"test $(grep -Fc KEYBOARD /tmp/observer) -gt {before}",
+                timeout=timedelta(seconds=15),
+            )
+        except Exception as error:
+            probe_responsiveness()
+            dump_diagnostics()
+            raise Exception(f"the lock never observed injected {label}") from error
 
     def submit_response():
-        inject_verified("wtype -s 50 -k Return", "Return")
+        inject_key("wtype -s 50 -k Return", "Return")
 
     def send_response(path):
-        text = machine.succeed(f"cat {path}").strip()
+        text = machine.succeed(f"cat {path}", timeout=timedelta(seconds=30)).strip()
         for character in text:
-            inject_verified(
-                f'sh -c "printf %s {shlex.quote(character)} | wtype -"',
-                f"character {character!r}",
-            )
+            script = f"printf %s {shlex.quote(character)} | wtype -"
+            inject_key("sh -c " + shlex.quote(script), f"character {character!r}")
         submit_response()
 
     def wait_for_event(event, count=1, timeout=timedelta(seconds=60)):
