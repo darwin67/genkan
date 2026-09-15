@@ -140,6 +140,52 @@ pub(crate) fn is_heic_path(path: &Path) -> bool {
         })
 }
 
+/// Whether these settings select an animated dynamic HEIC source.
+pub(crate) fn selects_dynamic_heic(settings: &Settings) -> bool {
+    settings.animate && settings.heic_path().is_some()
+}
+
+/// Whether an iced renderer backend may be given a child-decoded HEIC frame.
+///
+/// The iced renderer is chosen at runtime. The pinned `iced_tiny_skia` software
+/// backend converts a whole frame with `vec![0u32; width * height]` on the
+/// renderer thread, which aborts the greeter when that allocation fails, and
+/// there is no supported iced 0.14 API for supplying or bounding its private
+/// converted buffer. Login therefore keeps the poster instead of handing a
+/// child-decoded frame to that backend. This predicate is a denylist over the
+/// pinned renderer set, not a general capability probe: re-audit it when iced
+/// is upgraded. It says nothing about device-side or operating-system
+/// allocation behaviour, which the worker boundary does not contain.
+pub(crate) fn renderer_supports_dynamic_heic(backend: &str) -> bool {
+    match backend {
+        // The pinned software backend converts a whole frame with an
+        // infallible allocation, and the null renderer never draws.
+        "tiny-skia" | "Null" => false,
+        // An unreported backend is treated as unsafe: the greeter keeps the
+        // poster instead of risking an abort it cannot recover from.
+        "" => false,
+        _ => true,
+    }
+}
+
+/// Reports that the selected renderer cannot display a dynamic HEIC.
+///
+/// This runs on the iced event loop, where a slow or blocked stderr write would
+/// stall authentication input and close handling, so the write happens on a
+/// detached thread. If that thread cannot start, the message is dropped.
+pub(crate) fn report_unusable_heic_renderer(backend: &str) {
+    report_async(format!(
+        "dynamic wallpaper is unavailable on the {backend} renderer; retaining the poster"
+    ));
+}
+
+/// Emits a diagnostic without blocking the caller.
+fn report_async(message: String) {
+    let _ = thread::Builder::new()
+        .name("wallpaper-diagnostic".into())
+        .spawn(move || diagnostic(&message));
+}
+
 #[derive(Debug)]
 pub(crate) struct State {
     player: Option<Player>,
@@ -212,6 +258,42 @@ impl State {
                 diagnostic(&error);
                 Self::poster_only(poster)
             }
+        }
+    }
+
+    /// Starts the poster and any packaged playback while leaving a dynamic HEIC
+    /// source for [`State::start_heic_source`].
+    ///
+    /// Login uses this because the iced renderer backend is only known once the
+    /// window exists, and the pinned software backend must never receive a
+    /// child-decoded frame: its whole-frame conversion is an infallible
+    /// allocation that can abort the greeter. The poster is displayed while the
+    /// backend is unknown, and stays if the backend cannot meet the contract.
+    /// Lock and desktop start their own renderers and use [`State::start`]
+    /// directly.
+    pub(crate) fn start_deferred(settings: &Settings) -> Self {
+        if !selects_dynamic_heic(settings) {
+            return Self::start(settings.clone());
+        }
+        let poster = load_poster(settings.catalog)
+            .map_err(|error| diagnostic(&error))
+            .ok();
+        Self::poster_only(poster)
+    }
+
+    /// Starts a dynamic HEIC source that [`State::start_deferred`] held back,
+    /// retaining the displayed poster until the first decoded frame arrives.
+    pub(crate) fn start_heic_source(&mut self, settings: &Settings) {
+        if self.heic.is_some() || self.player.is_some() || !selects_dynamic_heic(settings) {
+            return;
+        }
+        let Some(path) = settings.heic_path().map(Path::to_owned) else {
+            return;
+        };
+        match HeicPlayer::start(&path, settings.appearance, settings.reduced_motion) {
+            Ok(heic) => self.heic = Some(heic),
+            // This runs on the iced event loop; see `report_async`.
+            Err(error) => report_async(error),
         }
     }
 
@@ -2173,6 +2255,67 @@ mod tests {
         assert!(is_heic_path(Path::new("/tmp/wallpaper.HEIF")));
         assert!(!is_heic_path(Path::new("/tmp/wallpaper.mov")));
         assert!(!is_heic_path(Path::new("/tmp/wallpaper")));
+    }
+
+    #[test]
+    fn only_wgpu_renderer_backends_may_receive_a_whole_frame() {
+        // The pinned software backend converts a whole frame with an
+        // infallible allocation, and the null renderer never draws.
+        assert!(!renderer_supports_dynamic_heic("tiny-skia"));
+        assert!(!renderer_supports_dynamic_heic("Null"));
+        assert!(!renderer_supports_dynamic_heic(""));
+        // The wgpu backends, including software Vulkan implementations such as
+        // lavapipe, do not make the whole-frame CPU conversion.
+        for backend in ["Vulkan", "Metal", "Dx12", "Gl", "BrowserWebGpu"] {
+            assert!(
+                renderer_supports_dynamic_heic(backend),
+                "{backend} must be usable"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dynamic_heic_source_is_deferred_until_the_backend_is_known() {
+        let settings = heic_settings(Some(heic_fixture()), true, false);
+        assert!(selects_dynamic_heic(&settings));
+
+        let mut state = State::start_deferred(&settings);
+        // The poster is displayed while the renderer backend is unknown, and
+        // no decoder has been started.
+        assert!(state.has_frame());
+        assert!(state.decoder_is_stopped());
+
+        state.start_heic_source(&settings);
+        assert_eq!(wait_for_heic(&mut state), Refresh::Frame);
+        assert!(!state.decoder_is_stopped());
+    }
+
+    #[test]
+    fn a_deferred_source_is_not_started_for_non_heic_settings() {
+        let mov = heic_settings(None, false, false);
+        assert!(!selects_dynamic_heic(&mov));
+        let mut state = State::start_deferred(&mov);
+        state.start_heic_source(&mov);
+        assert!(state.decoder_is_stopped());
+
+        // A static HEIC has no dynamic source to defer either.
+        let static_heic = heic_settings(Some(heic_fixture()), false, false);
+        assert!(!selects_dynamic_heic(&static_heic));
+    }
+
+    #[test]
+    fn a_started_heic_source_is_not_restarted() {
+        let settings = heic_settings(Some(heic_fixture()), true, true);
+        let mut state = State::start_deferred(&settings);
+        state.start_heic_source(&settings);
+        assert_eq!(wait_for_heic(&mut state), Refresh::Frame);
+        let started = Arc::as_ptr(&state.heic.as_ref().expect("heic source").shared);
+        // A second start must not replace the running source.
+        state.start_heic_source(&settings);
+        assert_eq!(
+            Arc::as_ptr(&state.heic.as_ref().expect("heic source").shared),
+            started
+        );
     }
 
     #[test]
