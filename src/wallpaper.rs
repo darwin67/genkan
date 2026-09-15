@@ -801,11 +801,26 @@ fn worker_command(
         .arg("--file")
         .arg(path)
         .arg("--appearance")
-        .arg(appearance_argument(appearance));
+        .arg(appearance_argument(appearance))
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string());
     if reduced_motion {
         command.arg("--reduce-motion");
     }
     command
+}
+
+/// Binds the helper to the greeter that spawned it.
+///
+/// `PR_SET_PDEATHSIG` covers termination after the request, and the `getppid`
+/// check closes the window where the parent died before `prctl` ran. A helper
+/// whose greeter is already gone must not open, parse, or decode the file.
+fn bind_to_parent(expected_parent: i32) -> bool {
+    // SAFETY: `PR_SET_PDEATHSIG` changes only this process, and `getppid` has
+    // no preconditions.
+    let requested = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
+    let parent = unsafe { libc::getppid() };
+    requested == 0 && parent == expected_parent
 }
 
 /// The CLI name of an appearance preference, matching `WallpaperAppearance`.
@@ -1099,8 +1114,18 @@ fn write_heic_frame<W: Write>(writer: &mut W, frame: &HeicFrame) -> std::io::Res
 /// This is the only supported entry point for untrusted dynamic wallpapers in
 /// login and lock. Running it in a child process keeps an allocation abort or
 /// crash in quick-xml, base64, `plist`, or libheif from terminating the
-/// lock-owning process.
-pub(crate) fn run_heic_worker(path: &Path, appearance: AppearancePreference, reduced_motion: bool) {
+/// lock-owning process. The helper binds its own lifetime to `parent_pid`
+/// before touching the file, so a greeter killed without unwinding cannot leave
+/// a decoder polling forever.
+pub(crate) fn run_heic_worker(
+    path: &Path,
+    appearance: AppearancePreference,
+    reduced_motion: bool,
+    parent_pid: i32,
+) {
+    if !bind_to_parent(parent_pid) {
+        return;
+    }
     let started = Instant::now();
     let time_source: Box<HeicTime> = Box::new(move || (current_clock(), started.elapsed()));
     let mut sink = ProcessSink {
@@ -3000,7 +3025,7 @@ mod tests {
     }
 
     #[test]
-    fn heic_worker_command_forwards_file_appearance_and_motion() {
+    fn heic_worker_command_forwards_file_appearance_motion_and_parent() {
         let command = worker_command(
             Path::new("/usr/bin/genkan"),
             Path::new("/home/alice/wallpaper.heic"),
@@ -3012,16 +3037,33 @@ mod tests {
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
+        let mut expected = vec![
+            "heic-worker".to_owned(),
+            "--file".to_owned(),
+            "/home/alice/wallpaper.heic".to_owned(),
+            "--appearance".to_owned(),
+            "dark".to_owned(),
+            "--parent-pid".to_owned(),
+            std::process::id().to_string(),
+            "--reduce-motion".to_owned(),
+        ];
+        assert_eq!(arguments, expected);
+
+        // The parent binding is required, not optional: a helper that cannot
+        // bind its lifetime to the greeter must not run.
+        expected.retain(|argument| argument != "--reduce-motion");
+        let without_motion = worker_command(
+            Path::new("/usr/bin/genkan"),
+            Path::new("/home/alice/wallpaper.heic"),
+            AppearancePreference::Dark,
+            false,
+        );
         assert_eq!(
-            arguments,
-            [
-                "heic-worker",
-                "--file",
-                "/home/alice/wallpaper.heic",
-                "--appearance",
-                "dark",
-                "--reduce-motion"
-            ]
+            without_motion
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            expected
         );
     }
 

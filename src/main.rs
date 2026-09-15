@@ -55,6 +55,9 @@ struct HeicWorkerArguments {
     /// Disable dissolves while retaining time-of-day frame changes.
     #[arg(long)]
     reduce_motion: bool,
+    /// The greeter process this worker must not outlive.
+    #[arg(long, value_parser = clap::value_parser!(i32).range(2..))]
+    parent_pid: i32,
 }
 
 #[derive(Debug, Args)]
@@ -316,6 +319,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             &arguments.file,
             appearance_preference(arguments.appearance),
             arguments.reduce_motion,
+            arguments.parent_pid,
         ),
     }
     Ok(())
