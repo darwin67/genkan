@@ -381,6 +381,14 @@ mod tests {
         path
     }
 
+    fn temp_path(label: &str) -> PathBuf {
+        let id = SCRIPT_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "genkan-lock-auth-{label}-{}-{id}",
+            std::process::id()
+        ))
+    }
+
     fn shell_bytes(bytes: &[u8]) -> String {
         bytes.iter().map(|byte| format!("\\{:03o}", byte)).collect()
     }
@@ -394,6 +402,49 @@ mod tests {
         let pid = child.id() as libc::pid_t;
         std::mem::forget(child);
         pid
+    }
+
+    /// Removes test artifacts even when an assertion unwinds.
+    struct Artifacts(Vec<PathBuf>);
+
+    impl Drop for Artifacts {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
+    /// Waits for a worker to publish a descendant PID to `path`.
+    ///
+    /// `echo $! > file` truncates the marker before writing, so an existence
+    /// check can observe an empty file. Read the contents instead, and require
+    /// the trailing newline that `echo` writes so a partially written PID is
+    /// never accepted. The wait is bounded so a worker that never publishes a
+    /// complete PID still fails the test.
+    fn wait_for_pid_file(path: &Path) -> libc::pid_t {
+        wait_for_pid_file_within(path, std::time::Duration::from_secs(10))
+    }
+
+    fn wait_for_pid_file_within(path: &Path, timeout: std::time::Duration) -> libc::pid_t {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Ok(contents) = fs::read_to_string(path) {
+                let published = contents
+                    .strip_suffix('\n')
+                    .and_then(|line| line.trim().parse::<libc::pid_t>().ok())
+                    .filter(|pid| *pid > 1);
+                if let Some(pid) = published {
+                    return pid;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out after {timeout:?} waiting for a valid descendant pid in {}",
+                path.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     fn terminal_event(exit_status: i32) -> Event {
@@ -467,15 +518,15 @@ mod tests {
     #[test]
     fn process_level_cancellation_is_idempotent_without_worker_cooperation() {
         let _guard = PROCESS_TEST_LOCK.lock().unwrap();
-        let marker = std::env::temp_dir().join(format!(
-            "genkan-lock-auth-descendant-{}-{}",
-            std::process::id(),
-            SCRIPT_ID.fetch_add(1, Ordering::Relaxed)
-        ));
+        let marker = temp_path("descendant");
+        // A leftover marker from an earlier run must not be mistaken for this
+        // worker's publication.
+        let _ = fs::remove_file(&marker);
         let worker = script(&format!(
             "sleep 10 & echo $! > '{}'\ntrap '' TERM\nwhile :; do :; done",
             marker.display()
         ));
+        let _artifacts = Artifacts(vec![marker.clone(), worker.clone()]);
         let (parent, child) = UnixStream::pair().unwrap();
         let (pid, pidfd) = spawn_worker(&worker, child.as_raw_fd()).unwrap();
         drop(child);
@@ -488,13 +539,7 @@ mod tests {
             pidfd,
             reader: Some(reader),
         };
-        for _ in 0..100 {
-            if marker.is_file() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        let descendant: libc::pid_t = fs::read_to_string(&marker).unwrap().trim().parse().unwrap();
+        let descendant = wait_for_pid_file(&marker);
 
         let started = std::time::Instant::now();
         client.cancel();
@@ -508,8 +553,60 @@ mod tests {
         );
         // SAFETY: terminate the intentionally leaked fake-worker descendant.
         unsafe { libc::kill(descendant, libc::SIGKILL) };
-        fs::remove_file(marker).unwrap();
-        fs::remove_file(worker).unwrap();
+    }
+
+    #[test]
+    fn pid_marker_wait_accepts_a_complete_marker() {
+        let marker = temp_path("marker-complete");
+        fs::write(&marker, b"424243\n").unwrap();
+        let _artifacts = Artifacts(vec![marker.clone()]);
+
+        assert_eq!(
+            wait_for_pid_file_within(&marker, std::time::Duration::ZERO),
+            424243
+        );
+    }
+
+    #[test]
+    fn pid_marker_wait_survives_the_truncate_before_write_window() {
+        let marker = temp_path("marker-truncated");
+        // `echo $! > file` truncates before writing, so the marker exists but
+        // is empty for a window; the wait must keep polling instead of parsing.
+        fs::write(&marker, b"").unwrap();
+        let _artifacts = Artifacts(vec![marker.clone()]);
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                fs::write(&marker, format!("{}\n", std::process::id())).unwrap();
+            });
+
+            assert_eq!(
+                wait_for_pid_file(&marker),
+                std::process::id() as libc::pid_t
+            );
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "timed out after")]
+    fn pid_marker_wait_rejects_an_empty_marker() {
+        let marker = temp_path("marker-empty");
+        fs::write(&marker, b"").unwrap();
+        let _artifacts = Artifacts(vec![marker.clone()]);
+
+        let _ = wait_for_pid_file_within(&marker, std::time::Duration::ZERO);
+    }
+
+    #[test]
+    #[should_panic(expected = "timed out after")]
+    fn pid_marker_wait_rejects_an_unterminated_marker() {
+        let marker = temp_path("marker-unterminated");
+        // A numeric prefix must not be mistaken for a complete PID.
+        fs::write(&marker, b"424242").unwrap();
+        let _artifacts = Artifacts(vec![marker.clone()]);
+
+        let _ = wait_for_pid_file_within(&marker, std::time::Duration::ZERO);
     }
 
     #[test]
