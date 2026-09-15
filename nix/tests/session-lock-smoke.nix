@@ -437,7 +437,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
       exit 1
     fi
     grep -Fxq OUTPUT_REMOVED "$observer"
-    if grep -Ev '^(LOCKED|FAILED|FINISHED|OUTPUT_ADDED|OUTPUT_REMOVED|GEOMETRY|KEYBOARD|POINTER|AUTH_PROMPT|AUTH_RETRY|AUTH_SUCCESS|AUTH_FAILURE)$' "$observer"; then
+    if grep -Ev '^(LOCKED|FAILED|FINISHED|OUTPUT_ADDED|OUTPUT_REMOVED|GEOMETRY|KEYBOARD|POINTER|KBD_ACQUIRED [0-9]+|KBD_KEYMAP [0-9]+|KBD_ENTER [0-9]+|KBD_LEAVE [0-9]+|KBD_RELEASED [0-9]+|AUTH_PROMPT|AUTH_RETRY|AUTH_SUCCESS|AUTH_FAILURE)$' "$observer"; then
       echo "observer emitted data outside its fixed non-secret vocabulary" >&2
       cat "$observer" >&2
       exit 1

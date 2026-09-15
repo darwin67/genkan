@@ -94,6 +94,7 @@
 
     runtime = "/run/user/1000"
     probe_runtime = f"{runtime}/genkan-probe"
+    anchor_fifo = "/tmp/genkan-keyboard-anchor"
     display = f"$(basename $(find {runtime} -maxdepth 1 -type s -name 'wayland-*' | head -1))"
     ipc = f"$(find {runtime} -maxdepth 1 -type s -name 'sway-ipc.*.sock' | head -1)"
     environment = f"XDG_RUNTIME_DIR={runtime} WAYLAND_DISPLAY={display} SWAYSOCK={ipc}"
@@ -123,6 +124,16 @@
             )
             for line in output.splitlines():
                 machine.log(line)
+        # The keyboard lifecycle is short enough to dump whole, and correlating
+        # it by object id is what attributes a lost keypress to a keyboard
+        # resource that was never keymapped.
+        machine.log("--- keyboard lifecycle ---")
+        output = machine.succeed(
+            "grep -E '^KBD_' /tmp/observer 2>/dev/null || true",
+            timeout=timedelta(seconds=30),
+        )
+        for line in output.splitlines():
+            machine.log(line)
         machine.log("--- processes ---")
         output = machine.succeed(
             "ps -o pid,ppid,stat,etime,args -u alice 2>/dev/null || true",
@@ -199,6 +210,96 @@
     def archive_observer(path="/tmp/observer"):
         machine.succeed(f"test ! -f {path} || (cat {path} >>/tmp/all-observer && rm -f {path})")
 
+    def keyboard_orphans(trace):
+        # A wl_keyboard resource the lock acquired but never keymapped silently
+        # drops every key event, so a lost keypress is attributed to one of
+        # these. Wayland reuses an object id once the resource is destroyed, so
+        # the trace has to be walked in order and the keymap state reset on
+        # every acquisition instead of comparing ids as sets.
+        orphaned = []
+        acquired = set()
+        keymapped = set()
+        for line in trace:
+            kind, _, identifier = line.partition(" ")
+            if kind == "KBD_ACQUIRED":
+                acquired.add(identifier)
+                keymapped.discard(identifier)
+            elif kind == "KBD_KEYMAP":
+                keymapped.add(identifier)
+            elif kind == "KBD_RELEASED":
+                if identifier in acquired and identifier not in keymapped:
+                    orphaned.append(identifier)
+                acquired.discard(identifier)
+                keymapped.discard(identifier)
+        orphaned.extend(sorted(acquired - keymapped))
+        return orphaned
+
+    def assert_keyboard_orphans_analysis():
+        # Regression test for keyboard_orphans: a released resource that was
+        # never keymapped is reported even when its object id is reused, and a
+        # keymapped resource is not reported at all.
+        assert keyboard_orphans(
+            [
+                "KBD_ACQUIRED 11",
+                "KBD_KEYMAP 11",
+                "KBD_RELEASED 11",
+                "KBD_ACQUIRED 11",
+                "KBD_RELEASED 11",
+            ]
+        ) == ["11"], "a reused object id hid a resource that was never keymapped"
+        assert (
+            keyboard_orphans(["KBD_ACQUIRED 12", "KBD_KEYMAP 12", "KBD_RELEASED 12"])
+            == []
+        ), "a keymapped resource was reported as orphaned"
+        assert keyboard_orphans(["KBD_ACQUIRED 13"]) == [
+            "13"
+        ], "a live resource without a keymap was not reported"
+        assert (
+            keyboard_orphans(
+                [
+                    "KBD_ACQUIRED 14",
+                    "KBD_KEYMAP 14",
+                    "KBD_KEYMAP 14",
+                    "KBD_RELEASED 14",
+                ]
+            )
+            == []
+        ), "a resource keymapped more than once was reported as orphaned"
+        assert keyboard_orphans([]) == [], "an empty trace reported an orphan"
+        assert keyboard_orphans(["KBD_KEYMAP 15", "KBD_ACQUIRED 15"]) == [
+            "15"
+        ], "an acquisition did not reset stale keymap state for its object id"
+
+    def start_keyboard_anchor():
+        # Headless Sway has no input devices, so an ephemeral wtype keyboard is
+        # the seat's only keyboard: the seat's keyboard capability appears and
+        # disappears with every injection. A client cannot receive a key until
+        # it has created a wl_keyboard resource for that capability, which
+        # costs a round trip, and a short-lived injection can type before the
+        # lock is listening. Hold one virtual keyboard open for the whole
+        # compositor session instead, so the capability is stable and the lock
+        # acquires a resource once, before any injection. Sway selects a newly
+        # configured keyboard when the seat has none, so no key has to be typed
+        # for the anchor to serve: wtype parses every argument before running
+        # anything and uploads the keymap first, so the trailing -k seeds that
+        # keymap with a key while the leading stdin command blocks on the
+        # inherited read-write FIFO and the -k command is never reached. The
+        # anchor therefore types nothing at all, which also keeps it from
+        # racing the ordinary client's own wl_keyboard setup.
+        machine.succeed(f"rm -f {anchor_fifo}")
+        machine.succeed(f"mkfifo -m 0600 {anchor_fifo}")
+        machine.succeed(f"chown alice:users {anchor_fifo}")
+        machine.execute(
+            "runuser -u alice -- sh -c '"
+            f"exec 9<>{anchor_fifo}; env {environment} wtype - -k Shift_L <&9 "
+            ">/tmp/anchor.log 2>&1 & echo $! >/tmp/anchor.pid'"
+        )
+        machine.wait_until_succeeds(
+            f"{as_alice('swaymsg -t get_inputs')} | "
+            "jq -e '[.[] | select(.type == \"keyboard\")] | length >= 1'",
+            timeout=timedelta(seconds=30),
+        )
+
     def start_sway(outputs=2):
         machine.succeed(f"rm -rf {runtime}; install -d -m 0700 -o alice -g users {runtime}")
         machine.succeed("printf 'output * mode 800x600\\nseat * hide_cursor 1000\\n' > /tmp/sway.conf")
@@ -212,6 +313,7 @@
         machine.wait_until_succeeds(f"find {runtime} -maxdepth 1 -type s -name 'wayland-*' | grep -q .")
         machine.wait_until_succeeds(f"find {runtime} -maxdepth 1 -type s -name 'sway-ipc.*.sock' | grep -q .")
         machine.wait_until_succeeds(f"{as_alice('swaymsg -t get_outputs')} | jq -e 'length == {outputs}'")
+        start_keyboard_anchor()
         machine.succeed("rm -f /tmp/client-events")
         machine.execute(f"{as_alice('stdbuf -oL wev')} >/tmp/client-events 2>&1 &")
         machine.wait_until_succeeds(f"{as_alice('swaymsg -t get_tree')} | grep -F '\"app_id\": \"wev\"'")
@@ -223,6 +325,7 @@
         )
 
     def stop_sway():
+        machine.execute("kill $(cat /tmp/anchor.pid) 2>/dev/null || true")
         machine.execute("kill $(cat /tmp/sway.pid) 2>/dev/null || true")
         machine.execute("pkill -u alice -x sway 2>/dev/null || true")
         machine.sleep(1)
@@ -376,6 +479,8 @@
         start_lock("--test-unlock-after-ready")
         assert inject_isolated(label) == client_baseline
         assert wait_for_status() == 0
+
+    assert_keyboard_orphans_analysis()
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -547,9 +652,83 @@
         stop_sway()
         assert wait_for_status() == 1
 
+    with subtest("short-lived virtual keyboards deliver every keypress"):
+        # A wtype injection is short-lived and, without the keyboard anchor,
+        # would be the seat's only keyboard: the seat's keyboard capability
+        # would appear and disappear with every injection. A client cannot
+        # receive a key until it has created a wl_keyboard resource for that
+        # capability, which costs a round trip, so a short injection can type
+        # before the lock is listening and the compositor drops the key. This
+        # types one key per short-lived keyboard and requires the lock to
+        # observe every one of them. The observer records the keyboard
+        # lifecycle, so a loss is attributed to a specific resource instead of
+        # only being reported as a timeout.
+        stop_sway()
+        start_sway()
+        start_lock(extra="--wallpaper-file ${fixture}")
+        machine.wait_until_succeeds(
+            "grep -F 'dynamic wallpaper frame adopted' /tmp/lock.log"
+        )
+        wait_for_event("AUTH_PROMPT")
+        injections = 60
+        for _ in range(injections):
+            machine.succeed(as_alice("wtype -k a"), timeout=timedelta(seconds=30))
+        observe_keypresses(
+            0,
+            injections,
+            "short-lived virtual keyboards",
+            timedelta(seconds=30),
+        )
+        # The injections must run one at a time: a backgrounded wtype would keep
+        # the driver waiting for stdout anyway, and would let an injection
+        # outlive the observation that accepted it. Only the anchor is left.
+        anchor_pid = machine.succeed("cat /tmp/anchor.pid").strip()
+        machine.succeed(f"kill -0 {anchor_pid}")
+        leftovers = machine.succeed(
+            f"pgrep -u alice -x wtype | grep -vx {anchor_pid} || true"
+        ).strip()
+        assert not leftovers, f"injection process(es) still running: {leftovers}"
+        # Correlate the trace by keyboard object: a resource the lock acquired
+        # but never keymapped silently drops every key event.
+        # The anchor is what keeps the seat's keyboard capability stable: the
+        # lock must acquire exactly one keyboard resource for the whole run and
+        # never release it.
+        assert count("/tmp/observer", "KBD_ACQUIRED") == 1, (
+            "the lock acquired more than one keyboard resource; the seat's "
+            "keyboard capability was not stable"
+        )
+        assert count("/tmp/observer", "KBD_RELEASED") == 0, (
+            "the lock released its keyboard resource; the seat's keyboard "
+            "capability was not stable"
+        )
+        orphaned = keyboard_orphans(
+            machine.succeed(
+                "grep -E '^KBD_(ACQUIRED|KEYMAP|RELEASED) ' /tmp/observer || true"
+            ).splitlines()
+        )
+        assert not orphaned, (
+            f"the lock never keymapped keyboard resource(s) {orphaned}"
+        )
+        # Observer consistency, not evidence of pre-injection readiness: SCTK
+        # cannot handle a key before it compiled a keymap, so the trace must
+        # never show a keypress ahead of any keymap record.
+        trace = machine.succeed(
+            "grep -E '^KBD_(ACQUIRED|KEYMAP|RELEASED) |^KEYBOARD$' /tmp/observer || true"
+        ).splitlines()
+        assert "KEYBOARD" in trace, "the lock observed no keypress at all"
+        assert any(
+            line.startswith("KBD_KEYMAP") for line in trace[: trace.index("KEYBOARD")]
+        ), "the trace recorded a keypress before any keymap"
+        # The lock has to be gone before the observer is archived: a live writer
+        # would keep recording into the unlinked file and the final vocabulary
+        # audit would miss those records.
+        stop_sway()
+        assert wait_for_status() == 1
+
     archive_observer()
     machine.succeed(
         "grep -Ev '^(LOCKED|FAILED|FINISHED|OUTPUT_ADDED|OUTPUT_REMOVED|GEOMETRY|KEYBOARD|POINTER|"
+        "KBD_ACQUIRED [0-9]+|KBD_KEYMAP [0-9]+|KBD_ENTER [0-9]+|KBD_LEAVE [0-9]+|KBD_RELEASED [0-9]+|"
         "AUTH_PROMPT|AUTH_RETRY|AUTH_SUCCESS|AUTH_FAILURE)$' "
         "/tmp/all-observer && exit 1 || true"
     )
