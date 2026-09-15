@@ -130,6 +130,14 @@
         )
         for line in output.splitlines():
             machine.log(line)
+        machine.log("--- lock threads ---")
+        output = machine.succeed(
+            "ps -L -o tid,stat,wchan:32,comm -p $(cat /tmp/lock.pid 2>/dev/null) "
+            "2>/dev/null || true",
+            timeout=timedelta(seconds=30),
+        )
+        for line in output.splitlines():
+            machine.log(line)
 
     def probe_responsiveness():
         # Separate a dropped key from a lock that stopped reading input. A
@@ -236,37 +244,65 @@
                 f"test $(grep -Fc 'committed first opaque buffer for output' /tmp/lock.log) -ge {outputs}"
             )
 
+    def observe_keypresses(before, expected, label, timeout):
+        try:
+            machine.wait_until_succeeds(
+                f"test $(grep -Fc KEYBOARD /tmp/observer) -ge {before + expected}",
+                timeout=timeout,
+            )
+        except Exception as error:
+            observed = count("/tmp/observer", "KEYBOARD") - before
+            probe_responsiveness()
+            dump_diagnostics()
+            raise Exception(
+                f"the lock observed {observed} of {expected} injected "
+                f"keypress(es) for {label}"
+            ) from error
+
     def inject_key(command, label):
-        # Ephemeral virtual keyboards are occasionally dropped by headless
-        # Sway, so confirm that the lock observed each keypress. A response that
-        # is only partly delivered corrupts the attempt, and the test then waits
-        # for an authentication result that cannot arrive.
-        #
-        # Every key is injected once. Resending one could duplicate a key that
-        # was merely delayed, and a resent Return could submit an empty response
-        # for the next prompt, so a keypress the lock never observed fails the
-        # test with diagnostics instead of being replayed.
+        # A timed-out observation is not proof that a key was dropped: replaying
+        # it could duplicate a key that was merely delayed, and a replayed
+        # Return can submit an empty response for the next prompt. Inject once
+        # and report what the lock observed instead.
         before = count("/tmp/observer", "KEYBOARD")
         try:
             machine.succeed(as_alice(command), timeout=timedelta(seconds=30))
-            machine.wait_until_succeeds(
-                f"test $(grep -Fc KEYBOARD /tmp/observer) -gt {before}",
-                timeout=timedelta(seconds=15),
-            )
         except Exception as error:
             probe_responsiveness()
             dump_diagnostics()
-            raise Exception(f"the lock never observed injected {label}") from error
+            raise Exception(f"could not inject {label}") from error
+        observe_keypresses(before, 1, label, timedelta(seconds=15))
 
     def submit_response():
         inject_key("wtype -s 50 -k Return", "Return")
 
     def send_response(path):
+        # Type the response and its Return in one virtual-keyboard session.
+        # Headless Sway occasionally loses a key from an ephemeral virtual
+        # keyboard, and every session is another chance to lose one, so the
+        # response shares a single session and paces its keys. The lock records
+        # every keypress it handles as KEYBOARD, so the whole response is
+        # confirmed before the test waits for the authentication result: a short
+        # count fails the test with diagnostics instead of letting a partial
+        # response reach PAM.
         text = machine.succeed(f"cat {path}", timeout=timedelta(seconds=30)).strip()
-        for character in text:
-            script = f"printf %s {shlex.quote(character)} | wtype -"
-            inject_key("sh -c " + shlex.quote(script), f"character {character!r}")
-        submit_response()
+        script = f"cat {shlex.quote(path)} | wtype -d 50 - -s 50 -k Return"
+        before = count("/tmp/observer", "KEYBOARD")
+        try:
+            machine.succeed(
+                as_alice("sh -c " + shlex.quote(script)),
+                timeout=timedelta(seconds=60),
+            )
+        except Exception as error:
+            probe_responsiveness()
+            dump_diagnostics()
+            raise Exception(f"could not inject the response from {path}") from error
+        observe_keypresses(
+            before,
+            len(text) + 1,
+            f"the response from {path}",
+            timedelta(seconds=20),
+        )
 
     def wait_for_event(event, count=1, timeout=timedelta(seconds=60)):
         try:
