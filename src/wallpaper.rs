@@ -40,10 +40,13 @@ const SEEK_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const HEIC_TRANSITION_INTERVAL: Duration = Duration::from_millis(16);
 const HEIC_POLL_INTERVAL: Duration = Duration::from_millis(100);
 // The helper process relays a frame as a tag, a width/height/length header, and
-// tightly packed RGBA bytes. The ceiling matches `Playback`'s retained frame
-// bound so a corrupt or hostile worker cannot make the greeter allocate more.
+// tightly packed RGBA bytes. The ceilings repeat `dynamic_wallpaper::heic`'s
+// per-axis and output-byte limits so a corrupt or hostile worker cannot make
+// the greeter allocate a frame the decoder would have refused.
 const HEIC_FRAME_TAG: u8 = b'F';
 const HEIC_FAILED_TAG: u8 = b'E';
+const HEIC_HEADER_BYTES: usize = 12;
+const MAX_HEIC_FRAME_DIMENSION: u32 = 16_384;
 const MAX_HEIC_FRAME_BYTES: usize = 128 * 1024 * 1024;
 static POSTERS: [OnceLock<Result<image::Handle, String>>; 4] = [const { OnceLock::new() }; 4];
 
@@ -720,11 +723,17 @@ fn appearance_argument(appearance: AppearancePreference) -> &'static str {
 
 /// The exact RGBA byte length of a relayed frame, bounded before allocating.
 fn expected_frame_bytes(width: u32, height: u32) -> Option<usize> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if width > MAX_HEIC_FRAME_DIMENSION || height > MAX_HEIC_FRAME_DIMENSION {
+        return None;
+    }
     let bytes = usize::try_from(width)
         .ok()?
         .checked_mul(usize::try_from(height).ok()?)?
         .checked_mul(4)?;
-    (width > 0 && height > 0 && bytes <= MAX_HEIC_FRAME_BYTES).then_some(bytes)
+    (bytes <= MAX_HEIC_FRAME_BYTES).then_some(bytes)
 }
 
 /// Reads one frame with a fallible allocation so a hostile length cannot abort
@@ -760,7 +769,7 @@ fn run_heic_reader<R: Read>(
         if tag[0] != HEIC_FRAME_TAG {
             break;
         }
-        let mut header = [0u8; 12];
+        let mut header = [0u8; HEIC_HEADER_BYTES];
         if reader.read_exact(&mut header).is_err() {
             break;
         }
@@ -776,10 +785,12 @@ fn run_heic_reader<R: Read>(
         let Some(pixels) = read_frame_buffer(&mut reader, length) else {
             break;
         };
-        emit_heic_frame(shared, signal, width, height, Some(Bytes::from(pixels)));
         if stopping.load(Ordering::Acquire) {
+            // Cancellation wins over a frame that was already read: the
+            // consumer is going away, so publishing it has no owner.
             break;
         }
+        emit_heic_frame(shared, signal, width, height, Some(Bytes::from(pixels)));
     }
     if !stopping.load(Ordering::Acquire) {
         fail_heic(shared, signal);
@@ -1796,7 +1807,8 @@ fn bounded_text(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
+    use std::io::{ErrorKind, Read};
+    use std::sync::atomic::AtomicUsize;
 
     use super::*;
     use genkan::dynamic_wallpaper::{
@@ -2219,6 +2231,327 @@ mod tests {
         bytes.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
         bytes.extend_from_slice(pixels);
         bytes
+    }
+
+    /// A raw tag and header with no payload, for malformed-protocol cases.
+    fn relay_header_bytes(tag: u8, width: u32, height: u32, length: u32) -> Vec<u8> {
+        let mut bytes = vec![tag];
+        bytes.extend_from_slice(&width.to_le_bytes());
+        bytes.extend_from_slice(&height.to_le_bytes());
+        bytes.extend_from_slice(&length.to_le_bytes());
+        bytes
+    }
+
+    /// Drives the production reader over `bytes` and asserts that its only
+    /// published update is a terminal failure.
+    ///
+    /// The notification sequence distinguishes "no frame was ever adopted"
+    /// from "a frame was published and then superseded": a published frame
+    /// would leave the sequence above one.
+    fn relay_fails_without_a_frame(bytes: Vec<u8>) {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        run_heic_reader(std::io::Cursor::new(bytes), &shared, &signal, &stopping);
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert_eq!(
+            shared.sequence.load(Ordering::Acquire),
+            1,
+            "a malformed stream must publish exactly one terminal failure"
+        );
+        assert!(matches!(lock(&shared.pending).take(), Some(Update::Failed)));
+    }
+
+    /// Yields a fixed prefix and then fails every further read, recording that
+    /// a payload read was attempted at all.
+    struct PayloadProbe {
+        prefix: Vec<u8>,
+        offset: usize,
+        payload_reads: Arc<AtomicUsize>,
+    }
+
+    impl Read for PayloadProbe {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset < self.prefix.len() {
+                let available = (self.prefix.len() - self.offset).min(buffer.len());
+                buffer[..available]
+                    .copy_from_slice(&self.prefix[self.offset..self.offset + available]);
+                self.offset += available;
+                return Ok(available);
+            }
+            self.payload_reads.fetch_add(1, Ordering::AcqRel);
+            Err(std::io::Error::new(
+                ErrorKind::WouldBlock,
+                "the relay read a payload it should have refused",
+            ))
+        }
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_payload_above_the_byte_cap_without_reading_it() {
+        // 8192 by 8192 RGBA is 256 MiB: above the 128 MiB ceiling without
+        // overflowing, so only the byte ceiling can refuse it.
+        assert!(expected_frame_bytes(8_192, 8_192).is_none());
+        let payload_reads = Arc::new(AtomicUsize::new(0));
+        let mut reader = PayloadProbe {
+            prefix: relay_header_bytes(HEIC_FRAME_TAG, 8_192, 8_192, 256 * 1024 * 1024),
+            offset: 0,
+            payload_reads: Arc::clone(&payload_reads),
+        };
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert_eq!(
+            payload_reads.load(Ordering::Acquire),
+            0,
+            "an over-cap payload must be refused before it is read or reserved"
+        );
+    }
+
+    #[test]
+    fn heic_relay_rejects_an_over_long_axis_before_allocating() {
+        // Within the byte ceiling but past the decoder's per-axis limit.
+        let width = MAX_HEIC_FRAME_DIMENSION + 1;
+        let height = 1;
+        let mut reader =
+            std::io::Cursor::new(relay_header_bytes(HEIC_FRAME_TAG, width, height, width * 4));
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert_eq!(reader.position(), (1 + HEIC_HEADER_BYTES) as u64);
+        assert!(expected_frame_bytes(MAX_HEIC_FRAME_DIMENSION, 1).is_some());
+        assert!(expected_frame_bytes(MAX_HEIC_FRAME_DIMENSION + 1, 1).is_none());
+    }
+
+    #[test]
+    fn heic_relay_rejects_an_unknown_tag() {
+        relay_fails_without_a_frame(vec![b'X']);
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_short_header() {
+        let mut bytes = vec![HEIC_FRAME_TAG];
+        bytes.extend_from_slice(&[1, 2, 3]);
+        relay_fails_without_a_frame(bytes);
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_short_payload() {
+        let mut bytes = relay_header_bytes(HEIC_FRAME_TAG, 1, 1, 4);
+        bytes.extend_from_slice(&[1, 2]);
+        relay_fails_without_a_frame(bytes);
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_length_mismatch() {
+        // Two RGBA pixels are eight bytes, not four.
+        relay_fails_without_a_frame(relay_header_bytes(HEIC_FRAME_TAG, 2, 1, 4));
+        // A shorter payload than the header's exact length is also a failure.
+        let mut bytes = relay_header_bytes(HEIC_FRAME_TAG, 1, 1, 8);
+        bytes.extend_from_slice(&[1, 2, 3, 255]);
+        relay_fails_without_a_frame(bytes);
+    }
+
+    #[test]
+    fn heic_relay_rejects_zero_dimensions() {
+        relay_fails_without_a_frame(relay_header_bytes(HEIC_FRAME_TAG, 0, 0, 0));
+        relay_fails_without_a_frame(relay_header_bytes(HEIC_FRAME_TAG, 1, 0, 0));
+        relay_fails_without_a_frame(relay_header_bytes(HEIC_FRAME_TAG, 0, 1, 0));
+    }
+
+    #[test]
+    fn heic_relay_rejects_a_frame_the_decoder_would_have_refused() {
+        // The relay's ceilings mirror `dynamic_wallpaper::heic`'s limits.
+        assert_eq!(expected_frame_bytes(3_840, 2_160), Some(3_840 * 2_160 * 4));
+        assert!(expected_frame_bytes(0, 2_160).is_none());
+        assert!(expected_frame_bytes(3_840, 0).is_none());
+        assert!(expected_frame_bytes(16_385, 1).is_none());
+        assert!(expected_frame_bytes(1, 16_385).is_none());
+        assert!(expected_frame_bytes(u32::MAX, u32::MAX).is_none());
+    }
+
+    /// A reader that never returns more than one byte per call, so framing
+    /// must survive arbitrary fragmentation. A pipe cannot guarantee this:
+    /// write boundaries are not read boundaries.
+    struct OneByteReader {
+        bytes: Vec<u8>,
+        offset: usize,
+    }
+
+    impl Read for OneByteReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset >= self.bytes.len() || buffer.is_empty() {
+                return Ok(0);
+            }
+            buffer[0] = self.bytes[self.offset];
+            self.offset += 1;
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn heic_relay_assembles_a_frame_from_single_byte_reads() {
+        let (reader, mut writer) = std::io::pipe().expect("relay pipe");
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || run_heic_reader(reader, &shared, &signal, &stopping))
+        };
+
+        // Hold the pipe open until the frame is adopted so the terminal EOF
+        // cannot overwrite the pending frame.
+        writer
+            .write_all(&relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]))
+            .expect("relay frame");
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(5));
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.pixels.as_ref(), &[1, 2, 3, 255, 4, 5, 6, 255]);
+
+        stopping.store(true, Ordering::Release);
+        drop(writer);
+        relay.join().unwrap();
+        assert!(!shared.failed.load(Ordering::Acquire));
+
+        // The same stream delivered one byte per read must frame identically.
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let bytes = relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]);
+        let mut reader = OneByteReader { bytes, offset: 0 };
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+        assert_eq!(
+            shared.sequence.load(Ordering::Acquire),
+            2,
+            "the fragmented frame must be adopted before the EOF failure"
+        );
+        assert!(shared.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn heic_relay_treats_eof_after_a_frame_as_a_terminal_failure() {
+        let (reader, mut writer) = std::io::pipe().expect("relay pipe");
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let relay = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            thread::spawn(move || run_heic_reader(reader, &shared, &signal, &stopping))
+        };
+
+        writer
+            .write_all(&relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]))
+            .expect("relay frame");
+        let frame = wait_for_heic_frame(&shared, Duration::from_secs(5));
+        assert_eq!((frame.width, frame.height), (2, 1));
+
+        // The worker exited after a valid frame: the consumer has already
+        // adopted it, so the terminal failure must not discard it.
+        drop(writer);
+        relay.join().unwrap();
+        assert!(shared.failed.load(Ordering::Acquire));
+        assert!(matches!(lock(&shared.pending).take(), Some(Update::Failed)));
+    }
+
+    /// A reader that delivers one header and then, once the payload read
+    /// starts, records cancellation and reports end of stream.
+    struct CancellingReader {
+        header: Vec<u8>,
+        offset: usize,
+        stopping: Arc<AtomicBool>,
+    }
+
+    impl Read for CancellingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset < self.header.len() {
+                let available = (self.header.len() - self.offset).min(buffer.len());
+                buffer[..available]
+                    .copy_from_slice(&self.header[self.offset..self.offset + available]);
+                self.offset += available;
+                return Ok(available);
+            }
+            // Cancellation lands mid-payload: the stream is abandoned and no
+            // terminal failure may be published. The production reader also
+            // checks cancellation before publishing a frame it already read.
+            self.stopping.store(true, Ordering::Release);
+            Ok(0)
+        }
+    }
+
+    /// A reader that delivers a complete frame and records cancellation while
+    /// returning the final payload bytes.
+    struct CancellingPayloadReader {
+        bytes: Vec<u8>,
+        offset: usize,
+        stopping: Arc<AtomicBool>,
+    }
+
+    impl Read for CancellingPayloadReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset >= self.bytes.len() || buffer.is_empty() {
+                return Ok(0);
+            }
+            let available = (self.bytes.len() - self.offset).min(buffer.len());
+            let completes_frame = self.offset + available == self.bytes.len();
+            buffer[..available].copy_from_slice(&self.bytes[self.offset..self.offset + available]);
+            self.offset += available;
+            if completes_frame {
+                self.stopping.store(true, Ordering::Release);
+            }
+            Ok(available)
+        }
+    }
+
+    #[test]
+    fn heic_relay_cancellation_wins_over_a_read_frame() {
+        // The payload is delivered completely, but cancellation lands before
+        // the frame can be published: a consumer that is going away must not
+        // receive it.
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let mut reader = CancellingPayloadReader {
+            bytes: relay_frame_bytes(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]),
+            offset: 0,
+            stopping: Arc::clone(&stopping),
+        };
+
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+
+        assert!(stopping.load(Ordering::Acquire));
+        assert_eq!(shared.sequence.load(Ordering::Acquire), 0);
+        assert!(lock(&shared.pending).is_none());
+        assert!(!shared.failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn heic_relay_cancellation_mid_payload_is_not_a_failure() {
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let header = relay_header_bytes(HEIC_FRAME_TAG, 2, 1, 8);
+        let mut reader = CancellingReader {
+            header,
+            offset: 0,
+            stopping: Arc::clone(&stopping),
+        };
+
+        run_heic_reader(&mut reader, &shared, &signal, &stopping);
+
+        assert!(stopping.load(Ordering::Acquire));
+        assert!(!shared.failed.load(Ordering::Acquire));
+        assert!(lock(&shared.pending).is_none());
     }
 
     #[test]
