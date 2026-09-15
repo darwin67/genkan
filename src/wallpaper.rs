@@ -489,6 +489,13 @@ struct HeicShared {
     pending: Mutex<Option<Update>>,
     sequence: AtomicU64,
     failed: AtomicBool,
+    /// Set once the supervisor has killed and reaped the worker.
+    ///
+    /// Tests need this barrier before probing reaping: `waitpid` is itself a
+    /// competing reaper, so probing before the supervisor has waited would
+    /// collect the zombie and misreport the supervisor.
+    #[cfg(test)]
+    cleanup_complete: AtomicBool,
 }
 
 /// A dynamic HEIC source for login and lock.
@@ -497,11 +504,18 @@ struct HeicShared {
 /// frame type from `genkan::dynamic_wallpaper`. Location/solar selection is
 /// deliberately unavailable here: `Playback::new` disables solar, so login and
 /// lock never contact GeoClue.
+///
+/// A dedicated supervisor thread owns the worker process end to end: spawning,
+/// framing, termination, and reaping never run on the lock-owning thread. The
+/// only process operation the lock-owning thread performs is a non-blocking
+/// `kill` on cancellation.
 struct HeicPlayer {
     shared: Arc<HeicShared>,
     signal: watch::Receiver<u64>,
     stopping: Arc<AtomicBool>,
-    child: Option<Child>,
+    /// The live worker, published by the supervisor before it reads. It is
+    /// never held across a blocking call, so cancellation cannot be delayed.
+    child: Arc<Mutex<Option<Child>>>,
 }
 
 impl std::fmt::Debug for HeicPlayer {
@@ -559,46 +573,34 @@ impl HeicPlayer {
     /// allocation abort or crash in the parser or decoder cannot terminate the
     /// greeter or locker. The relay reports a decorative failure that retains
     /// the poster or last frame instead.
-    fn start_command(mut command: Command) -> Result<Self, String> {
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        let mut child = command
-            .spawn()
-            .map_err(|_| pipeline_error("could not start the dynamic wallpaper worker"))?;
-        let Some(stdout) = child.stdout.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(pipeline_error("dynamic wallpaper worker has no output"));
-        };
+    ///
+    /// Only thread creation happens here. The supervisor thread performs the
+    /// process spawn, every read, and every termination and reap, so a slow
+    /// executable, a stalled filesystem, or an uninterruptible child cannot
+    /// delay lock acquisition or READY.
+    fn start_command(command: Command) -> Result<Self, String> {
         let (signal_sender, signal) = watch::channel(0);
         let shared = Arc::new(HeicShared::default());
         let stopping = Arc::new(AtomicBool::new(false));
-        let relay_shared = Arc::clone(&shared);
-        let relay_stopping = Arc::clone(&stopping);
-        let relay = thread::Builder::new()
-            .name("wallpaper-heic-relay".into())
-            .spawn(move || {
-                run_heic_reader(
-                    std::io::BufReader::new(stdout),
-                    &relay_shared,
-                    &signal_sender,
-                    &relay_stopping,
-                )
-            });
-        if relay.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(pipeline_error(
-                "could not start the dynamic wallpaper relay",
-            ));
+        let child = Arc::new(Mutex::new(None));
+        {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            let child = Arc::clone(&child);
+            // The handle is dropped: the supervisor detaches, and `Drop` only
+            // signals cancellation. Nothing on this thread ever waits for it.
+            thread::Builder::new()
+                .name("wallpaper-heic-supervisor".into())
+                .spawn(move || {
+                    supervise_heic_worker(command, shared, signal_sender, stopping, child);
+                })
+                .map_err(|_| pipeline_error("could not start the dynamic wallpaper worker"))?;
         }
         Ok(Self {
             shared,
             signal,
             stopping,
-            child: Some(child),
+            child,
         })
     }
 
@@ -636,7 +638,7 @@ impl HeicPlayer {
             shared,
             signal,
             stopping,
-            child: None,
+            child: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -676,23 +678,117 @@ impl Hash for HeicFrameSignal {
 
 impl Drop for HeicPlayer {
     fn drop(&mut self) {
-        self.stopping.store(true, Ordering::Release);
-        // Do not wait for the worker. A HEIC decode is not interruptible, and a
+        // Cancellation must not wait. A HEIC decode is not interruptible, so a
         // synchronous wait here would keep the lock coordinator alive after the
-        // compositor lock is destroyed. Signal the child, kill it immediately,
-        // and reap it on a detached thread so no zombie is left behind.
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = thread::Builder::new()
-                .name("wallpaper-heic-reap".into())
-                .spawn(move || {
-                    let _ = child.wait();
-                });
+        // compositor lock is destroyed. `stopping` stops the relay from
+        // publishing, and the kill releases a child blocked in decode; the
+        // supervisor thread performs the wait and reap off this thread.
+        self.stopping.store(true, Ordering::Release);
+        signal_heic_child(&self.child);
+    }
+}
+
+/// Kills the live worker without waiting.
+///
+/// The supervisor removes the child from the slot before it waits, so a signal
+/// can never target a reaped and recycled process. The lock is held only for a
+/// non-blocking `kill`, never across a wait, so cancellation cannot block on
+/// the supervisor.
+fn signal_heic_child(child: &Mutex<Option<Child>>) {
+    if let Some(child) = lock(child).as_mut() {
+        let _ = child.kill();
+    }
+}
+
+/// Takes ownership of the worker and reaps it.
+///
+/// Only the supervisor calls this, after it has stopped reading, so the wait
+/// cannot block a reader or the lock-owning thread.
+fn reap_heic_child(child: &Mutex<Option<Child>>) {
+    let Some(mut child) = lock(child).take() else {
+        return;
+    };
+    let _ = child.wait();
+}
+
+/// Kills and reaps the worker when the supervisor leaves, including on unwind.
+///
+/// The supervisor is the only reaper, so the reap must not depend on reaching
+/// the end of the function: a panic in the relay or in a diagnostic would
+/// otherwise leave an exited child as a zombie with nobody left to wait for it.
+struct HeicWorkerGuard {
+    child: Arc<Mutex<Option<Child>>>,
+    #[cfg(test)]
+    shared: Arc<HeicShared>,
+}
+
+impl Drop for HeicWorkerGuard {
+    fn drop(&mut self) {
+        signal_heic_child(&self.child);
+        reap_heic_child(&self.child);
+        #[cfg(test)]
+        self.shared.cleanup_complete.store(true, Ordering::Release);
+    }
+}
+
+/// Owns the worker process for its whole lifetime.
+///
+/// Every blocking operation — `spawn`, the framing reads, `kill`, and `wait` —
+/// happens on this thread. The lock-owning thread only signals cancellation.
+fn supervise_heic_worker(
+    mut command: Command,
+    shared: Arc<HeicShared>,
+    signal: watch::Sender<u64>,
+    stopping: Arc<AtomicBool>,
+    child_slot: Arc<Mutex<Option<Child>>>,
+) {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            fail_heic(&shared, &signal);
+            diagnostic(HEIC_DECODE_FAILURE);
+            return;
         }
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        fail_heic(&shared, &signal);
+        diagnostic(HEIC_DECODE_FAILURE);
+        return;
+    };
+    // Publish the child before reading so a concurrent cancellation can signal
+    // it. A cancellation that arrived first is honoured here, and the guard
+    // kills and reaps the worker on every exit path, including a panic.
+    *lock(&child_slot) = Some(child);
+    let reported = {
+        let _reap_on_exit = HeicWorkerGuard {
+            child: Arc::clone(&child_slot),
+            #[cfg(test)]
+            shared: Arc::clone(&shared),
+        };
+        if !stopping.load(Ordering::Acquire) {
+            run_heic_reader(std::io::BufReader::new(stdout), &shared, &signal, &stopping);
+        }
+        shared.failed.load(Ordering::Acquire)
+    };
+    // The worker is already killed and reaped, so a blocked diagnostic cannot
+    // delay cleanup. A published failure is always reported: a consumer that
+    // cancelled after observing it must not erase the obligation to log it.
+    if reported {
+        diagnostic(HEIC_DECODE_FAILURE);
     }
 }
 
 /// The command that runs the HEIC parser and decoder in a child process.
+///
+/// The worker is told which process spawned it so it can bind its lifetime to
+/// the greeter: if the greeter is killed without running its own destructors,
+/// the worker must not outlive it.
 fn worker_command(
     executable: &Path,
     path: &Path,
@@ -855,15 +951,21 @@ fn publish_heic(shared: &HeicShared, signal: &watch::Sender<u64>, frame: Option<
     );
 }
 
+/// Publishes a terminal decorative failure exactly once.
+///
+/// This only updates shared state. The supervisor emits the diagnostic after
+/// the worker is reaped, so a blocked or failing stderr cannot delay cleanup.
 fn fail_heic(shared: &HeicShared, signal: &watch::Sender<u64>) {
     if shared.failed.swap(true, Ordering::AcqRel) {
         return;
     }
-    diagnostic("dynamic wallpaper could not be decoded; retaining current background");
     *lock(&shared.pending) = Some(Update::Failed);
     let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
     signal.send_replace(sequence);
 }
+
+const HEIC_DECODE_FAILURE: &str =
+    "dynamic wallpaper could not be decoded; retaining current background";
 
 /// Applies a schedule update and reports whether the presented pixels changed
 /// without a decode (a discontinuity snapping an active dissolve).
@@ -1783,7 +1885,10 @@ fn pipeline_error(reason: &str) -> String {
 }
 
 fn diagnostic(message: &str) {
-    eprintln!("genkan: {}", bounded_text(message));
+    // A diagnostic must never panic. The supervisor's cleanup and the greeter's
+    // lifecycle must not depend on a writable stderr, and a failed write must
+    // not skip the reap that follows a terminal relay failure.
+    let _ = writeln!(std::io::stderr(), "genkan: {}", bounded_text(message));
 }
 
 fn bounded_text(message: &str) -> String {
@@ -2200,28 +2305,368 @@ mod tests {
         assert!(detector.observe(Duration::from_millis(1_605)));
     }
 
-    #[test]
-    fn blocked_worker_process_helper() {
-        if std::env::var_os("GENKAN_TEST_BLOCKED_WORKER").is_none() {
-            return;
+    /// The relay framing of one opaque 1x1 RGBA frame, as POSIX `printf`
+    /// escapes for a harness-free shell helper. A real helper must never share
+    /// stdout with a test harness, because harness output is not protocol.
+    const SHELL_FRAME: &str =
+        r"\106\001\000\000\000\001\000\000\000\004\000\000\000\001\002\003\377";
+
+    /// A harness-free protocol helper: a shell that writes relay bytes on its
+    /// own stdout and then `exec`s a blocking program, so the tracked process
+    /// stays alive until it is signalled.
+    fn shell_worker(frame: bool) -> Command {
+        let script = if frame {
+            format!("printf '{SHELL_FRAME}'; exec sleep 300")
+        } else {
+            "exec sleep 300".to_owned()
+        };
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script);
+        command
+    }
+
+    fn worker_pid(player: &HeicPlayer) -> u32 {
+        lock(&player.child)
+            .as_ref()
+            .map(Child::id)
+            .expect("the supervisor publishes the worker before reading")
+    }
+
+    /// Cancels a supervisor and signals its worker on every exit path.
+    ///
+    /// A handshake that only completes on the success path leaves the helper
+    /// running when an assertion fails, so cancellation must be unwind-safe.
+    /// Signalling is a no-op once the supervisor has reaped, because reaping
+    /// clears the child slot before waiting.
+    struct SupervisorCancel {
+        stopping: Arc<AtomicBool>,
+        child: Arc<Mutex<Option<Child>>>,
+    }
+
+    impl Drop for SupervisorCancel {
+        fn drop(&mut self) {
+            self.stopping.store(true, Ordering::Release);
+            signal_heic_child(&self.child);
         }
-        thread::sleep(Duration::from_secs(30));
+    }
+
+    /// Waits for the supervisor to finish killing and reaping the worker.
+    ///
+    /// The reaping probe must not run before this: `waitpid` is a competing
+    /// reaper, so an early probe would collect the zombie itself and misreport
+    /// a correct supervisor.
+    fn wait_for_supervisor_cleanup(shared: &HeicShared, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if shared.cleanup_complete.load(Ordering::Acquire) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Whether the supervisor has already reaped the worker.
+    ///
+    /// A reaped pid is no longer waitable (`ECHILD`), while a running worker
+    /// reports no state change. A zombie means the supervisor exited without
+    /// waiting, which is reported as a failure and never retried: the probe
+    /// itself would have collected that zombie.
+    fn probe_child_reaped(pid: u32) -> bool {
+        let mut status = 0;
+        // SAFETY: `waitpid` is called with a specific pid and a valid out
+        // pointer, and `WNOHANG` keeps it from blocking.
+        let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+        assert_ne!(
+            result, pid as i32,
+            "the worker was still a zombie, so the supervisor never reaped it"
+        );
+        if result == 0 {
+            return false;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            return false;
+        }
+        assert_eq!(
+            error.raw_os_error(),
+            Some(libc::ECHILD),
+            "unexpected waitpid result for the worker"
+        );
+        true
+    }
+
+    /// Waits for the supervisor to reap the worker. This needs no procfs, and a
+    /// pid cannot be recycled while it is still waitable.
+    fn wait_for_reap(pid: u32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if probe_child_reaped(pid) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Waits for the terminal failure update to be *published*.
+    ///
+    /// `has_failed` is set before the pending update and its notification, so
+    /// it is not a publication barrier for a consumer.
+    fn wait_for_failure(shared: &HeicShared, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if matches!(lock(&shared.pending).as_ref(), Some(Update::Failed)) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Waits for the supervisor to publish the worker without blocking on it.
+    fn wait_for_worker_pid(child: &Mutex<Option<Child>>, timeout: Duration) -> u32 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(pid) = lock(child).as_ref().map(Child::id) {
+                return pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the supervisor did not publish a worker"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_for_worker(player: &HeicPlayer, timeout: Duration) -> u32 {
+        wait_for_worker_pid(&player.child, timeout)
     }
 
     #[test]
-    fn dropping_a_heic_player_does_not_wait_for_the_worker() {
-        let mut command = Command::new(std::env::current_exe().expect("test executable"));
-        command
-            .env("GENKAN_TEST_BLOCKED_WORKER", "1")
-            .arg("--exact")
-            .arg("wallpaper::tests::blocked_worker_process_helper");
-        let player = HeicPlayer::start_command(command).expect("blocked worker");
+    fn dropping_a_heic_player_kills_and_reaps_the_worker() {
+        let player = HeicPlayer::start_command(shell_worker(true)).expect("blocked worker process");
+        let pid = wait_for_worker(&player, Duration::from_secs(5));
+        // Prove the helper reached its blocked state before dropping, so the
+        // cleanup below cannot pass on a process that never started.
+        wait_for_heic_frame(&player.shared, Duration::from_secs(5));
+
+        // A generous bound: this is a sanity check that Drop performs no
+        // unbounded work, not a proof that Drop never waits. The structural
+        // guarantee is that only the supervisor thread calls `wait`, which
+        // `a_supervisor_reaps_the_worker` exercises.
+        let shared = Arc::clone(&player.shared);
         let started = Instant::now();
         drop(player);
         assert!(
-            started.elapsed() < Duration::from_millis(200),
-            "dropping a HEIC player must not wait for an uninterruptible worker"
+            started.elapsed() < Duration::from_secs(2),
+            "dropping a HEIC player must not block on the worker"
         );
+        assert!(
+            wait_for_supervisor_cleanup(&shared, Duration::from_secs(10)),
+            "the supervisor must finish cleaning up"
+        );
+        assert!(
+            wait_for_reap(pid, Duration::from_secs(10)),
+            "the supervisor must reap the killed worker"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_supervisor_publishes_nothing() {
+        // Cancellation that arrives before the worker is read must leave the
+        // shared state untouched and clear the child slot. This asserts the
+        // observable outcome of the startup race `Drop` can lose; the reap
+        // itself is proven by `a_supervisor_reaps_the_worker`.
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(true));
+        let child = Arc::new(Mutex::new(None));
+
+        supervise_heic_worker(
+            shell_worker(true),
+            Arc::clone(&shared),
+            signal,
+            Arc::clone(&stopping),
+            Arc::clone(&child),
+        );
+
+        assert!(lock(&child).is_none());
+        assert!(lock(&shared.pending).is_none());
+        assert!(!shared.failed.load(Ordering::Acquire));
+        assert_eq!(shared.sequence.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn a_supervisor_reaps_the_worker() {
+        // The helper holds its stdout open until the test releases it, so the
+        // supervisor blocks in its framing read and the published child is
+        // observable without a timing race. Once released, the supervisor must
+        // reap it: an unreaped worker would still be waitable here.
+        let release = std::env::temp_dir().join(format!(
+            "genkan-heic-supervisor-release-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&release);
+        let shared = Arc::new(HeicShared::default());
+        let (signal, _receiver) = watch::channel(0);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let child = Arc::new(Mutex::new(None));
+        // The release handshake only completes on the success path, so a failed
+        // assertion before it must still stop the helper. This guard is
+        // installed before the supervisor exists; a supervisor that publishes
+        // after the test unwinds observes the cancellation and reaps the child.
+        let _cancel = SupervisorCancel {
+            stopping: Arc::clone(&stopping),
+            child: Arc::clone(&child),
+        };
+        let supervisor = {
+            let shared = Arc::clone(&shared);
+            let stopping = Arc::clone(&stopping);
+            let child = Arc::clone(&child);
+            let release = release.clone();
+            thread::spawn(move || {
+                let script = format!(
+                    "printf '{SHELL_FRAME}'; while [ ! -e '{}' ]; do sleep 0.02; done",
+                    release.display()
+                );
+                let mut command = Command::new("sh");
+                command.arg("-c").arg(script);
+                supervise_heic_worker(command, shared, signal, stopping, child);
+            })
+        };
+        let pid = wait_for_worker_pid(&child, Duration::from_secs(5));
+        std::fs::write(&release, b"release").expect("release the helper");
+        supervisor.join().unwrap();
+        let _ = std::fs::remove_file(&release);
+
+        assert!(
+            wait_for_supervisor_cleanup(&shared, Duration::from_secs(10)),
+            "the supervisor must finish cleaning up"
+        );
+        assert!(
+            wait_for_reap(pid, Duration::from_secs(10)),
+            "the supervisor must reap the worker"
+        );
+        assert!(lock(&child).is_none());
+    }
+
+    #[test]
+    fn a_crashing_worker_is_a_decorative_failure_that_is_reaped() {
+        let player = HeicPlayer::start_command(shell_worker(true)).expect("worker process");
+        let pid = wait_for_worker(&player, Duration::from_secs(5));
+        let frame = wait_for_heic_frame(&player.shared, Duration::from_secs(5));
+        assert_eq!((frame.width, frame.height), (1, 1));
+
+        // A crash after a valid frame: the relay must report a bounded
+        // decorative failure instead of a frame.
+        // SAFETY: `pid` is the live worker published above.
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGABRT) }, 0);
+
+        assert!(
+            wait_for_failure(&player.shared, Duration::from_secs(10)),
+            "an aborted worker must publish a decorative failure"
+        );
+        assert!(player.has_failed());
+        assert!(matches!(
+            lock(&player.shared.pending).take(),
+            Some(Update::Failed)
+        ));
+        assert!(
+            wait_for_supervisor_cleanup(&player.shared, Duration::from_secs(10)),
+            "the supervisor must finish cleaning up"
+        );
+        assert!(
+            wait_for_reap(pid, Duration::from_secs(10)),
+            "a crashed worker must still be reaped"
+        );
+    }
+
+    #[test]
+    fn a_worker_that_cannot_spawn_is_a_decorative_failure() {
+        let mut command = Command::new("/nonexistent/genkan-heic-worker");
+        command.arg("--file").arg("/tmp/missing.heic");
+        let player = HeicPlayer::start_command(command).expect("the supervisor still starts");
+
+        assert!(
+            wait_for_failure(&player.shared, Duration::from_secs(10)),
+            "a worker that cannot be spawned is a decorative failure"
+        );
+        assert!(lock(&player.child).is_none());
+    }
+
+    #[test]
+    fn a_worker_that_exits_after_a_frame_retains_the_poster() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(format!("printf '{SHELL_FRAME}'"));
+        let mut state = State {
+            player: None,
+            heic: Some(HeicPlayer::start_command(command).expect("worker process")),
+            poster: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            frame: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            allocation: None,
+            allocation_pending: false,
+            heic_adopted: false,
+        };
+        let poster_id = state.frame.as_ref().unwrap().id();
+
+        // Wait for the terminal failure to be published *before* consuming, so
+        // this covers the ordering where the failure wins the race with the
+        // frame. The frame was never adopted, so the poster stays and no
+        // decoder is left behind.
+        let shared = Arc::clone(&state.heic.as_ref().expect("heic source").shared);
+        assert!(
+            wait_for_failure(&shared, Duration::from_secs(10)),
+            "the worker exit was not reported"
+        );
+        assert_eq!(state.receive_latest(), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert_eq!(state.frame.as_ref().unwrap().id(), poster_id);
+    }
+
+    #[test]
+    fn a_crashed_worker_after_adoption_retains_the_adopted_frame() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("printf '{SHELL_FRAME}'; exec sleep 300"));
+        let mut state = State {
+            player: None,
+            heic: Some(HeicPlayer::start_command(command).expect("worker process")),
+            poster: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            frame: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            allocation: None,
+            allocation_pending: false,
+            heic_adopted: false,
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.receive_latest() != Refresh::Frame {
+            assert!(
+                Instant::now() < deadline,
+                "the worker never delivered a frame"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let adopted_id = state.frame.as_ref().unwrap().id();
+        let shared = Arc::clone(&state.heic.as_ref().expect("heic source").shared);
+        let pid = worker_pid(state.heic.as_ref().unwrap());
+        // SAFETY: `pid` is the live worker published by the supervisor.
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGABRT) }, 0);
+
+        assert!(
+            wait_for_failure(&shared, Duration::from_secs(10)),
+            "the crash was not reported"
+        );
+        assert_eq!(state.receive_latest(), Refresh::Failed);
+        assert!(state.decoder_is_stopped());
+        assert_eq!(state.frame.as_ref().unwrap().id(), adopted_id);
     }
 
     fn relay_frame_bytes(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
@@ -2676,37 +3121,6 @@ mod tests {
         stopping.store(true, Ordering::Release);
         drop(writer);
         relay.join().unwrap();
-    }
-
-    #[test]
-    fn aborting_worker_process_helper() {
-        if std::env::var_os("GENKAN_TEST_ABORT_WORKER").is_none() {
-            return;
-        }
-        std::process::abort();
-    }
-
-    #[test]
-    fn an_aborting_worker_is_a_decorative_failure() {
-        let mut command = Command::new(std::env::current_exe().expect("test executable"));
-        command
-            .env("GENKAN_TEST_ABORT_WORKER", "1")
-            .arg("--exact")
-            .arg("wallpaper::tests::aborting_worker_process_helper");
-        let player = HeicPlayer::start_command(command).expect("worker process");
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !player.has_failed() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            player.has_failed(),
-            "an aborted worker must report a decorative failure"
-        );
-        assert!(matches!(
-            lock(&player.shared.pending).take(),
-            Some(Update::Failed)
-        ));
     }
 
     #[test]
