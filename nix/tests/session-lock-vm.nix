@@ -247,7 +247,7 @@
     def observe_keypresses(before, expected, label, timeout):
         try:
             machine.wait_until_succeeds(
-                f"test $(grep -Fc KEYBOARD /tmp/observer) -ge {before + expected}",
+                f"test $(grep -Fc KEYBOARD /tmp/observer) -eq {before + expected}",
                 timeout=timeout,
             )
         except Exception as error:
@@ -278,15 +278,19 @@
 
     def send_response(path):
         # Type the response and its Return in one virtual-keyboard session.
-        # Headless Sway occasionally loses a key from an ephemeral virtual
-        # keyboard, and every session is another chance to lose one, so the
-        # response shares a single session and paces its keys. The lock records
-        # every keypress it handles as KEYBOARD, so the whole response is
-        # confirmed before the test waits for the authentication result: a short
-        # count fails the test with diagnostics instead of letting a partial
-        # response reach PAM.
-        text = machine.succeed(f"cat {path}", timeout=timedelta(seconds=30)).strip()
-        script = f"cat {shlex.quote(path)} | wtype -d 50 - -s 50 -k Return"
+        # Headless Sway loses keys from ephemeral virtual keyboards, and every
+        # session is another chance to lose one, so the response shares a single
+        # session and paces its keys. The lock records every keypress it handles
+        # as KEYBOARD, and the injection is only accepted once the lock observed
+        # exactly one keypress per character and for the Return: a short or long
+        # delivery fails the test with diagnostics instead of being taken for a
+        # submitted response. Return is part of the session, so a partial
+        # response can still reach PAM; what the check rules out is the test
+        # treating that delivery as a valid response.
+        text = machine.succeed(
+            f"cat {shlex.quote(path)}", timeout=timedelta(seconds=30)
+        ).strip()
+        script = f"wtype -d 50 - -s 50 -k Return < {shlex.quote(path)}"
         before = count("/tmp/observer", "KEYBOARD")
         try:
             machine.succeed(
