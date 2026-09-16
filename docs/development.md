@@ -9,9 +9,10 @@ nix develop
 ```
 
 The Makefile provides `dev`, `animated-dev`, `check`, `fmt`, `fmt-fix`, `lint`,
-`test`, `scripts-test`, `check-rfds`, `smoke`, `evidence`,
-`update-reference-images`, `hardware-smoke`, `e2e`, `build`, `package`,
-`verify`, `changelog`, `next-version`, and `clean` targets.
+`test`, `scripts-test`, `check-rfds`, `smoke`, `wallpaper-smoke`, `lock-smoke`,
+`lock-vm`, `heic-assets`, `evidence`, `update-reference-images`,
+`hardware-smoke`, `e2e`, `build`, `package`, `verify`, `changelog`,
+`next-version`, and `clean` targets.
 
 ## Safe UI preview
 
@@ -91,6 +92,24 @@ jobs in CI. It starts headless Weston, nests Cage with its pixman renderer, and
 launches Genkan using Mesa's software Vulkan driver. Genkan must remain alive
 until the controlled timeout. The check requires iced's wgpu backend and proves
 that Cage launched the packaged process with the intended Vulkan driver.
+
+`make wallpaper-smoke` runs the headless layer-shell desktop check. It launches
+the packaged `genkan wallpaper` under headless Sway with two differently scaled
+outputs, exercises scale, transform, and mode changes without recreating a
+surface, compares aspect-preserving cover rendering against independent
+ImageMagick references, and confirms that a foreground `genkan lock` fully
+occludes the desktop client and that explicit unlock restores it. It emits
+`mixed-scale-landscape.png`, `mixed-scale-portrait.png`, `ultrawide.png`,
+`locked-landscape.png`, `locked-portrait.png`, and the
+`transition-before.png`, `transition-during.png`, and `transition-after.png`
+dissolve frames for review, and it makes no GeoClue or session-bus request. The
+transition capture places local wall-clock time five seconds before the fixture's
+06:00 boundary with a second-precision POSIX `TZ` offset so the boundary is
+observed instead of waited for.
+
+`make heic-assets` verifies the pinned dynamic HEIC assets recorded in the
+wallpaper manifest: each repository-delivered asset's byte size and SHA-256 must
+match its manifest entry.
 
 Authentication changes should also run the x86_64 NixOS VM test:
 

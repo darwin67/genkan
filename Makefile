@@ -4,7 +4,7 @@ WIDTH ?= 1280
 HEIGHT ?= 800
 WALLPAPER ?= tahoe-beach
 
-.PHONY: dev animated-dev lock-dev check fmt fmt-fix lint test scripts-test check-rfds smoke wallpaper-smoke lock-smoke lock-vm evidence update-reference-images hardware-smoke e2e build package verify changelog next-version clean
+.PHONY: dev animated-dev lock-dev check fmt fmt-fix lint test scripts-test check-rfds smoke wallpaper-smoke lock-smoke lock-vm heic-assets evidence update-reference-images hardware-smoke e2e build package verify changelog next-version clean
 
 dev:
 	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)"
@@ -54,6 +54,9 @@ lock-smoke:
 lock-vm:
 	nix build .#checks.x86_64-linux.session-lock-vm --print-build-logs
 
+heic-assets:
+	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).heic-assets --print-build-logs
+
 evidence:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).preview-evidence --print-build-logs
 
@@ -72,7 +75,7 @@ build:
 package:
 	nix build
 
-verify: fmt lint test check-rfds package smoke wallpaper-smoke lock-smoke evidence
+verify: fmt lint test check-rfds package heic-assets smoke wallpaper-smoke lock-smoke evidence
 
 changelog:
 	git cliff --output CHANGELOG.md
