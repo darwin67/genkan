@@ -38,6 +38,14 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     pattern_heic=$(mktemp --suffix=.heic)
     pattern_expected_one=$(mktemp --suffix=.png)
     pattern_expected_two=$(mktemp --suffix=.png)
+    pattern_expected_ultrawide=$(mktemp --suffix=.png)
+    ultrawide_capture=$(mktemp --suffix=.png)
+    mixed_scale_one=$(mktemp --suffix=.png)
+    mixed_scale_two=$(mktemp --suffix=.png)
+    transition_frame=$(mktemp --suffix=.png)
+    transition_before=$(mktemp --suffix=.png)
+    transition_during=$(mktemp --suffix=.png)
+    transition_after=$(mktemp --suffix=.png)
     wallpaper_pid=
     lock_pid=
     weston_pid=
@@ -50,7 +58,9 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
         "$lock_log" "$capture_one" "$capture_two" "$restored_one" "$restored_two" \
         "$lock_capture_one" "$lock_capture_two" "$ready" "$unsupported_runtime" \
         "$unsupported_log" "$unsupported_client_log" "$pattern_heic" \
-        "$pattern_expected_one" "$pattern_expected_two"
+        "$pattern_expected_one" "$pattern_expected_two" "$pattern_expected_ultrawide" \
+        "$ultrawide_capture" "$mixed_scale_one" "$mixed_scale_two" \
+        "$transition_frame" "$transition_before" "$transition_during" "$transition_after"
     }
     report_failure() {
       status=$?
@@ -299,9 +309,17 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
       -gravity center -extent 800x450 "$pattern_expected_one"
     magick "$pattern_heic[0]" -filter point -resize '360x800^' \
       -gravity center -extent 360x800 "$pattern_expected_two"
-    ${genkan}/bin/genkan wallpaper --file "$pattern_heic" --reduce-motion \
-      >>"$wallpaper_log" 2>&1 &
+    # The restarted run keeps WAYLAND_DEBUG so geometry transactions remain
+    # observable for the cover and ultrawide evidence below.
+    pattern_first_line=$(( $(wc -l < "$wallpaper_log") + 1 ))
+    WAYLAND_DEBUG=client ${genkan}/bin/genkan wallpaper --file "$pattern_heic" \
+      --reduce-motion >>"$wallpaper_log" 2>&1 &
     wallpaper_pid=$!
+    # A fresh client allocates new surface IDs, so rebind the landscape and
+    # portrait surfaces before asserting their geometry transactions.
+    wallpaper_surface_one=$(await_new_surface "$pattern_first_line" 800 450)
+    wallpaper_surface_two=$(await_new_surface "$pattern_first_line" 360 800)
+    [[ "$wallpaper_surface_one" != "$wallpaper_surface_two" ]]
 
     capture_pattern() {
       output=$1
@@ -335,6 +353,22 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     }
     capture_pattern HEADLESS-1 "$restored_one" "$pattern_expected_one" 7200
     capture_pattern HEADLESS-2 "$restored_two" "$pattern_expected_two" 5760
+    # Retain the simultaneous scale-1 landscape and scale-2 transformed
+    # portrait presentation as mixed-scale evidence.
+    cp "$restored_one" "$mixed_scale_one"
+    cp "$restored_two" "$mixed_scale_two"
+
+    # A 3.55:1 ultrawide mode must cover independently without distortion.
+    first_line=$(( $(wc -l < "$wallpaper_log") + 1 ))
+    swaymsg -s "$ipc" output HEADLESS-1 mode 1280x360 >/dev/null
+    await_geometry_commit "$first_line" "$wallpaper_surface_one" 1 1280 360
+    magick "$pattern_heic[0]" -filter point -resize '1280x360^' \
+      -gravity center -extent 1280x360 "$pattern_expected_ultrawide"
+    capture_pattern HEADLESS-1 "$ultrawide_capture" "$pattern_expected_ultrawide" 11520
+    first_line=$(( $(wc -l < "$wallpaper_log") + 1 ))
+    swaymsg -s "$ipc" output HEADLESS-1 mode 800x450 >/dev/null
+    await_geometry_commit "$first_line" "$wallpaper_surface_one" 1 800 450
+    capture_pattern HEADLESS-1 "$restored_one" "$pattern_expected_one" 7200
 
     ${lockTestGenkan}/bin/genkan lock --test-unlock-after-ready \
       --test-unlock-delay-ms 5000 --ready-fd 3 \
@@ -385,7 +419,77 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     capture_pattern HEADLESS-1 "$restored_one" "$pattern_expected_one" 7200
     capture_pattern HEADLESS-2 "$restored_two" "$pattern_expected_two" 5760
     kill -0 "$wallpaper_pid"
+
+    # Representative time-transition evidence. A second-precision POSIX TZ
+    # offset places local wall-clock time five seconds before the fixture's
+    # 06:00 boundary, so the default two-second dissolve from the red frame to
+    # the green frame runs while the test is watching.
+    kill "$wallpaper_pid"
+    wait "$wallpaper_pid" || true
+    transition_target=$(( 5 * 3600 + 59 * 60 + 55 ))
+    transition_offset=$(( transition_target - $(date -u +%s) % 86400 ))
+    if [[ "$transition_offset" -gt 43200 ]]; then
+      transition_offset=$((transition_offset - 86400))
+    elif [[ "$transition_offset" -le -43200 ]]; then
+      transition_offset=$((transition_offset + 86400))
+    fi
+    if [[ "$transition_offset" -ge 0 ]]; then
+      transition_sign=-
+    else
+      transition_sign=+
+      transition_offset=$((-transition_offset))
+    fi
+    printf -v transition_zone 'UTC%s%02d:%02d:%02d' "$transition_sign" \
+      "$((transition_offset / 3600))" "$(((transition_offset % 3600) / 60))" \
+      "$((transition_offset % 60))"
+    TZ="$transition_zone" ${genkan}/bin/genkan wallpaper \
+      --file ${../../tests/fixtures/dynamic-heic/synthetic-all-properties.heic} \
+      >>"$wallpaper_log" 2>&1 &
+    wallpaper_pid=$!
+    for _ in $(seq 1 400); do
+      kill -0 "$wallpaper_pid"
+      rm -f "$transition_frame"
+      if grim -o HEADLESS-1 "$transition_frame" 2>/dev/null; then
+        transition_means=$(
+          magick "$transition_frame" \
+            -format '%[fx:round(mean.r*255)] %[fx:round(mean.g*255)]' info: 2>/dev/null || true
+        )
+        read -r transition_red transition_green <<<"$transition_means" || true
+        if [[ "$transition_red" =~ ^[0-9]+$ && "$transition_green" =~ ^[0-9]+$ ]]; then
+          if [[ "$transition_red" -ge 200 && "$transition_green" -le 16 ]]; then
+            cp "$transition_frame" "$transition_before"
+          elif [[ "$transition_green" -ge 200 && "$transition_red" -le 16 ]]; then
+            cp "$transition_frame" "$transition_after"
+          elif [[ "$transition_red" -ge 24 && "$transition_green" -ge 24 ]]; then
+            cp "$transition_frame" "$transition_during"
+          fi
+        fi
+      fi
+      if [[ -s "$transition_before" && -s "$transition_during" && -s "$transition_after" ]]; then
+        break
+      fi
+      sleep 0.02
+    done
+    if [[ ! -s "$transition_before" || ! -s "$transition_during" || ! -s "$transition_after" ]]; then
+      echo "time transition did not dissolve from the red to the green frame" >&2
+      exit 1
+    fi
+    kill -0 "$wallpaper_pid"
+
+    # The desktop runtime must not depend on a live GeoClue service: these runs
+    # use no --solar and a nonexistent session bus.
+    if grep -Eqi 'geoclue|org\.freedesktop\.GeoClue2' "$wallpaper_log"; then
+      echo "desktop wallpaper contacted GeoClue without --solar" >&2
+      exit 1
+    fi
+
     mkdir "$out"
-    cp "$restored_one" "$out/landscape.png"
-    cp "$restored_two" "$out/portrait.png"
+    cp "$mixed_scale_one" "$out/mixed-scale-landscape.png"
+    cp "$mixed_scale_two" "$out/mixed-scale-portrait.png"
+    cp "$ultrawide_capture" "$out/ultrawide.png"
+    cp "$lock_capture_one" "$out/locked-landscape.png"
+    cp "$lock_capture_two" "$out/locked-portrait.png"
+    cp "$transition_before" "$out/transition-before.png"
+    cp "$transition_during" "$out/transition-during.png"
+    cp "$transition_after" "$out/transition-after.png"
   ''
