@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: discussion
+:state: committed
 :discussion: https://github.com/darwin67/genkan/pull/32
 :labels: wallpaper, heic, desktop, wayland, geoclue, solar
 
