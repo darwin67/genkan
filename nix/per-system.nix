@@ -64,11 +64,56 @@ let
     ln -s ${wallpaper.videoSource} "$wallpaperDirectory/${wallpaper.install_name}"
     ln -s ${wallpaper.posterSource} "$wallpaperDirectory/${wallpaper.poster.file}"
   '';
+
+  # Immutable dynamic HEIC assets. A repository-delivered asset is pinned by its
+  # committed bytes; a catalog asset delivered from the R2 host records
+  # `delivery = "r2"` with `r2_url` and `nix_hash` and is fetched as a
+  # hash-pinned fixed-output source exactly like the MOV catalog.
+  dynamicHeicAssets = map (
+    asset:
+    let
+      repositorySource = self + "/${asset.source_path}";
+      source =
+        if asset.delivery == "r2" then
+          pkgs.fetchurl {
+            name = asset.install_name;
+            url = asset.r2_url;
+            hash = asset.nix_hash;
+          }
+        else
+          repositorySource;
+    in
+    assert asset.delivery == "r2" || asset.delivery == "repository";
+    assert asset.delivery != "repository" || builtins.hashFile "sha256" repositorySource == asset.sha256;
+    asset
+    // {
+      inherit source;
+    }
+  ) wallpaperManifest.dynamic_heic;
+  installHeicAsset = asset: ''
+    ln -s ${asset.source} "$wallpaperDirectory/${asset.install_name}"
+  '';
+  heicAssetCheck =
+    pkgs.runCommand "genkan-heic-asset-check"
+      {
+        nativeBuildInputs = [ pkgs.coreutils ];
+      }
+      ''
+        ${pkgs.lib.concatMapStringsSep "\n" (asset: ''
+          test "$(stat -c %s ${asset.source})" = "${toString asset.byte_size}"
+          test "$(sha256sum ${asset.source} | cut -d' ' -f1)" = "${asset.sha256}"
+        '') dynamicHeicAssets}
+        touch $out
+      '';
   devWallpaperDirectory = pkgs.linkFarm "genkan-wallpapers" (
     map (wallpaper: {
       name = wallpaper.install_name;
       path = wallpaper.videoSource;
     }) wallpapers
+    ++ map (asset: {
+      name = asset.install_name;
+      path = asset.source;
+    }) dynamicHeicAssets
   );
 
   package = rustPlatform.buildRustPackage {
@@ -91,6 +136,7 @@ let
       mkdir -p "$wallpaperDirectory"
       install -m 0444 ${../assets/wallpapers/manifest.toml} "$wallpaperDirectory/manifest.toml"
       ${pkgs.lib.concatMapStringsSep "\n" installWallpaper wallpapers}
+      ${pkgs.lib.concatMapStringsSep "\n" installHeicAsset dynamicHeicAssets}
 
       wrapProgram $out/bin/genkan \
         --set FONTCONFIG_FILE ${fontConfig} \
@@ -289,6 +335,7 @@ in
   checks = {
     inherit package;
     module = moduleCheck;
+    heic-assets = heicAssetCheck;
     graphics-smoke = import ./tests/graphics-smoke.nix {
       inherit pkgs;
       genkan = package;
