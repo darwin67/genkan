@@ -25,7 +25,16 @@ const APPLE_DESKTOP_NAMESPACE: &str = "http://ns.apple.com/namespace/1.0/";
 #[derive(Clone, Copy, Debug)]
 struct Limits {
     max_source_bytes: u64,
-    max_items: usize,
+    /// Container-item records: `ipma` entries, `iloc` records, `iref`
+    /// destinations, and track references. libheif applies this one value to
+    /// every one of those counts, and tile-based images contribute an entry per
+    /// tile, so a real multi-image wallpaper needs far more than its top-level
+    /// image count. This bounds libheif's eagerly retained metadata.
+    max_container_items: u32,
+    /// Top-level still images the schedule may address.
+    max_top_level_images: usize,
+    /// Metadata blocks attached to the primary image.
+    max_metadata_blocks: usize,
     max_tiles: u32,
     max_width: u32,
     max_height: u32,
@@ -48,10 +57,17 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             max_source_bytes: 64 * 1024 * 1024,
-            // This is a total container-item ceiling, including hidden tiles and metadata.
-            // Keeping it coupled to the parse-phase block limit below bounds libheif's
-            // eagerly retained metadata to 64 MiB.
-            max_items: 64,
+            // Tile-based images put one `ipma` entry and one `iloc` record on
+            // every tile, so a 4K multi-image wallpaper needs hundreds of these
+            // records even though it exposes a handful of top-level images.
+            // This remains bounded: libheif rejects a container that exceeds it
+            // before any item data is read.
+            max_container_items: 4_096,
+            // Apple dynamic wallpapers carry one still per schedule point. The
+            // format's own schedule limit is below this, so a file that passes
+            // both checks is addressable in full.
+            max_top_level_images: 64,
+            max_metadata_blocks: 64,
             max_tiles: 4_096,
             max_width: 16_384,
             max_height: 16_384,
@@ -147,13 +163,14 @@ impl Document {
         security_limits.set_max_number_of_tiles(u64::from(limits.max_tiles));
         security_limits
             .set_max_bayer_pattern_pixels(u32::try_from(limits.max_pixels).unwrap_or(u32::MAX));
-        security_limits.set_max_items(u32::try_from(limits.max_items).unwrap_or(u32::MAX));
+        security_limits.set_max_items(limits.max_container_items);
         security_limits.set_max_color_profile_size(
             u32::try_from(limits.max_metadata_block_bytes).unwrap_or(u32::MAX),
         );
         // libheif eagerly loads metadata while parsing. The pinned Nix build has no
-        // compressed-metadata codecs, so this per-item ceiling and max_items bound
-        // retained native metadata before Rust can inspect aggregate sizes.
+        // compressed-metadata codecs, so this per-item ceiling and
+        // max_container_items bound retained native metadata before Rust can
+        // inspect aggregate sizes.
         security_limits.set_max_memory_block_size(
             u64::try_from(limits.max_metadata_block_bytes).unwrap_or(u64::MAX),
         );
@@ -171,7 +188,7 @@ impl Document {
         if item_ids.is_empty() {
             return Err(Error::Container("no top-level images".into()));
         }
-        if item_ids.len() > limits.max_items {
+        if item_ids.len() > limits.max_top_level_images {
             return Err(Error::Limit("top-level item count"));
         }
         let images = TopLevelImages::new(item_ids.iter().copied().map(HeifItemId::new).collect());
@@ -394,7 +411,7 @@ fn read_metadata(
     limits: &Limits,
 ) -> Result<Metadata, Error> {
     let count = handle.number_of_metadata_blocks(0).max(0) as usize;
-    if count > limits.max_items {
+    if count > limits.max_metadata_blocks {
         return Err(Error::Limit("metadata block count"));
     }
     let mut ids = vec![0; count];
@@ -1212,7 +1229,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
 
         let limits = Limits {
-            max_items: 1,
+            max_top_level_images: 1,
             ..Limits::default()
         };
         assert!(
@@ -1402,6 +1419,27 @@ mod tests {
         .unwrap();
 
         assert!(metadata.appearance().is_none());
+    }
+
+    #[test]
+    fn tile_based_wallpapers_are_not_limited_by_top_level_image_count() {
+        // A tiled 4K image contributes one `ipma` entry and one `iloc` record
+        // per tile, so a real multi-image wallpaper declares hundreds of
+        // container items while exposing only a handful of images. The two
+        // ceilings must therefore be independent.
+        let limits = Limits::default();
+        assert!(limits.max_container_items >= 512);
+        assert!(u32::try_from(limits.max_top_level_images).unwrap() < limits.max_container_items);
+        assert!(u32::try_from(limits.max_metadata_blocks).unwrap() < limits.max_container_items);
+
+        // A synthetic fixture with four images still opens and decodes under
+        // the default ceilings.
+        let document = Document::open(&fixture("synthetic-all-properties.heic")).unwrap();
+        assert_eq!(document.item_ids().count(), 4);
+        assert_color(
+            &document.decode(ImageReference::from_position(0)).unwrap(),
+            [255, 0, 0, 255],
+        );
     }
 
     #[test]
