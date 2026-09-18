@@ -659,9 +659,22 @@ fn parse_property(
     images: &TopLevelImages,
     limits: &Limits,
 ) -> Result<(AppleProperty, PropertyValue), Error> {
-    preflight_binary_plist(bytes, limits)?;
-    let value = Value::from_reader(std::io::Cursor::new(bytes))
-        .map_err(|error| Error::Metadata(format!("invalid binary property list: {error}")))?;
+    // Apple's own dynamic wallpapers encode these properties as XML property
+    // lists; generators such as `wallpapper` and `Equinox` emit XML as well.
+    // Only the binary encoding gets the structural preflight below, so the XML
+    // branch keeps its own byte, depth, and object bounds while the `plist`
+    // crate expands it.
+    let value = if bytes.starts_with(b"bplist00") {
+        preflight_binary_plist(bytes, limits)?;
+        Value::from_reader(std::io::Cursor::new(bytes))
+            .map_err(|error| Error::Metadata(format!("invalid binary property list: {error}")))?
+    } else if bytes.starts_with(b"<?xml") || bytes.starts_with(b"<!DOCTYPE") {
+        preflight_xml_plist(bytes, limits)?;
+        Value::from_reader_xml(std::io::Cursor::new(bytes))
+            .map_err(|error| Error::Metadata(format!("invalid XML property list: {error}")))?
+    } else {
+        return Err(Error::Metadata("property is not a property list".into()));
+    };
     let dictionary = value
         .as_dictionary()
         .ok_or_else(|| Error::Metadata("property list root is not a dictionary".into()))?;
@@ -804,6 +817,75 @@ fn exact_u64(value: &Value) -> Option<u64> {
         Value::Integer(value) => value.as_unsigned(),
         _ => None,
     }
+}
+
+// Bounds an XML property list before the `plist` crate expands it.
+//
+// The binary format carries an explicit object count and offset table that
+// `preflight_binary_plist` validates exactly. XML carries neither, so this
+// checks the encoded size and then bounds the expansion by counting the
+// elements that allocate an object and tracking nesting depth. `plist` rejects
+// any document that does not match the DTD it enforces, so the element set is
+// closed: every allocating object is a `dict`, `array`, `data`, `date`,
+// `integer`, `real`, `string`, `true`, or `false`.
+fn preflight_xml_plist(bytes: &[u8], limits: &Limits) -> Result<(), Error> {
+    if bytes.len() > limits.max_plist_bytes {
+        return Err(Error::Limit("property list size"));
+    }
+    let mut objects = 0usize;
+    let mut depth = 0usize;
+    let mut index = 0usize;
+    while let Some(start) = bytes[index..].iter().position(|byte| *byte == b'<') {
+        let start = index + start;
+        let Some(end) = bytes[start..].iter().position(|byte| *byte == b'>') else {
+            return Err(Error::Metadata("unterminated XML property list tag".into()));
+        };
+        let end = start + end;
+        let tag = &bytes[start + 1..end];
+        // Skip XML declarations, processing instructions, and comments.
+        let (closing, body) = match tag.first() {
+            Some(b'/') => (true, &tag[1..]),
+            Some(b'?' | b'!') => {
+                index = end + 1;
+                continue;
+            }
+            _ => (false, tag),
+        };
+        let name_end = body
+            .iter()
+            .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_' && *byte != b'-')
+            .unwrap_or(body.len());
+        let name = &body[..name_end];
+        let self_closing = tag.last() == Some(&b'/');
+        if !closing {
+            if matches!(
+                name,
+                b"dict" | b"array" | b"data" | b"date" | b"integer" | b"real" | b"string"
+            ) || matches!(name, b"true" | b"false")
+            {
+                objects += 1;
+                if objects > limits.max_expanded_plist_objects {
+                    return Err(Error::Limit("expanded property list object count"));
+                }
+            }
+            if !self_closing {
+                depth += 1;
+                if depth > limits.max_plist_depth {
+                    return Err(Error::Limit("property list nesting depth"));
+                }
+            }
+        } else {
+            depth = depth.saturating_sub(1);
+        }
+        index = end + 1;
+    }
+    // The expansion charges one `Value` per object; keep the same accounting
+    // ceiling the binary path applies so both encodings agree.
+    let mut expanded_bytes = 0usize;
+    for _ in 0..objects {
+        charge_expanded_bytes(&mut expanded_bytes, 64, limits)?;
+    }
+    Ok(())
 }
 
 // Validates the object graph and its expansion before `plist` allocates it.
@@ -1440,6 +1522,143 @@ mod tests {
             &document.decode(ImageReference::from_position(0)).unwrap(),
             [255, 0, 0, 255],
         );
+    }
+
+    #[test]
+    fn accepts_xml_property_lists_like_real_dynamic_wallpapers() {
+        // Apple's own dynamic wallpapers and the `wallpapper` and `Equinox`
+        // generators all emit XML property lists, so the binary-only path this
+        // replaces could not read any real file.
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            r#"<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "#,
+            r#""http://www.apple.com/DTDs/PropertyList-1.0.dtd">"#,
+            r#"<plist version="1.0"><dict>"#,
+            r#"<key>ti</key><array>"#,
+            r#"<dict><key>i</key><integer>0</integer><key>t</key><real>0.0</real></dict>"#,
+            r#"<dict><key>i</key><integer>1</integer><key>t</key><real>0.5</real></dict>"#,
+            r#"</array></dict></plist>"#,
+        );
+        let images = TopLevelImages::new(vec![HeifItemId::new(1), HeifItemId::new(2)]);
+        let (property, value) = parse_property(
+            PropertyName::H24,
+            xml.as_bytes(),
+            &images,
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(property, AppleProperty::Time);
+        let PropertyValue::Time(schedule) = value else {
+            panic!("expected a time schedule");
+        };
+        assert_eq!(schedule.points().len(), 2);
+        assert_eq!(schedule.points()[1].image, ImageReference::from_position(1));
+
+        // The same document with an appearance pair, as the time-of-day
+        // wallpapers embed it.
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            r#"<plist version="1.0"><dict>"#,
+            r#"<key>ap</key><dict><key>d</key><integer>1</integer>"#,
+            r#"<key>l</key><integer>0</integer></dict>"#,
+            r#"<key>ti</key><array>"#,
+            r#"<dict><key>i</key><integer>0</integer><key>t</key><integer>0</integer></dict>"#,
+            r#"<dict><key>i</key><integer>1</integer><key>t</key><real>0.5</real></dict>"#,
+            r#"</array></dict></plist>"#,
+        );
+        let (_, value) = parse_property(
+            PropertyName::H24,
+            xml.as_bytes(),
+            &images,
+            &Limits::default(),
+        )
+        .unwrap();
+        let PropertyValue::Time(schedule) = value else {
+            panic!("expected a time schedule");
+        };
+        let appearance = schedule.appearance.expect("embedded appearance");
+        assert_eq!(appearance.light, ImageReference::from_position(0));
+        assert_eq!(appearance.dark, ImageReference::from_position(1));
+
+        // An XML solar schedule, as the solar dynamic wallpapers encode it.
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            r#"<plist version="1.0"><dict><key>si</key><array>"#,
+            r#"<dict><key>i</key><integer>0</integer><key>a</key><real>-8.0</real>"#,
+            r#"<key>z</key><real>164.8</real></dict>"#,
+            r#"<dict><key>i</key><integer>1</integer><key>a</key><real>2.8</real>"#,
+            r#"<key>z</key><real>75.2</real></dict>"#,
+            r#"</array></dict></plist>"#,
+        );
+        let (property, value) = parse_property(
+            PropertyName::Solar,
+            xml.as_bytes(),
+            &images,
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(property, AppleProperty::Solar);
+        let PropertyValue::Solar(schedule) = value else {
+            panic!("expected a solar schedule");
+        };
+        assert_eq!(schedule.points().len(), 2);
+    }
+
+    #[test]
+    fn xml_property_lists_are_bounded_before_expansion() {
+        let images = TopLevelImages::new(vec![HeifItemId::new(1)]);
+        // A document that is not a property list in either encoding.
+        assert!(matches!(
+            parse_property(
+                PropertyName::H24,
+                b"not a plist",
+                &images,
+                &Limits::default()
+            ),
+            Err(Error::Metadata(_))
+        ));
+        // An XML document that exceeds the encoded byte ceiling.
+        let oversized = format!(
+            r#"<?xml version="1.0"?><plist version="1.0"><dict><key>ti</key><string>{}</string></dict></plist>"#,
+            "x".repeat(Limits::default().max_plist_bytes)
+        );
+        assert!(matches!(
+            parse_property(
+                PropertyName::H24,
+                oversized.as_bytes(),
+                &images,
+                &Limits::default()
+            ),
+            Err(Error::Limit("property list size"))
+        ));
+        // Deep nesting is rejected before `plist` expands it.
+        let deep = format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\">{}{}",
+            "<array>".repeat(64),
+            "</array>".repeat(64)
+        );
+        assert!(matches!(
+            parse_property(
+                PropertyName::H24,
+                deep.as_bytes(),
+                &images,
+                &Limits::default()
+            ),
+            Err(Error::Limit("property list nesting depth"))
+        ));
+        // Object-count expansion is bounded.
+        let limits = Limits {
+            max_expanded_plist_objects: 2,
+            ..Limits::default()
+        };
+        let wide = format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\"><array>{}</array></plist>",
+            "<string>x</string>".repeat(16)
+        );
+        assert!(matches!(
+            parse_property(PropertyName::H24, wide.as_bytes(), &images, &limits),
+            Err(Error::Limit("expanded property list object count"))
+        ));
     }
 
     #[test]
