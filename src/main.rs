@@ -920,6 +920,7 @@ mod tests {
             "sequoia-sunrise",
             "sequoia-morning",
             "sequoia-night",
+            "golden-gate",
         ] {
             assert!(try_parse_login(["genkan", "--wallpaper", name]).is_ok());
         }

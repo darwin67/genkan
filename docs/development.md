@@ -71,6 +71,7 @@ make animated-dev
 WALLPAPER=sequoia-sunrise make animated-dev
 WALLPAPER=sequoia-morning make animated-dev
 WALLPAPER=sequoia-night make animated-dev
+WALLPAPER=golden-gate make animated-dev
 ```
 
 `--wallpaper-file` accepts only an existing absolute `.mov` file. It replaces

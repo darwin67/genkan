@@ -88,7 +88,7 @@ services.greetd = {
 ```
 
 The packaged greeter animates Tahoe Beach by default. Operators can select
-`sequoia-sunrise`, `sequoia-morning`, or `sequoia-night`, or use
+`sequoia-sunrise`, `sequoia-morning`, `sequoia-night`, or `golden-gate`, or use
 `--reduce-motion` to retain the corresponding static poster.
 
 Logged-in users on a supported compositor can run a dynamic HEIC wallpaper as

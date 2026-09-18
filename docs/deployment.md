@@ -266,6 +266,7 @@ Tahoe Beach animates by default. Select another packaged catalog entry with:
 --wallpaper sequoia-sunrise
 --wallpaper sequoia-morning
 --wallpaper sequoia-night
+--wallpaper golden-gate
 ```
 
 `--reduce-motion` (also available as `--static-wallpaper`) shows the selected

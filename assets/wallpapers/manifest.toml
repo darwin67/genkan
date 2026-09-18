@@ -219,6 +219,57 @@ endpoint_comparison_height = 540
 endpoint_ssim = 0.462603
 verification = "The decoded first and final frames are not seamless. A held-final-frame 2 s dissolve into the opening frames was visually checked without a hard jump, blank frame, or corruption."
 
+[[wallpaper]]
+id = "golden-gate"
+name = "Golden Gate"
+source_page_url = "https://mrmacintosh.com/download-the-new-macos-golden-gate-wallpaper-desktop-pictures-5k/"
+source_file_url = "https://drive.google.com/file/d/1R5vVgXaLBuDZpYifOHPR0mIHAbqLpx_G/view"
+rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/golden-gate-1192ff0b0c0174f3eace6d0d255f51cc981fb7868e110a8c8ca63c1b3394c3de.mov"
+install_name = "golden-gate.mov"
+sha256 = "1192ff0b0c0174f3eace6d0d255f51cc981fb7868e110a8c8ca63c1b3394c3de"
+nix_hash = "sha256-EZL/CwwBdPPqzm0NJV9RzJgft4aOEQqMjKY8GzOUw94="
+byte_size = 73858356
+cacheable_under_plan_limit = true
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 4096
+height = 2160
+frame_rate = "240/1"
+time_base = "1/240000"
+frame_count = 14400
+duration_seconds = 60.000000
+stream_bit_rate = 9822519
+container_bit_rate = 9847780
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt709"
+color_primaries = "bt709"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "golden-gate-poster.jpg"
+sha256 = "85b6a12bbf04fb7e1c9e0c79c5a463ed9d25ea1bba692076e6bd3a6fb2942749"
+width = 4096
+height = 2160
+source_timestamp_seconds = 59.995833
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.497198
+verification = "The decoded first and final frames are not seamless. ffmpeg ssim over the two 960x540 endpoint frames reports All:0.497198, in the same range as Tahoe Beach and Sequoia Night, so the source uses the same held-final-frame 2 s dissolve. A side-by-side check of the last five and first five frames showed no hard jump or discontinuity across the loop boundary."
+
 # Immutable dynamic HEIC assets. `delivery = "repository"` assets are pinned by
 # their committed bytes; a catalog asset delivered from the R2 host records
 # `delivery = "r2"` with `r2_url` and `nix_hash` and is fetched as a

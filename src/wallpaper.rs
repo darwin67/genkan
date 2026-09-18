@@ -48,7 +48,7 @@ const HEIC_FAILED_TAG: u8 = b'E';
 const HEIC_HEADER_BYTES: usize = 12;
 const MAX_HEIC_FRAME_DIMENSION: u32 = 16_384;
 const MAX_HEIC_FRAME_BYTES: usize = 128 * 1024 * 1024;
-static POSTERS: [OnceLock<Result<image::Handle, String>>; 4] = [const { OnceLock::new() }; 4];
+static POSTERS: [OnceLock<Result<image::Handle, String>>; 5] = [const { OnceLock::new() }; 5];
 
 #[derive(Debug, Clone, Copy)]
 struct PlaybackSpec {
@@ -58,7 +58,7 @@ struct PlaybackSpec {
     crossfade: Duration,
 }
 
-const WALLPAPERS: [PlaybackSpec; 4] = [
+const WALLPAPERS: [PlaybackSpec; 5] = [
     PlaybackSpec {
         install_name: "tahoe-beach.mov",
         poster_name: "tahoe-beach-poster.jpg",
@@ -83,6 +83,12 @@ const WALLPAPERS: [PlaybackSpec; 4] = [
         duration: Duration::from_micros(291_603_333),
         crossfade: Duration::from_millis(2_000),
     },
+    PlaybackSpec {
+        install_name: "golden-gate.mov",
+        poster_name: "golden-gate-poster.jpg",
+        duration: Duration::from_micros(60_000_000),
+        crossfade: Duration::from_millis(2_000),
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -92,6 +98,7 @@ pub(crate) enum Catalog {
     SequoiaSunrise,
     SequoiaMorning,
     SequoiaNight,
+    GoldenGate,
 }
 
 impl Catalog {
@@ -101,6 +108,7 @@ impl Catalog {
             Self::SequoiaSunrise => 1,
             Self::SequoiaMorning => 2,
             Self::SequoiaNight => 3,
+            Self::GoldenGate => 4,
         }
     }
 
@@ -2152,6 +2160,13 @@ mod tests {
                     "sequoia-night.mov",
                     "sequoia-night-poster.jpg",
                     291_603_333,
+                    2_000
+                ),
+                (
+                    "golden-gate".into(),
+                    "golden-gate.mov",
+                    "golden-gate-poster.jpg",
+                    60_000_000,
                     2_000
                 ),
             ]
