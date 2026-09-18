@@ -3,6 +3,8 @@
 use std::fmt;
 
 #[cfg(feature = "gui")]
+mod container;
+#[cfg(feature = "gui")]
 pub mod heic;
 #[cfg(feature = "gui")]
 pub mod playback;
