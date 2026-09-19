@@ -421,12 +421,15 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     kill -0 "$wallpaper_pid"
 
     # Representative time-transition evidence. A second-precision POSIX TZ
-    # offset places local wall-clock time five seconds before the fixture's
+    # offset places local wall-clock time twenty seconds before the fixture's
     # 06:00 boundary, so the default two-second dissolve from the red frame to
-    # the green frame runs while the test is watching.
+    # the green frame runs while the test is watching, with enough lead to cover
+    # a slow software-rendered startup. Each phase is only accepted in order and
+    # must match the fixture's palette, so an unrelated or stale frame cannot
+    # stand in for a phase that never happened.
     kill "$wallpaper_pid"
     wait "$wallpaper_pid" || true
-    transition_target=$(( 5 * 3600 + 59 * 60 + 55 ))
+    transition_target=$(( 6 * 3600 - 20 ))
     transition_offset=$(( transition_target - $(date -u +%s) % 86400 ))
     if [[ "$transition_offset" -gt 43200 ]]; then
       transition_offset=$((transition_offset - 86400))
@@ -446,34 +449,70 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
       --file ${../../tests/fixtures/dynamic-heic/synthetic-all-properties.heic} \
       >>"$wallpaper_log" 2>&1 &
     wallpaper_pid=$!
-    for _ in $(seq 1 400); do
-      kill -0 "$wallpaper_pid"
-      rm -f "$transition_frame"
-      if grim -o HEADLESS-1 "$transition_frame" 2>/dev/null; then
-        transition_means=$(
-          magick "$transition_frame" \
-            -format '%[fx:round(mean.r*255)] %[fx:round(mean.g*255)]' info: 2>/dev/null || true
-        )
-        read -r transition_red transition_green <<<"$transition_means" || true
-        if [[ "$transition_red" =~ ^[0-9]+$ && "$transition_green" =~ ^[0-9]+$ ]]; then
-          if [[ "$transition_red" -ge 200 && "$transition_green" -le 16 ]]; then
-            cp "$transition_frame" "$transition_before"
-          elif [[ "$transition_green" -ge 200 && "$transition_red" -le 16 ]]; then
-            cp "$transition_frame" "$transition_after"
-          elif [[ "$transition_red" -ge 24 && "$transition_green" -ge 24 ]]; then
-            cp "$transition_frame" "$transition_during"
+
+    # Captures the first frame whose channel means fall inside the bounds and
+    # whose channels are near-uniform. The fixture dissolves one solid colour
+    # into another, so a real phase is a flat, blend-compatible field; requiring
+    # a near-zero deviation rejects a spatially split frame whose channel
+    # averages happen to match, which an ordered check on means alone cannot
+    # distinguish from a dissolve. The fixture's endpoints are pure red and pure
+    # green, so an encoded-channel blend keeps their sum near 255 as well, which
+    # rejects a uniformly dark or otherwise unrelated frame that happens to sit
+    # inside the channel bounds.
+    capture_transition_phase() {
+      destination=$1
+      min_red=$2
+      max_red=$3
+      min_green=$4
+      max_green=$5
+      max_blue=$6
+      max_deviation=$7
+      attempts=$8
+      for _ in $(seq 1 "$attempts"); do
+        kill -0 "$wallpaper_pid"
+        rm -f "$transition_frame"
+        if grim -o HEADLESS-1 "$transition_frame" 2>/dev/null; then
+          transition_stats=$(
+            magick "$transition_frame" \
+              -format '%[fx:round(mean.r*255)] %[fx:round(mean.g*255)] %[fx:round(mean.b*255)] %[fx:round(standard_deviation.r*255)] %[fx:round(standard_deviation.g*255)] %[fx:round(standard_deviation.b*255)]' \
+              info: 2>/dev/null || true
+          )
+          read -r transition_red transition_green transition_blue \
+            transition_deviation_red transition_deviation_green transition_deviation_blue \
+            <<<"$transition_stats" || true
+          if [[ "$transition_red" =~ ^[0-9]+$ && "$transition_green" =~ ^[0-9]+$ \
+            && "$transition_blue" =~ ^[0-9]+$ && "$transition_deviation_red" =~ ^[0-9]+$ \
+            && "$transition_deviation_green" =~ ^[0-9]+$ \
+            && "$transition_deviation_blue" =~ ^[0-9]+$ ]] \
+            && [[ "$transition_red" -ge "$min_red" && "$transition_red" -le "$max_red" ]] \
+            && [[ "$transition_green" -ge "$min_green" && "$transition_green" -le "$max_green" ]] \
+            && [[ "$transition_blue" -le "$max_blue" ]] \
+            && [[ "$transition_deviation_red" -le "$max_deviation" ]] \
+            && [[ "$transition_deviation_green" -le "$max_deviation" ]] \
+            && [[ "$transition_deviation_blue" -le "$max_deviation" ]] \
+            && [[ $((transition_red + transition_green)) -ge 240 ]] \
+            && [[ $((transition_red + transition_green)) -le 270 ]]; then
+            cp "$transition_frame" "$destination"
+            return 0
           fi
         fi
-      fi
-      if [[ -s "$transition_before" && -s "$transition_during" && -s "$transition_after" ]]; then
-        break
-      fi
-      sleep 0.02
-    done
-    if [[ ! -s "$transition_before" || ! -s "$transition_during" || ! -s "$transition_after" ]]; then
-      echo "time transition did not dissolve from the red to the green frame" >&2
+        sleep 0.02
+      done
+      return 1
+    }
+
+    capture_transition_phase "$transition_before" 200 255 0 16 16 16 2000 || {
+      echo "time transition never presented the red frame" >&2
       exit 1
-    fi
+    }
+    capture_transition_phase "$transition_during" 24 231 24 231 16 16 1200 || {
+      echo "time transition never dissolved between the red and green frames" >&2
+      exit 1
+    }
+    capture_transition_phase "$transition_after" 0 16 200 255 16 16 1200 || {
+      echo "time transition never presented the green frame" >&2
+      exit 1
+    }
     kill -0 "$wallpaper_pid"
 
     # The desktop runtime must not depend on a live GeoClue service: these runs
