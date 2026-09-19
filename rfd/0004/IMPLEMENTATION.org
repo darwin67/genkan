@@ -30,8 +30,9 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
 - [X] Add maintained Rust ~libheif~, XML, Base64, and binary-property-list
   dependencies using the minimum feature set required for decode.
 - [X] Open only absolute regular local files through a stable descriptor and
-  reject URIs, FIFOs, devices, and pathname replacement while documenting that
-  the file owner can still modify the bound inode in place.
+  reject URIs, FIFOs, devices, and pathname replacement. The container is
+  validated and copied to an anonymous descriptor before libheif parses it, so
+  rewriting the bound inode afterwards cannot change what is decoded.
 - [X] Create the libheif context, apply source, item, tile, dimension, metadata,
   nesting, decoded-memory, and working-memory limits before parsing, and retain
   a descriptor-owning ~Read + Seek~ reader for lazy decode.
@@ -182,9 +183,9 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
   under ~share/genkan/wallpapers~ and verified by the ~heic-assets~ check.
   ~docs/deployment.md~ states that ~--file~ remains the only way to select a
   local file, that the file must be an existing absolute regular ~.heic~ or
-  ~.heif~ file bound by descriptor, that the owner can still modify the bound
-  inode in place, and that local files are never uploaded, copied into the
-  store, or published.
+  ~.heif~ file bound by descriptor, that the validated container is copied
+  before decoding so rewriting the bound inode afterwards has no effect, and
+  that local files are never uploaded, copied into the store, or published.
 - [X] Document the high-level solar opt-in, GeoClue's possible network use,
   supported compositors, competing wallpaper managers, reduced motion, and
   all fallback behavior. ~docs/deployment.md~ and ~README.md~ cover the
@@ -207,10 +208,13 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
   ~transition-before.png~, ~transition-during.png~, ~transition-after.png~,
   ~mixed-scale-landscape.png~, ~mixed-scale-portrait.png~, ~ultrawide.png~,
   ~locked-landscape.png~, and ~locked-portrait.png~. The transition capture
-  uses a second-precision POSIX ~TZ~ offset to place local wall-clock time five
-  seconds before the fixture's 06:00 boundary, so the default two-second
+  uses a second-precision POSIX ~TZ~ offset to place local wall-clock time
+  twenty seconds before the fixture's 06:00 boundary, so the default two-second
   dissolve from the red frame to the green frame is observed rather than
-  assumed.
+  assumed, with enough lead for a slow software-rendered startup. Each phase is
+  captured in order and must be a near-uniform, blend-compatible field matching
+  the fixture's palette and red-plus-green intensity, so an unrelated or
+  spatially split frame cannot stand in for a phase that never happened.
 - [X] Run ~make verify~, ~make e2e~, the session-lock VM, and applicable
   physical graphics checks on supported AMD and NVIDIA hosts. ~make verify~,
   ~greetd-e2e~, and ~session-lock-vm~ pass. ~make hardware-smoke~ passed on the
@@ -270,24 +274,29 @@ the survey below records what was found, what was rejected, and why.
 - Rejected for the packaged catalog despite being genuine dynamic HEICs:
   - ~alphaArgon/SequoiaGraphicWallpaper~ ~Sequoia Graphic.heic~ is a real
     8-image, 6016x6016 solar wallpaper with a 10-point ~solar.si~ schedule and
-    an embedded appearance pair, and is the only real solar-schedule sample
-    found. It is 70,842,628 bytes, above the 64 MiB source ceiling, and its
-    frames carry an embedded ICC profile that the color policy rejects, so it
-    parses but cannot decode.
-  - ~Evian-Zhang/DWBuilder~ ~demo/Chinese_dynamic.heic~ parses 12 solar points
-    but its frames carry a Microsoft sRGB ICC profile and cannot decode.
+    an embedded appearance pair, and is the largest real solar-schedule sample
+    found. Its structure was inspected with ~heif-info~ and with the parser
+    under relaxed source and pixel ceilings, where it opens with 8 items and the
+    10-point schedule. Under the shipped defaults it is rejected before parsing
+    at all, because 70,842,628 bytes exceeds the 64 MiB source ceiling. Even
+    under a relaxed ceiling its frames carry an embedded ICC profile that the
+    color policy rejects, so it cannot decode.
+  - ~Evian-Zhang/DWBuilder~ ~demo/Chinese_dynamic.heic~ is a 12-image,
+    2560x1440 solar wallpaper that parses its 12 solar points under the shipped
+    ceilings, but its frames carry a Microsoft sRGB ICC profile and cannot
+    decode.
 - Not dynamic wallpapers at all. The ~.heic~ files offered by the wallpaper
   archive pages are single-image stills: ~heif-info~ reports one top-level image
-  and no ~apple_desktop~ metadata for the Tahoe light (24,645,024 bytes), Tahoe
-  dark (23,879,919), Sequoia light (6,089,113), Golden Gate light (5,867,919),
-  and Golden Gate dark (23,879,919) files. Their only XMP property is an Adobe
-  Photoshop ~xmp:CreateDate~. macOS ships the corresponding artwork as aerial
-  MOV video through ~com.apple.idleassetsd~, which the RFD 2 catalog already
-  covers, so no HEIC variant of that artwork is needed.
+  and no ~apple_desktop~ metadata for the retained still files (24,645,024,
+  23,879,919, 6,089,113, and 5,867,919 bytes). Their only XMP property is an
+  Adobe Photoshop ~xmp:CreateDate~. macOS ships the corresponding artwork as
+  aerial MOV video through ~com.apple.idleassetsd~, which the RFD 2 catalog
+  already covers, so no HEIC variant of that artwork is needed.
 - Two limits remain deliberately unchanged and are the blockers for the solar
   samples above:
-  - ~max_pixels~ is 32 MiB (33,554,432), below the 36,192,256 pixels of a
-    6016x6016 asset. Both rejected solar samples are that size.
+  - ~max_pixels~ is 33,554,432 pixels, below the 36,192,256 pixels of a
+    6016x6016 asset, so the Sequoia sample is above it as well as above the
+    source ceiling. The 2560x1440 Chinese sample is well inside it.
   - Embedded ICC profiles are rejected rather than ignored, because silently
     dropping a profile would display wrong colors. Honoring one requires a real
     ICC-to-sRGB conversion path, which the RFD lists as required behavior.

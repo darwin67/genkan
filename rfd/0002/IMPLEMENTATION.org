@@ -49,10 +49,11 @@ The phases are ordered; complete each phase before beginning the next.
   several adjacent frame pairs were also tried without matching. The values
   remain useful as a relative ordering, but the absolute figures are not
   independently verifiable and should not be treated as a reproducible
-  measurement. The Golden Gate entry added later records the method that
-  produced its value (~ffmpeg~ ~ssim~, 960x540, first frame vs final frame), so
-  future entries can be re-derived. Re-measuring and re-recording the original
-  four is left as follow-up work rather than silently rewriting them.
+  measurement. The Golden Gate entry added later records the exact extraction
+  and comparison commands in the manifest's ~[loop_analysis]~ block together
+  with the tool version, so its value can be re-derived and future entries can
+  follow the same procedure. Re-measuring and re-recording the original four is
+  left as follow-up work rather than silently rewriting them.
 - On 2026-09-01, complete CDN responses matched the source SHA-256 hashes and
   content lengths. Repeated complete requests returned ~200~ and ~HIT~;
   repeated 1 MiB requests returned ~206~, ~HIT~, the requested
