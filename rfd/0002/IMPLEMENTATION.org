@@ -41,6 +41,19 @@ The phases are ordered; complete each phase before beginning the next.
   comparison rejected direct seeking for every source. Visual transition checks
   selected a 2 s held-frame crossfade for Tahoe Beach and Sequoia Night and a
   1 s crossfade for Sequoia Sunrise and Morning.
+- The ~endpoint_ssim~ values recorded for the original four sources cannot be
+  reproduced from the repository. The exact comparison command was not captured
+  when they were measured, and re-measuring Tahoe Beach with ~ffmpeg~'s ~ssim~
+  filter over the two 960x540 endpoint frames yields ~All:0.687571~ rather than
+  the recorded ~0.568323~; ImageMagick, grayscale, 8-bit, full-resolution, and
+  several adjacent frame pairs were also tried without matching. The values
+  remain useful as a relative ordering, but the absolute figures are not
+  independently verifiable and should not be treated as a reproducible
+  measurement. The Golden Gate entry added later records the exact extraction
+  and comparison commands in the manifest's ~[loop_analysis]~ block together
+  with the tool version, so its value can be re-derived and future entries can
+  follow the same procedure. Re-measuring and re-recording the original four is
+  left as follow-up work rather than silently rewriting them.
 - On 2026-09-01, complete CDN responses matched the source SHA-256 hashes and
   content lengths. Repeated complete requests returned ~200~ and ~HIT~;
   repeated 1 MiB requests returned ~206~, ~HIT~, the requested

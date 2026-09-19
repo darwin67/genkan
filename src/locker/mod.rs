@@ -1326,40 +1326,75 @@ mod tests {
         assert_eq!(message, "READY\n");
     }
 
+    /// Identity of the file a descriptor refers to.
+    fn descriptor_identity(fd: RawFd) -> (u64, u64) {
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `stat` points to storage for one `stat` structure.
+        assert_eq!(unsafe { libc::fstat(fd, &mut stat) }, 0);
+        (stat.st_dev, stat.st_ino)
+    }
+
+    /// Asserts that `fd` was closed, tolerating the descriptor number being
+    /// reused by another test thread between the close and this probe.
+    ///
+    /// Tests in this binary run in parallel and open descriptors freely, so a
+    /// bare `F_GETFD` probe cannot distinguish a leaked descriptor from a number
+    /// that was handed to an unrelated open in the meantime. Comparing the file
+    /// identity tells the two apart, which is why this test opens a unique file
+    /// rather than `/dev/null`.
+    fn assert_descriptor_released(fd: RawFd, identity: (u64, u64)) {
+        // SAFETY: F_GETFD only inspects the descriptor integer.
+        if unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1 {
+            return;
+        }
+        assert_ne!(
+            descriptor_identity(fd),
+            identity,
+            "descriptor {fd} is still open"
+        );
+    }
+
     #[test]
     fn read_only_readiness_descriptors_are_rejected_and_closed() {
         let _guard = PROCESS_TEST_LOCK.lock().unwrap();
-        let original = File::open("/dev/null").unwrap().into_raw_fd();
+        let path = std::env::temp_dir().join(format!(
+            "genkan-readiness-descriptor-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"readiness").unwrap();
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
 
+        let original = File::open(&path).unwrap().into_raw_fd();
+        let identity = descriptor_identity(original);
         assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
-        // SAFETY: F_GETFD only inspects the descriptor integer.
-        assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+        assert_descriptor_released(original, identity);
 
         let mut pipe = [0; 2];
         // SAFETY: `pipe` points to storage for both returned descriptors.
         assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
         // SAFETY: the write end is not transferred to the function under test.
         unsafe { libc::close(pipe[1]) };
+        let identity = descriptor_identity(pipe[0]);
         assert!(matches!(adopt_ready_fd(pipe[0]), Err(Error::ReadyFd(_))));
-        // SAFETY: F_GETFD only inspects the descriptor integer.
-        assert_eq!(unsafe { libc::fcntl(pipe[0], libc::F_GETFD) }, -1);
+        assert_descriptor_released(pipe[0], identity);
 
-        let path = CString::new("/dev/null").unwrap();
-        // SAFETY: `path` is a valid, NUL-terminated path and open returns a
+        // SAFETY: `c_path` is a valid, NUL-terminated path and open returns a
         // descriptor owned by this test on success.
-        let original = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        let original = unsafe { libc::open(c_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
         assert!(original >= 0);
+        let identity = descriptor_identity(original);
         assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
-        // SAFETY: F_GETFD only inspects the descriptor integer.
-        assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+        assert_descriptor_released(original, identity);
 
         // Linux accepts access mode 3, but it permits neither reads nor writes.
-        // SAFETY: `path` remains a valid NUL-terminated path.
-        let original = unsafe { libc::open(path.as_ptr(), libc::O_ACCMODE | libc::O_CLOEXEC) };
+        // SAFETY: `c_path` remains a valid NUL-terminated path.
+        let original = unsafe { libc::open(c_path.as_ptr(), libc::O_ACCMODE | libc::O_CLOEXEC) };
         assert!(original >= 0);
+        let identity = descriptor_identity(original);
         assert!(matches!(adopt_ready_fd(original), Err(Error::ReadyFd(_))));
-        // SAFETY: F_GETFD only inspects the descriptor integer.
-        assert_eq!(unsafe { libc::fcntl(original, libc::F_GETFD) }, -1);
+        assert_descriptor_released(original, identity);
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

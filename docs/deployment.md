@@ -158,6 +158,23 @@ non-interactive background-layer surface per output:
 genkan wallpaper --file /home/alice/Pictures/dynamic.heic
 ```
 
+The package also installs hash-pinned dynamic HEIC samples under
+`share/genkan/wallpapers`, recorded in the
+[wallpaper manifest](../assets/wallpapers/manifest.toml) with their provenance,
+rights, SHA-256, byte size, item structure, and schedule metadata. Repository
+samples are pinned by their committed bytes; a catalog asset delivered from the
+R2 host records its delivery URL and is fetched by Nix as a hash-pinned
+fixed-output source. A wallpaper process never downloads media.
+
+`--file` remains the only way to select a local wallpaper, and it accepts an
+existing absolute regular `.heic` or `.heif` file. URIs, FIFOs, devices, and
+pipeline descriptions are rejected, and the file is bound by descriptor so a
+later pathname replacement cannot substitute another object. The container is
+validated against the resource ceilings and copied to an anonymous descriptor
+before libheif parses it, so rewriting the bound inode afterwards cannot change
+what is decoded. Local files are never uploaded, copied into the store, or
+published.
+
 The initial backend requires `zwlr_layer_shell_v1` and is intended for niri,
 Sway, River, Hyprland, and other compatible wlroots-oriented compositors. It
 fails instead of opening an ordinary window when layer shell is unavailable.
@@ -250,6 +267,7 @@ Tahoe Beach animates by default. Select another packaged catalog entry with:
 --wallpaper sequoia-sunrise
 --wallpaper sequoia-morning
 --wallpaper sequoia-night
+--wallpaper golden-gate
 ```
 
 `--reduce-motion` (also available as `--static-wallpaper`) shows the selected

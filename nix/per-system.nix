@@ -64,11 +64,56 @@ let
     ln -s ${wallpaper.videoSource} "$wallpaperDirectory/${wallpaper.install_name}"
     ln -s ${wallpaper.posterSource} "$wallpaperDirectory/${wallpaper.poster.file}"
   '';
+
+  # Immutable dynamic HEIC assets. A repository-delivered asset is pinned by its
+  # committed bytes; a catalog asset delivered from the R2 host records
+  # `delivery = "r2"` with `r2_url` and `nix_hash` and is fetched as a
+  # hash-pinned fixed-output source exactly like the MOV catalog.
+  dynamicHeicAssets = map (
+    asset:
+    let
+      repositorySource = self + "/${asset.source_path}";
+      source =
+        if asset.delivery == "r2" then
+          pkgs.fetchurl {
+            name = asset.install_name;
+            url = asset.r2_url;
+            hash = asset.nix_hash;
+          }
+        else
+          repositorySource;
+    in
+    assert asset.delivery == "r2" || asset.delivery == "repository";
+    assert asset.delivery != "repository" || builtins.hashFile "sha256" repositorySource == asset.sha256;
+    asset
+    // {
+      inherit source;
+    }
+  ) wallpaperManifest.dynamic_heic;
+  installHeicAsset = asset: ''
+    ln -s ${asset.source} "$wallpaperDirectory/${asset.install_name}"
+  '';
+  heicAssetCheck =
+    pkgs.runCommand "genkan-heic-asset-check"
+      {
+        nativeBuildInputs = [ pkgs.coreutils ];
+      }
+      ''
+        ${pkgs.lib.concatMapStringsSep "\n" (asset: ''
+          test "$(stat -c %s ${asset.source})" = "${toString asset.byte_size}"
+          test "$(sha256sum ${asset.source} | cut -d' ' -f1)" = "${asset.sha256}"
+        '') dynamicHeicAssets}
+        touch $out
+      '';
   devWallpaperDirectory = pkgs.linkFarm "genkan-wallpapers" (
     map (wallpaper: {
       name = wallpaper.install_name;
       path = wallpaper.videoSource;
     }) wallpapers
+    ++ map (asset: {
+      name = asset.install_name;
+      path = asset.source;
+    }) dynamicHeicAssets
   );
 
   package = rustPlatform.buildRustPackage {
@@ -91,6 +136,7 @@ let
       mkdir -p "$wallpaperDirectory"
       install -m 0444 ${../assets/wallpapers/manifest.toml} "$wallpaperDirectory/manifest.toml"
       ${pkgs.lib.concatMapStringsSep "\n" installWallpaper wallpapers}
+      ${pkgs.lib.concatMapStringsSep "\n" installHeicAsset dynamicHeicAssets}
 
       wrapProgram $out/bin/genkan \
         --set FONTCONFIG_FILE ${fontConfig} \
@@ -277,6 +323,31 @@ let
         ${solarGeoclueConfig} | grep -F 'system=false'
       touch $out
     '';
+  # Decodes the installed assets rather than their sources, so the check covers
+  # the packaged symlinks, the shipped container preflight, the metadata parser,
+  # and tiled decoding end to end. A regression that only breaks real multi-image
+  # wallpapers fails the build here instead of only in the graphical smoke test.
+  # Assets that record `decode_verified = false` are known not to decode; the
+  # manifest entry names the reason and the tracking issue. At least one asset
+  # must stay verified, and only a reviewed exception may be excluded, so a
+  # future `false` cannot quietly drop a working asset from the check.
+  heicDecodeVerifiedAssets = builtins.filter (asset: asset.decode_verified or true) dynamicHeicAssets;
+  heicDecodeExcludedAssets = builtins.filter (asset: !(asset.decode_verified or true)) dynamicHeicAssets;
+  heicDecodeCheck =
+    assert builtins.length heicDecodeVerifiedAssets > 0;
+    assert builtins.all (asset: asset.id == "wallpapper-h24") heicDecodeExcludedAssets;
+    pkgs.runCommand "genkan-heic-decode-check"
+      {
+        nativeBuildInputs = [ pkgs.coreutils ];
+      }
+      ''
+        ${pkgs.lib.concatMapStringsSep "\n" (asset: ''
+          ${package}/bin/genkan verify-wallpapers \
+            --file ${package}/share/genkan/wallpapers/${asset.install_name} \
+            --expect-frames ${toString asset.structure.image_count}
+        '') heicDecodeVerifiedAssets}
+        touch $out
+      '';
 in
 {
   inherit package devShell previewEvidenceCapture;
@@ -289,6 +360,8 @@ in
   checks = {
     inherit package;
     module = moduleCheck;
+    heic-assets = heicAssetCheck;
+    heic-decode = heicDecodeCheck;
     graphics-smoke = import ./tests/graphics-smoke.nix {
       inherit pkgs;
       genkan = package;

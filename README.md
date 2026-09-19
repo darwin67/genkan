@@ -88,7 +88,7 @@ services.greetd = {
 ```
 
 The packaged greeter animates Tahoe Beach by default. Operators can select
-`sequoia-sunrise`, `sequoia-morning`, or `sequoia-night`, or use
+`sequoia-sunrise`, `sequoia-morning`, `sequoia-night`, or `golden-gate`, or use
 `--reduce-motion` to retain the corresponding static poster.
 
 Logged-in users on a supported compositor can run a dynamic HEIC wallpaper as
@@ -98,7 +98,9 @@ a dedicated non-interactive background client:
 genkan wallpaper --file /absolute/path/to/wallpaper.heic
 ```
 
-This command is separate from login and lock. Files with Apple `solar` metadata
+The package also installs hash-pinned HEIC format samples under
+`share/genkan/wallpapers` for local inspection. This command is separate from
+login and lock. Files with Apple `solar` metadata
 can opt into GeoClue-backed city-level scheduling with `--solar`. See the
 [deployment guide](docs/deployment.md#desktop-wallpaper) for compositor support,
 solar behavior, and autostart examples.

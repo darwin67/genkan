@@ -1,6 +1,8 @@
 //! Bounded parser and decoder for macOS dynamic HEIC wallpapers.
 
-use std::io::{Seek, SeekFrom};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::FromRawFd;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -15,8 +17,8 @@ use quick_xml::{NsReader, XmlVersion};
 use thiserror::Error;
 
 use super::{
-    Appearance, AppleProperty, HeifItemId, ImageReference, Metadata, ModelError, NormalizedTime,
-    PropertyValue, Schedule, SolarPoint, SolarPosition, TimePoint, TopLevelImages,
+    container, Appearance, AppleProperty, HeifItemId, ImageReference, Metadata, ModelError,
+    NormalizedTime, PropertyValue, Schedule, SolarPoint, SolarPosition, TimePoint, TopLevelImages,
 };
 
 const APPLE_DESKTOP_NAMESPACE: &str = "http://ns.apple.com/namespace/1.0/";
@@ -25,7 +27,33 @@ const APPLE_DESKTOP_NAMESPACE: &str = "http://ns.apple.com/namespace/1.0/";
 #[derive(Clone, Copy, Debug)]
 struct Limits {
     max_source_bytes: u64,
-    max_items: usize,
+    /// Container-item records: `ipma` entries, `iloc` records, `iref`
+    /// destinations, and track references, summed over every box of each kind.
+    /// libheif applies this one value to each of those counts, but it applies
+    /// it per box, so the container preflight enforces the sum as well. Tile
+    /// based images contribute an entry per tile, so a real multi-image
+    /// wallpaper needs far more than its top-level image count.
+    max_container_items: u32,
+    /// Property associations summed over every `ipma` box. libheif merges the
+    /// boxes into the first without an aggregate check, so this is the ceiling
+    /// on the merged association storage.
+    max_container_associations: u32,
+    /// Boxes the container preflight may visit. Each one is a native box object
+    /// libheif would allocate, so this bounds the walk as well as the parser.
+    max_container_boxes: u32,
+    /// Nesting depth of container boxes.
+    max_container_depth: u32,
+    /// Extents one `iloc` record may declare, matching libheif's own
+    /// `max_iloc_extents_per_item`.
+    max_item_extents: u32,
+    /// Non-image items. libheif copies each one's extent into its own
+    /// allocation while parsing, and its per-item ceiling bounds that copy but
+    /// not how many copies exist.
+    max_metadata_items: usize,
+    /// Top-level still images the schedule may address.
+    max_top_level_images: usize,
+    /// Metadata blocks attached to the primary image.
+    max_metadata_blocks: usize,
     max_tiles: u32,
     max_width: u32,
     max_height: u32,
@@ -48,10 +76,27 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             max_source_bytes: 64 * 1024 * 1024,
-            // This is a total container-item ceiling, including hidden tiles and metadata.
-            // Keeping it coupled to the parse-phase block limit below bounds libheif's
-            // eagerly retained metadata to 64 MiB.
-            max_items: 64,
+            // Tile-based images put one `ipma` entry and one `iloc` record on
+            // every tile, so a 4K multi-image wallpaper needs hundreds of these
+            // records even though it exposes a handful of top-level images.
+            max_container_items: 4_096,
+            // Every `ipma` entry can carry up to 255 associations, and libheif
+            // copies them when it merges boxes, so the sum is what bounds the
+            // merged storage rather than the per-box entry count.
+            max_container_associations: 32_768,
+            // Real files carry tens of boxes. This sits above the item ceiling
+            // so a flood of item records is reported as an item-count failure,
+            // while a flood of other boxes is still bounded.
+            max_container_boxes: 16_384,
+            max_container_depth: 16,
+            max_item_extents: 32,
+            // Real wallpapers carry one or two metadata items; the ceiling
+            // exists so a container cannot multiply the per-item copy.
+            max_metadata_items: 64,
+            // Apple dynamic wallpapers carry one still per schedule point, and a
+            // schedule may address the same image from several points.
+            max_top_level_images: 64,
+            max_metadata_blocks: 64,
             max_tiles: 4_096,
             max_width: 16_384,
             max_height: 16_384,
@@ -100,10 +145,11 @@ pub struct RgbaFrame {
     pub pixels: Vec<u8>,
 }
 
-/// An opened HEIC whose source descriptor remains stable for its lifetime.
+/// An opened HEIC whose decoded source is fixed when it is opened.
 ///
-/// Replacing the pathname does not change the source. As with any open file,
-/// however, an owner with write access can still modify the bound inode.
+/// The container is validated and copied before it reaches libheif, so neither
+/// replacing the pathname nor rewriting the bound inode afterwards changes what
+/// this document decodes.
 pub struct Document {
     context: HeifContext<'static>,
     images: TopLevelImages,
@@ -140,6 +186,41 @@ impl Document {
         file.seek(SeekFrom::Start(0))
             .map_err(|_| Error::Open("file could not be rewound"))?;
 
+        // libheif applies its item limits to each box on its own and copies
+        // every non-image item into its own allocation while parsing, so the
+        // aggregate ceilings are enforced here, before the container reaches
+        // it. The read is bounded by the source-size check above.
+        let mut source = Vec::new();
+        source
+            .try_reserve_exact(usize::try_from(source_bytes).unwrap_or(usize::MAX))
+            .map_err(|_| Error::Limit("container preflight buffer"))?;
+        (&mut file)
+            .take(source_bytes)
+            .read_to_end(&mut source)
+            .map_err(|_| Error::Open("file could not be read"))?;
+        container::preflight(
+            &source,
+            &container::Budget {
+                max_container_items: limits.max_container_items,
+                max_container_associations: limits.max_container_associations,
+                max_container_boxes: limits.max_container_boxes,
+                max_container_depth: limits.max_container_depth,
+                max_item_extents: limits.max_item_extents,
+                max_metadata_items: u32::try_from(limits.max_metadata_items).unwrap_or(u32::MAX),
+                max_metadata_bytes: u64::try_from(limits.max_metadata_bytes).unwrap_or(u64::MAX),
+            },
+        )?;
+
+        // libheif parses a descriptor rather than the validated buffer, so the
+        // two could otherwise disagree: an owner with write access can replace
+        // the contents of the bound inode between the walk and the parse. Hand
+        // the parser an anonymous copy of exactly the bytes that were checked,
+        // and give it that copy's length rather than the length the file had
+        // when it was first measured, which can be larger if the file shrank.
+        let snapshot = anonymous_source(&source)?;
+        let snapshot_bytes = u64::try_from(source.len()).unwrap_or(u64::MAX);
+        drop(source);
+
         let _ = libheif();
         let mut context = HeifContext::new().map_err(container_error)?;
         let mut security_limits = libheif_rs::SecurityLimits::default();
@@ -147,13 +228,14 @@ impl Document {
         security_limits.set_max_number_of_tiles(u64::from(limits.max_tiles));
         security_limits
             .set_max_bayer_pattern_pixels(u32::try_from(limits.max_pixels).unwrap_or(u32::MAX));
-        security_limits.set_max_items(u32::try_from(limits.max_items).unwrap_or(u32::MAX));
+        security_limits.set_max_items(limits.max_container_items);
         security_limits.set_max_color_profile_size(
             u32::try_from(limits.max_metadata_block_bytes).unwrap_or(u32::MAX),
         );
         // libheif eagerly loads metadata while parsing. The pinned Nix build has no
-        // compressed-metadata codecs, so this per-item ceiling and max_items bound
-        // retained native metadata before Rust can inspect aggregate sizes.
+        // compressed-metadata codecs, so this per-item ceiling and
+        // max_container_items bound retained native metadata before Rust can
+        // inspect aggregate sizes.
         security_limits.set_max_memory_block_size(
             u64::try_from(limits.max_metadata_block_bytes).unwrap_or(u64::MAX),
         );
@@ -164,14 +246,14 @@ impl Document {
             .set_security_limits(&security_limits)
             .map_err(container_error)?;
         context
-            .read_reader(Box::new(StreamReader::new(file, source_bytes)))
+            .read_reader(Box::new(StreamReader::new(snapshot, snapshot_bytes)))
             .map_err(container_error)?;
 
         let item_ids = context.image_ids();
         if item_ids.is_empty() {
             return Err(Error::Container("no top-level images".into()));
         }
-        if item_ids.len() > limits.max_items {
+        if item_ids.len() > limits.max_top_level_images {
             return Err(Error::Limit("top-level item count"));
         }
         let images = TopLevelImages::new(item_ids.iter().copied().map(HeifItemId::new).collect());
@@ -269,6 +351,33 @@ impl Document {
 fn libheif() -> &'static LibHeif {
     static LIBHEIF: OnceLock<LibHeif> = OnceLock::new();
     LIBHEIF.get_or_init(LibHeif::new)
+}
+
+/// Copies `bytes` into an anonymous file that is the only reference to them.
+///
+/// The container preflight approves a buffer, but libheif parses a descriptor.
+/// Reading the original path again would let an owner with write access replace
+/// the contents between the two, so the parser is given a private copy of
+/// exactly the bytes that were checked. The descriptor is closed when the
+/// context is dropped. It is not sealed, so a process able to reach this
+/// process's descriptors could still reopen it; the copy closes the window
+/// against rewriting the original file, which is the threat this addresses.
+fn anonymous_source(bytes: &[u8]) -> Result<File, Error> {
+    // SAFETY: the name is a valid NUL-terminated string, the flags are valid,
+    // and the returned descriptor is owned here.
+    let fd = unsafe { libc::memfd_create(c"genkan-heic".as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(Error::Open("anonymous source could not be created"));
+    }
+    // SAFETY: `fd` is a fresh descriptor uniquely owned by this call.
+    let mut snapshot = unsafe { File::from_raw_fd(fd) };
+    snapshot
+        .write_all(bytes)
+        .map_err(|_| Error::Open("anonymous source could not be written"))?;
+    snapshot
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| Error::Open("anonymous source could not be rewound"))?;
+    Ok(snapshot)
 }
 
 fn container_error(error: libheif_rs::HeifError) -> Error {
@@ -394,7 +503,7 @@ fn read_metadata(
     limits: &Limits,
 ) -> Result<Metadata, Error> {
     let count = handle.number_of_metadata_blocks(0).max(0) as usize;
-    if count > limits.max_items {
+    if count > limits.max_metadata_blocks {
         return Err(Error::Limit("metadata block count"));
     }
     let mut ids = vec![0; count];
@@ -642,9 +751,23 @@ fn parse_property(
     images: &TopLevelImages,
     limits: &Limits,
 ) -> Result<(AppleProperty, PropertyValue), Error> {
-    preflight_binary_plist(bytes, limits)?;
-    let value = Value::from_reader(std::io::Cursor::new(bytes))
-        .map_err(|error| Error::Metadata(format!("invalid binary property list: {error}")))?;
+    // Apple's own dynamic wallpapers encode these properties as XML property
+    // lists; generators such as `wallpapper` and `Equinox` emit XML as well.
+    // Only the binary encoding gets the structural preflight below, so the XML
+    // branch keeps its own byte, depth, and object bounds while the `plist`
+    // crate expands it. The binary magic is unambiguous, so anything else is
+    // offered to the XML reader rather than gated on a declaration: a property
+    // may legally begin with `<plist>`, whitespace, a comment, or a byte-order
+    // mark, and the reader rejects whatever is not a property list.
+    let value = if bytes.starts_with(b"bplist00") {
+        preflight_binary_plist(bytes, limits)?;
+        Value::from_reader(std::io::Cursor::new(bytes))
+            .map_err(|error| Error::Metadata(format!("invalid binary property list: {error}")))?
+    } else {
+        preflight_xml_plist(bytes, limits)?;
+        Value::from_reader_xml(std::io::Cursor::new(bytes))
+            .map_err(|error| Error::Metadata(format!("invalid XML property list: {error}")))?
+    };
     let dictionary = value
         .as_dictionary()
         .ok_or_else(|| Error::Metadata("property list root is not a dictionary".into()))?;
@@ -787,6 +910,124 @@ fn exact_u64(value: &Value) -> Option<u64> {
         Value::Integer(value) => value.as_unsigned(),
         _ => None,
     }
+}
+
+// Bounds an XML property list before the `plist` crate expands it.
+//
+// The binary format carries an explicit object count and offset table that
+// `preflight_binary_plist` validates exactly. XML carries neither, so this
+// counts the elements that allocate an object and tracks nesting through a
+// conforming XML reader. Reading tags as raw text instead desynchronises on a
+// `>` inside a quoted attribute or a closing tag inside a comment, which is
+// exactly how crafted nesting escaped the bound.
+//
+// `plist` matches element names by local name and rejects any element outside
+// the property-list set, so this resolves names the same way and counts the
+// elements that become values.
+fn preflight_xml_plist(bytes: &[u8], limits: &Limits) -> Result<(), Error> {
+    if bytes.len() > limits.max_plist_bytes {
+        return Err(Error::Limit("property list size"));
+    }
+    // A leading byte-order mark or whitespace is legal before the declaration.
+    // The underlying reader accepts both, so the sniff must not depend on the
+    // first byte of the property.
+    let content = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    let first = content
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .ok_or_else(|| Error::Metadata("property is not a property list".into()))?;
+    if content[first] != b'<' {
+        return Err(Error::Metadata("property is not a property list".into()));
+    }
+    let mut reader = NsReader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    reader
+        .resolver_mut()
+        .set_max_namespace_bindings(limits.max_xml_events);
+    let mut objects = 0usize;
+    let mut expanded_bytes = 0usize;
+    let mut depth = 0usize;
+    let mut events = 0usize;
+    let mut root = false;
+    loop {
+        events += 1;
+        if events > limits.max_xml_events {
+            return Err(Error::Limit("property list event count"));
+        }
+        let event = reader
+            .read_event()
+            .map_err(|error| Error::Metadata(format!("invalid XML property list: {error}")))?;
+        match event {
+            Event::Start(element) => {
+                root = true;
+                depth += 1;
+                if depth > limits.max_plist_depth {
+                    return Err(Error::Limit("property list nesting depth"));
+                }
+                let local = reader.resolver().resolve_element(element.name()).1;
+                charge_plist_element(local.as_ref(), &mut objects, &mut expanded_bytes, limits)?;
+            }
+            Event::Empty(element) => {
+                root = true;
+                // An empty element occupies one level, so it is checked against
+                // the same ceiling as a start tag even though it never raises
+                // the tracked depth.
+                if depth + 1 > limits.max_plist_depth {
+                    return Err(Error::Limit("property list nesting depth"));
+                }
+                let local = reader.resolver().resolve_element(element.name()).1;
+                charge_plist_element(local.as_ref(), &mut objects, &mut expanded_bytes, limits)?;
+            }
+            Event::End(_) => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| Error::Metadata("unbalanced XML property list".into()))?;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if depth != 0 || !root {
+        return Err(Error::Metadata("unbalanced XML property list".into()));
+    }
+    Ok(())
+}
+
+// Charges one element against the expansion budget. `plist` turns each of these
+// into a `Value`, and a `key` becomes an allocated string as well. Anything
+// outside the set is rejected by `plist` itself.
+fn charge_plist_element(
+    local: &str,
+    objects: &mut usize,
+    expanded_bytes: &mut usize,
+    limits: &Limits,
+) -> Result<(), Error> {
+    if !matches!(
+        local,
+        "dict"
+            | "array"
+            | "data"
+            | "date"
+            | "integer"
+            | "real"
+            | "string"
+            | "true"
+            | "false"
+            | "key"
+    ) {
+        return Ok(());
+    }
+    *objects = objects
+        .checked_add(1)
+        .ok_or(Error::Limit("expanded property list object count"))?;
+    if *objects > limits.max_expanded_plist_objects {
+        return Err(Error::Limit("expanded property list object count"));
+    }
+    // The expansion charges one `Value` per object. The binary path also
+    // charges payload and collection bytes, but an XML property list is not
+    // compressed, so its payload is already bounded by the encoded-size check
+    // above and the object count is what remains to bound here.
+    charge_expanded_bytes(expanded_bytes, 64, limits)
 }
 
 // Validates the object graph and its expansion before `plist` allocates it.
@@ -1005,6 +1246,143 @@ mod tests {
     }
 
     #[test]
+    fn plist_preflight_counts_nesting_that_markup_hides() {
+        let limits = Limits::default();
+        let depth = limits.max_plist_depth * 40;
+        // A `>` inside a quoted attribute used to end the tag early, so the
+        // scanner saw a self-closing element with a one-character name and
+        // charged neither depth nor an object. Both quote styles must be read
+        // the same way.
+        for opener in ["<p:array a='/>'>", "<p:array a=\"/>\" >"] {
+            let mut qualified = String::from(
+                "<?xml version=\"1.0\"?>\n<plist version=\"1.0\"><dict><key>h24</key>",
+            );
+            for _ in 0..depth {
+                qualified.push_str(opener);
+            }
+            for _ in 0..depth {
+                qualified.push_str("</p:array>");
+            }
+            qualified.push_str("</dict></plist>");
+            assert!(
+                matches!(
+                    preflight_xml_plist(qualified.as_bytes(), &limits),
+                    Err(Error::Limit("property list nesting depth"))
+                ),
+                "{opener} was not counted as nesting"
+            );
+        }
+
+        // A closing tag inside a comment used to erase tracked depth.
+        let mut commented =
+            String::from("<?xml version=\"1.0\"?>\n<plist version=\"1.0\"><dict><key>h24</key>");
+        for _ in 0..depth {
+            commented.push_str("<array><!-- > </array> -->");
+        }
+        commented.push_str("</dict></plist>");
+        assert!(preflight_xml_plist(commented.as_bytes(), &limits).is_err());
+
+        // The depth a crafted document reaches must also stay inside the event
+        // budget, so it cannot trade one ceiling for the other.
+        let mut dense = String::from("<plist><dict>");
+        for _ in 0..limits.max_xml_events {
+            dense.push_str("<string>x</string>");
+        }
+        dense.push_str("</dict></plist>");
+        assert!(matches!(
+            preflight_xml_plist(dense.as_bytes(), &limits),
+            Err(Error::Limit("property list event count"))
+        ));
+    }
+
+    #[test]
+    fn plist_preflight_counts_every_allocating_element() {
+        let limits = Limits::default();
+        // A processing instruction and a CDATA section must not hide the
+        // elements around them, and an empty element allocates like any other.
+        let document = "<plist><?pi a='>'>?><dict><key>k</key><array><true/><false/>\
+                        <string><![CDATA[ ]]>x</string></array></dict></plist>";
+        assert!(preflight_xml_plist(document.as_bytes(), &limits).is_ok());
+        assert!(Value::from_reader_xml(std::io::Cursor::new(document)).is_ok());
+
+        // Keys allocate a string, so they count against the object ceiling.
+        // The default ceilings make the event budget the tighter bound for a
+        // key-heavy document, so lower the object ceiling to show the charge.
+        let tight = Limits {
+            max_expanded_plist_objects: 2,
+            ..Limits::default()
+        };
+        let keys = "<plist><dict><key>a</key><key>b</key></dict></plist>";
+        assert!(matches!(
+            preflight_xml_plist(keys.as_bytes(), &tight),
+            Err(Error::Limit("expanded property list object count"))
+        ));
+
+        // The same shape under the default ceilings stops at the event budget.
+        let mut dense = String::from("<plist><dict>");
+        for _ in 0..limits.max_xml_events {
+            dense.push_str("<key>k</key>");
+        }
+        dense.push_str("</dict></plist>");
+        assert!(matches!(
+            preflight_xml_plist(dense.as_bytes(), &limits),
+            Err(Error::Limit("property list event count"))
+        ));
+    }
+
+    #[test]
+    fn plist_accepts_legal_xml_preambles() {
+        let limits = Limits::default();
+        let body = "<plist version=\"1.0\"><dict><key>h24</key><string>x</string></dict></plist>";
+        for property in [
+            body.as_bytes().to_vec(),
+            format!("  \n\t{body}").into_bytes(),
+            format!("<!-- lead -->{body}").into_bytes(),
+            format!("<?xml version=\"1.0\"?>\n{body}").into_bytes(),
+            [&[0xEF, 0xBB, 0xBF][..], body.as_bytes()].concat(),
+        ] {
+            assert!(preflight_xml_plist(&property, &limits).is_ok());
+            assert!(Value::from_reader_xml(std::io::Cursor::new(&property)).is_ok());
+        }
+        // Anything that is not markup is still refused.
+        assert!(preflight_xml_plist(b"not a property list", &limits).is_err());
+        assert!(preflight_xml_plist(&[0, 1, 2, 3], &limits).is_err());
+    }
+
+    #[test]
+    fn property_parsing_accepts_a_declaration_free_xml_list() {
+        // The sniff used to require an XML declaration or doctype, so a
+        // property list that began with `<plist>` was rejected outright.
+        let images = TopLevelImages::new(vec![HeifItemId::new(1), HeifItemId::new(2)]);
+        let xml = b"<plist version=\"1.0\"><dict><key>l</key><integer>0</integer><key>d</key><integer>1</integer></dict></plist>";
+        let (name, value) =
+            parse_property(PropertyName::Apr, xml, &images, &Limits::default()).unwrap();
+        assert_eq!(name, AppleProperty::Appearance);
+        assert!(matches!(value, PropertyValue::Appearance(_)));
+    }
+
+    #[test]
+    fn container_preflight_runs_before_libheif() {
+        use super::container::fixture::{boxed, iinf, infe, ipma, meta};
+        // The aggregate ceiling rejects the file before libheif parses it, so
+        // the container only needs enough structure to reach the check.
+        let entries: Vec<(u32, usize)> = (0..1024).map(|id| (id + 1, 255)).collect();
+        let mut children = vec![iinf(&[infe(1, b"hvc1", None)])];
+        for _ in 0..4 {
+            children.push(boxed(b"iprp", &ipma(&entries)));
+        }
+        let path =
+            std::env::temp_dir().join(format!("genkan-aggregate-heic-{}", std::process::id()));
+        std::fs::write(&path, meta(&children)).unwrap();
+        let result = Document::open(&path);
+        std::fs::remove_file(path).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::Limit("property association count"))
+        ));
+    }
+
+    #[test]
     fn metadata_buffers_reserve_fallibly() {
         let mut buffer = String::new();
         reserve_metadata_string(&mut buffer, 8).unwrap();
@@ -1147,6 +1525,27 @@ mod tests {
     }
 
     #[test]
+    fn wallpapper_fixture_records_the_decoder_coded_size_limitation() {
+        // libheif 1.23.1 refuses this file before the decoder plugin runs: its
+        // SPS declares a 160x64 coded picture that crops to the declared 8x8,
+        // and the decoder tightens the permitted size to one coding unit beyond
+        // the `ispe` dimensions, which is 72x72 = 5184 for this image. libheif
+        // 1.21.2 decodes the same bytes to the expected 8x8 solids, so this
+        // records an upstream limitation rather than a Genkan parsing defect.
+        // See issue #50. The assertion flips when the decoder accepts the file,
+        // which is also when the manifest's `decode_verified` should go back to
+        // true.
+        let document = Document::open(&fixture("imageio-wallpapper-h24.heic")).unwrap();
+        let error = document
+            .decode(ImageReference::from_position(0))
+            .expect_err("libheif should still reject the coded size");
+        assert!(
+            error.to_string().contains("exceeds the maximum image size"),
+            "unexpected decode error: {error}"
+        );
+    }
+
+    #[test]
     fn retained_descriptor_survives_path_replacement_until_lazy_decode() {
         let directory = std::env::temp_dir().join(format!(
             "genkan-dynamic-heic-replacement-{}",
@@ -1212,7 +1611,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
 
         let limits = Limits {
-            max_items: 1,
+            max_top_level_images: 1,
             ..Limits::default()
         };
         assert!(
@@ -1402,6 +1801,164 @@ mod tests {
         .unwrap();
 
         assert!(metadata.appearance().is_none());
+    }
+
+    #[test]
+    fn tile_based_wallpapers_are_not_limited_by_top_level_image_count() {
+        // A tiled 4K image contributes one `ipma` entry and one `iloc` record
+        // per tile, so a real multi-image wallpaper declares hundreds of
+        // container items while exposing only a handful of images. The two
+        // ceilings must therefore be independent.
+        let limits = Limits::default();
+        assert!(limits.max_container_items >= 512);
+        assert!(u32::try_from(limits.max_top_level_images).unwrap() < limits.max_container_items);
+        assert!(u32::try_from(limits.max_metadata_blocks).unwrap() < limits.max_container_items);
+
+        // A synthetic fixture with four images still opens and decodes under
+        // the default ceilings.
+        let document = Document::open(&fixture("synthetic-all-properties.heic")).unwrap();
+        assert_eq!(document.item_ids().count(), 4);
+        assert_color(
+            &document.decode(ImageReference::from_position(0)).unwrap(),
+            [255, 0, 0, 255],
+        );
+    }
+
+    #[test]
+    fn accepts_xml_property_lists_like_real_dynamic_wallpapers() {
+        // Apple's own dynamic wallpapers and the `wallpapper` and `Equinox`
+        // generators all emit XML property lists, so the binary-only path this
+        // replaces could not read any real file.
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            r#"<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "#,
+            r#""http://www.apple.com/DTDs/PropertyList-1.0.dtd">"#,
+            r#"<plist version="1.0"><dict>"#,
+            r#"<key>ti</key><array>"#,
+            r#"<dict><key>i</key><integer>0</integer><key>t</key><real>0.0</real></dict>"#,
+            r#"<dict><key>i</key><integer>1</integer><key>t</key><real>0.5</real></dict>"#,
+            r#"</array></dict></plist>"#,
+        );
+        let images = TopLevelImages::new(vec![HeifItemId::new(1), HeifItemId::new(2)]);
+        let (property, value) = parse_property(
+            PropertyName::H24,
+            xml.as_bytes(),
+            &images,
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(property, AppleProperty::Time);
+        let PropertyValue::Time(schedule) = value else {
+            panic!("expected a time schedule");
+        };
+        assert_eq!(schedule.points().len(), 2);
+        assert_eq!(schedule.points()[1].image, ImageReference::from_position(1));
+
+        // The same document with an appearance pair, as the time-of-day
+        // wallpapers embed it.
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            r#"<plist version="1.0"><dict>"#,
+            r#"<key>ap</key><dict><key>d</key><integer>1</integer>"#,
+            r#"<key>l</key><integer>0</integer></dict>"#,
+            r#"<key>ti</key><array>"#,
+            r#"<dict><key>i</key><integer>0</integer><key>t</key><integer>0</integer></dict>"#,
+            r#"<dict><key>i</key><integer>1</integer><key>t</key><real>0.5</real></dict>"#,
+            r#"</array></dict></plist>"#,
+        );
+        let (_, value) = parse_property(
+            PropertyName::H24,
+            xml.as_bytes(),
+            &images,
+            &Limits::default(),
+        )
+        .unwrap();
+        let PropertyValue::Time(schedule) = value else {
+            panic!("expected a time schedule");
+        };
+        let appearance = schedule.appearance.expect("embedded appearance");
+        assert_eq!(appearance.light, ImageReference::from_position(0));
+        assert_eq!(appearance.dark, ImageReference::from_position(1));
+
+        // An XML solar schedule, as the solar dynamic wallpapers encode it.
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            r#"<plist version="1.0"><dict><key>si</key><array>"#,
+            r#"<dict><key>i</key><integer>0</integer><key>a</key><real>-8.0</real>"#,
+            r#"<key>z</key><real>164.8</real></dict>"#,
+            r#"<dict><key>i</key><integer>1</integer><key>a</key><real>2.8</real>"#,
+            r#"<key>z</key><real>75.2</real></dict>"#,
+            r#"</array></dict></plist>"#,
+        );
+        let (property, value) = parse_property(
+            PropertyName::Solar,
+            xml.as_bytes(),
+            &images,
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(property, AppleProperty::Solar);
+        let PropertyValue::Solar(schedule) = value else {
+            panic!("expected a solar schedule");
+        };
+        assert_eq!(schedule.points().len(), 2);
+    }
+
+    #[test]
+    fn xml_property_lists_are_bounded_before_expansion() {
+        let images = TopLevelImages::new(vec![HeifItemId::new(1)]);
+        // A document that is not a property list in either encoding.
+        assert!(matches!(
+            parse_property(
+                PropertyName::H24,
+                b"not a plist",
+                &images,
+                &Limits::default()
+            ),
+            Err(Error::Metadata(_))
+        ));
+        // An XML document that exceeds the encoded byte ceiling.
+        let oversized = format!(
+            r#"<?xml version="1.0"?><plist version="1.0"><dict><key>ti</key><string>{}</string></dict></plist>"#,
+            "x".repeat(Limits::default().max_plist_bytes)
+        );
+        assert!(matches!(
+            parse_property(
+                PropertyName::H24,
+                oversized.as_bytes(),
+                &images,
+                &Limits::default()
+            ),
+            Err(Error::Limit("property list size"))
+        ));
+        // Deep nesting is rejected before `plist` expands it.
+        let deep = format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\">{}{}",
+            "<array>".repeat(64),
+            "</array>".repeat(64)
+        );
+        assert!(matches!(
+            parse_property(
+                PropertyName::H24,
+                deep.as_bytes(),
+                &images,
+                &Limits::default()
+            ),
+            Err(Error::Limit("property list nesting depth"))
+        ));
+        // Object-count expansion is bounded.
+        let limits = Limits {
+            max_expanded_plist_objects: 2,
+            ..Limits::default()
+        };
+        let wide = format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\"><array>{}</array></plist>",
+            "<string>x</string>".repeat(16)
+        );
+        assert!(matches!(
+            parse_property(PropertyName::H24, wide.as_bytes(), &images, &limits),
+            Err(Error::Limit("expanded property list object count"))
+        ));
     }
 
     #[test]
