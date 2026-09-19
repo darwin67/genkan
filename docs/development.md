@@ -10,7 +10,7 @@ nix develop
 
 The Makefile provides `dev`, `animated-dev`, `check`, `fmt`, `fmt-fix`, `lint`,
 `test`, `scripts-test`, `check-rfds`, `smoke`, `wallpaper-smoke`, `lock-smoke`,
-`lock-vm`, `heic-assets`, `evidence`, `update-reference-images`,
+`lock-vm`, `heic-assets`, `heic-decode`, `evidence`, `update-reference-images`,
 `hardware-smoke`, `e2e`, `build`, `package`, `verify`, `changelog`,
 `next-version`, and `clean` targets.
 
@@ -104,13 +104,25 @@ occludes the desktop client and that explicit unlock restores it. It emits
 `locked-landscape.png`, `locked-portrait.png`, and the
 `transition-before.png`, `transition-during.png`, and `transition-after.png`
 dissolve frames for review, and it makes no GeoClue or session-bus request. The
-transition capture places local wall-clock time five seconds before the fixture's
-06:00 boundary with a second-precision POSIX `TZ` offset so the boundary is
-observed instead of waited for.
+transition capture places local wall-clock time twenty seconds before the
+fixture's 06:00 boundary with a second-precision POSIX `TZ` offset, so a slow
+software-rendered startup still presents the red frame before the dissolve
+begins. Each phase is captured in order and must be a near-uniform,
+blend-compatible field matching the fixture's palette and red-plus-green
+intensity, so an unrelated or spatially split frame cannot stand in for a phase
+that never happened. Screenshot evidence cannot distinguish a fabricated uniform
+frame from a real dissolve, so this bounds the failure modes rather than proving
+the renderer's internal path.
 
 `make heic-assets` verifies the pinned dynamic HEIC assets recorded in the
 wallpaper manifest: each repository-delivered asset's byte size and SHA-256 must
 match its manifest entry.
+
+`make heic-decode` opens every installed dynamic HEIC through the shipped parser
+and decodes all of its frames, checking the top-level image count against the
+manifest's `structure.image_count`. An asset whose manifest entry records
+`decode_verified = false` is skipped, and the entry names the reason and the
+tracking issue.
 
 Authentication changes should also run the x86_64 NixOS VM test:
 

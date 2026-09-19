@@ -180,6 +180,8 @@ jobs:
         run: nix build .#checks.${{ matrix.system }}.module --print-build-logs
       - name: Dynamic HEIC asset pins
         run: nix build .#checks.${{ matrix.system }}.heic-assets --print-build-logs
+      - name: Dynamic HEIC decode
+        run: nix build .#checks.${{ matrix.system }}.heic-decode --print-build-logs
       # Graphics checks use software rendering and must not compete for runner CPU.
       - name: Graphics smoke
         run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs

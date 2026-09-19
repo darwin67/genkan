@@ -15,6 +15,30 @@ maximum_cacheable_object_bytes = 536870912
 maximum_cacheable_object_source = "Cloudflare Free plan 512 MB cacheable file-size limit"
 verification = "Complete responses were SHA-256 checked against the source files; repeated complete and 1 MiB byte-range requests returned CDN HIT responses with unchanged lengths, ranges, and bytes."
 
+[loop_analysis]
+# How `endpoint_ssim` is produced. Recorded here because the method for the
+# original four entries was not captured and their values cannot be reproduced;
+# see rfd/0002/IMPLEMENTATION.org. New entries must state their method.
+metric = "ssim"
+tool = "ffmpeg 8.1.2 with the `ssim` filter"
+comparison = "first decoded frame vs final decoded frame, each scaled to the entry's endpoint_comparison_width and endpoint_comparison_height"
+# Substitute SRC, W and H. The frames are compared as decoded PNG pixels rather
+# than through an intermediate lossy format, so the result depends only on the
+# decoder and the scaling filter.
+procedure = '''
+N=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 SRC)
+ffmpeg -v error -y -i SRC -vf "scale=W:H,select=eq(n\,0)" -vsync 0 -frames:v 1 first.png
+ffmpeg -v error -y -i SRC -vf "scale=W:H,select=eq(n\,$((N-1)))" -vsync 0 -frames:v 1 last.png
+ffmpeg -i first.png -i last.png -lavfi ssim -f null -
+'''
+# A short backward seek does not reliably produce the final frame of these HEVC
+# sources: ffmpeg reports missing reference pictures and the extracted frame
+# varies. Decoding from the start and selecting by frame index is what makes the
+# recorded value reproducible.
+caveat = "HEVC reference frames make short-seek extraction of the final frame unreliable; decode from the start and select by index."
+reproducible_for = "golden-gate"
+unreproducible_for = "tahoe-beach, sequoia-sunrise, sequoia-morning, sequoia-night"
+
 [[wallpaper]]
 id = "tahoe-beach"
 name = "Tahoe Beach"
@@ -268,13 +292,86 @@ crossfade_milliseconds = 2000
 endpoint_comparison_width = 960
 endpoint_comparison_height = 540
 endpoint_ssim = 0.497198
-verification = "The decoded first and final frames are not seamless. ffmpeg ssim over the two 960x540 endpoint frames reports All:0.497198, in the same range as Tahoe Beach and Sequoia Night, so the source uses the same held-final-frame 2 s dissolve. A side-by-side check of the last five and first five frames showed no hard jump or discontinuity across the loop boundary."
+verification = "The decoded first and final frames are not seamless. ffmpeg ssim over the two 960x540 endpoint frames reports All:0.497198 using the [loop_analysis] procedure. A side-by-side check of the last five and first five frames showed no hard jump or discontinuity across the loop boundary, which is what selects the held-final-frame 2 s dissolve."
 
 # Immutable dynamic HEIC assets. `delivery = "repository"` assets are pinned by
 # their committed bytes; a catalog asset delivered from the R2 host records
 # `delivery = "r2"` with `r2_url` and `nix_hash` and is fetched as a
 # hash-pinned fixed-output source exactly like the MOV catalog. No HEIC asset is
 # downloaded while a wallpaper process runs.
+
+[[dynamic_heic]]
+id = "tahoe-dynamic"
+name = "Tahoe dynamic (8 variants)"
+delivery = "r2"
+provenance = "Authored on macOS by ad735/macos-heic-wallpaper (Tahoe.heic), a real multi-image dynamic wallpaper generated with Apple tooling. Verified independently with libheif heif-info and Genkan's own parser: 8 top-level 3840x2160 images with an XML h24 time sequence."
+source_page_url = "https://github.com/ad735/macos-heic-wallpaper"
+rights = "Artwork derived from macOS; no open-content license is declared by the source repository."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/tahoe-dynamic-c5394f3cc0b547d665c2b65ba0eb8d12c5bbd1f6dd67a20e641153c3bcbabf91.heic"
+install_name = "tahoe-dynamic.heic"
+sha256 = "c5394f3cc0b547d665c2b65ba0eb8d12c5bbd1f6dd67a20e641153c3bcbabf91"
+nix_hash = "sha256-xTlPPMC1R9ZlwrZboOuNEsW70fbdZ6IOZBFTw7y6v5E="
+byte_size = 25790869
+cacheable_under_plan_limit = true
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 8
+image_item_ids = [41, 83, 124, 165, 206, 247, 288, 329]
+primary_item_id = 41
+width = 3840
+height = 2160
+color_space = "sRGB"
+
+[dynamic_heic.schedule]
+h24_points = [
+  { index = 0, t = 0.0 },
+  { index = 1, t = 0.125 },
+  { index = 2, t = 0.25 },
+  { index = 3, t = 0.375 },
+  { index = 4, t = 0.5 },
+  { index = 5, t = 0.625 },
+  { index = 6, t = 0.75 },
+  { index = 7, t = 0.875 },
+]
+standalone_appearance = false
+embedded_h24_appearance = false
+embedded_solar_appearance = false
+
+[[dynamic_heic]]
+id = "tahoe-time-of-day"
+name = "Tahoe time-of-day (5 variants)"
+delivery = "r2"
+provenance = "Authored by Basic Apple Guy as the dynamic Tahoe time-of-day release: four macOS Tahoe stills upscaled to 5K and packed into a single dynamic HEIC. Verified with libheif heif-info and Genkan's own parser: 5 top-level 6016x3384 images with an XML h24 time sequence and an embedded light/dark appearance pair."
+source_page_url = "https://basicappleguy.com/basicappleblog/dynamic-tahoe-wallpapers"
+rights = "Fan-authored derivative of macOS artwork; distributed non-commercially by the author, with no open-content license."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/tahoe-time-of-day-9de03b172203a362a74423afe0aa43620801a2c7e6c1112bdebd7d3bbb04d526.heic"
+install_name = "tahoe-time-of-day.heic"
+sha256 = "9de03b172203a362a74423afe0aa43620801a2c7e6c1112bdebd7d3bbb04d526"
+nix_hash = "sha256-neA7FyIDo2KnRCOv4KpDYggBosfmwREr3r19O7sE1SY="
+byte_size = 38101558
+cacheable_under_plan_limit = true
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 5
+image_item_ids = [37, 75, 112, 149, 186]
+primary_item_id = 37
+width = 6016
+height = 3384
+color_space = "sRGB"
+
+[dynamic_heic.schedule]
+h24_points = [
+  { index = 0, t = 0.0 },
+  { index = 1, t = 0.25 },
+  { index = 2, t = 0.4166666666666667 },
+  { index = 3, t = 0.7083333333333334 },
+  { index = 4, t = 0.875 },
+]
+standalone_appearance = false
+embedded_h24_appearance = { light = 1, dark = 3 }
+embedded_solar_appearance = false
 
 [[dynamic_heic]]
 id = "synthetic-all-properties"
@@ -318,6 +415,13 @@ install_name = "wallpapper-h24.heic"
 sha256 = "2f82da28545f7d26eb79132d918f1b969d50b29044351ce3732197283e41474f"
 nix_hash = "sha256-L4LaKFRffSbreRMtkY8blp1QspBENRzjcyGXKD5BR08="
 byte_size = 4300
+# libheif 1.23.1 tightens the permitted image size to (ispe + one coding unit)^2
+# before handing bytes to the decoder. This fixture's SPS declares a 160x64 coded
+# picture that crops to the declared 8x8, so the tightened ceiling of 5184 rejects
+# it even though libheif 1.21.2 decodes the same bytes to the expected 8x8 solids.
+# The limitation is upstream, not a Genkan parsing defect, and is tracked as
+# issue #50; set this back to true once the decoder accepts the file again.
+decode_verified = false
 
 [dynamic_heic.structure]
 container = "HEIF"

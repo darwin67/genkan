@@ -38,6 +38,24 @@ enum Command {
     /// Parse and decode a dynamic HEIC in a resource-bounded child process.
     #[command(hide = true)]
     HeicWorker(HeicWorkerArguments),
+    /// Decode every frame of an installed dynamic HEIC.
+    #[command(hide = true)]
+    VerifyWallpapers(VerifyWallpapersArguments),
+}
+
+/// Decodes a packaged dynamic HEIC end to end.
+///
+/// The `heic-decode` Nix check runs this against the installed assets, so a
+/// regression in the container preflight, the metadata parser, or tiled
+/// decoding fails the build instead of only the graphical smoke test.
+#[derive(Debug, Args)]
+struct VerifyWallpapersArguments {
+    /// Absolute local dynamic HEIC file.
+    #[arg(long)]
+    file: PathBuf,
+    /// Expected number of top-level images.
+    #[arg(long)]
+    expect_frames: usize,
 }
 
 /// Internal relay worker for `login` and `lock` dynamic HEIC sources.
@@ -321,7 +339,39 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             arguments.reduce_motion,
             arguments.parent_pid,
         ),
+        Command::VerifyWallpapers(arguments) => run_verify_wallpapers(arguments)?,
     }
+    Ok(())
+}
+
+/// Opens an installed dynamic HEIC and decodes every one of its frames.
+fn run_verify_wallpapers(
+    arguments: VerifyWallpapersArguments,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use genkan::dynamic_wallpaper::heic::Document;
+    use genkan::dynamic_wallpaper::ImageReference;
+
+    let document = Document::open(&arguments.file)?;
+    let count = document.item_ids().count();
+    if count != arguments.expect_frames {
+        return Err(format!(
+            "{}: expected {} top-level images, found {count}",
+            arguments.file.display(),
+            arguments.expect_frames
+        )
+        .into());
+    }
+    for position in 0..count {
+        let frame = document.decode(ImageReference::from_position(position))?;
+        if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
+            return Err(format!(
+                "{}: frame {position} decoded to an empty image",
+                arguments.file.display()
+            )
+            .into());
+        }
+    }
+    println!("{}: {count} frames decoded", arguments.file.display());
     Ok(())
 }
 
@@ -547,7 +597,10 @@ mod tests {
         let parsed = Arguments::try_parse_from(arguments)?;
         match parsed.command {
             Command::Login(arguments) => Ok(arguments),
-            Command::Lock(_) | Command::Wallpaper(_) | Command::HeicWorker(_) => {
+            Command::Lock(_)
+            | Command::Wallpaper(_)
+            | Command::HeicWorker(_)
+            | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects login")
             }
         }
@@ -560,7 +613,10 @@ mod tests {
         let parsed = Arguments::try_parse_from(arguments)?;
         match parsed.command {
             Command::Lock(arguments) => Ok(arguments),
-            Command::Login(_) | Command::Wallpaper(_) | Command::HeicWorker(_) => {
+            Command::Login(_)
+            | Command::Wallpaper(_)
+            | Command::HeicWorker(_)
+            | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects lock")
             }
         }
@@ -575,7 +631,10 @@ mod tests {
         let parsed = Arguments::try_parse_from(arguments)?;
         match parsed.command {
             Command::Wallpaper(arguments) => Ok(arguments),
-            Command::Login(_) | Command::Lock(_) | Command::HeicWorker(_) => {
+            Command::Login(_)
+            | Command::Lock(_)
+            | Command::HeicWorker(_)
+            | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects wallpaper")
             }
         }
