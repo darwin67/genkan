@@ -129,3 +129,8 @@ Implements [[file:README.adoc][RFD 1: Tahoe-inspired greeter interaction and vis
   kernel and display-stack concern. The Framework Radeon 890M and its connected
   eDP/DP outputs passed; the RTX 5070 passed Vulkan discovery and has no connected
   DRM output on this hybrid-display topology.
+- [X] Present authentication on one deterministic output, keep the remaining
+  outputs on unobstructed wallpaper, and preserve focus, caret position, and
+  input visibility across output removal and resize; verify two-output
+  migration, hotplug, and inherited Wayland sockets in
+  [[https://github.com/darwin67/genkan/pull/31][PR #31]].

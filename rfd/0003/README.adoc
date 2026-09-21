@@ -128,6 +128,17 @@ ordinary session content. Output removal destroys the corresponding local
 rendering state without releasing the global lock. Scale, transform, and size
 changes redraw the affected surface.
 
+Every output stays covered by an opaque lock surface, but only the
+authentication output presents the dimmed authentication interface; the
+remaining outputs show unobstructed wallpaper. The authentication output follows
+the same deterministic policy as login, which link:../0001/README.adoc[RFD 1]
+records: an explicit `--authentication-output` connector wins when present,
+otherwise Genkan prefers the first connector name other than `eDP-1` in
+lexicographic order and falls back to `eDP-1` when no other named output exists.
+`--daemonize` preserves the preference for the confirmed child, and the lock
+moves authentication to the fallback output when the selected output
+disappears.
+
 == Suspend and manual-lock integration
 
 The locker supports direct foreground execution and a readiness-aware launcher:
@@ -235,6 +246,11 @@ The greetd adapter maps conversation success to the existing validated desktop
 `StartSession` request. The locker adapter maps success to its explicit unlock
 authorization. Transport connection, cancellation, retry, and terminal side
 effects remain adapter-owned.
+
+Output selection is shared the same way. Login and lock use one policy to choose
+the connector that presents authentication, so the interface appears on the same
+monitor in both roles and there is a single implementation of the preference and
+fallback rules to review.
 
 The locker reuses the selected-identity presentation but has no AccountsService
 discovery, Change User action, session selector, or fast-user-switching path.
@@ -345,6 +361,9 @@ session with deterministic PAM. The VM verifies:
 
 * readiness occurs only after compositor lock confirmation;
 * every initial output displays lock content;
+* only the selected authentication output presents the authentication interface
+  while the remaining outputs keep opaque lock coverage and unobstructed
+  wallpaper;
 * output addition, removal, scaling, and re-addition retain the lock;
 * keyboard and pointer input do not reach a focused ordinary client;
 * failed authentication retains input isolation and lock ownership;

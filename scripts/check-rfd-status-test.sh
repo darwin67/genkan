@@ -17,7 +17,7 @@ reset_fixtures() {
 
 run_success() {
   local expected=${1:-}
-  if ! RFD_DIR="$rfd_root" bash "$checker" > "$output" 2>&1; then
+  if ! NO_COLOR=1 RFD_DIR="$rfd_root" bash "$checker" > "$output" 2>&1; then
     cat "$output" >&2
     printf 'expected RFD checker to pass\n' >&2
     exit 1
@@ -31,7 +31,7 @@ run_success() {
 
 run_failure() {
   local expected=$1
-  if RFD_DIR="$rfd_root" bash "$checker" > "$output" 2>&1; then
+  if NO_COLOR=1 RFD_DIR="$rfd_root" bash "$checker" > "$output" 2>&1; then
     cat "$output" >&2
     printf 'expected RFD checker to fail with: %s\n' "$expected" >&2
     exit 1
@@ -193,5 +193,38 @@ run_failure "invalid RFD entry"
 
 reset_fixtures
 run_failure "no RFDs found"
+
+reset_fixtures; write_valid_rfd discussion https://example.com/pull/1
+if ! env -u NO_COLOR FORCE_COLOR=1 RFD_DIR="$rfd_root" bash "$checker" > "$output" 2>&1; then
+  cat "$output" >&2
+  printf 'expected RFD checker to pass with forced color\n' >&2
+  exit 1
+fi
+if ! grep -Fq $'\033[33mdiscussion   \033[0m' "$output"; then
+  cat "$output" >&2
+  printf 'RFD checker did not colorize the discussion state\n' >&2
+  exit 1
+fi
+if ! grep -Fq $'\033[1mRFD' "$output"; then
+  cat "$output" >&2
+  printf 'RFD checker did not emphasize the table header\n' >&2
+  exit 1
+fi
+if ! grep -Fq $'\033[32mRFD status check passed.\033[0m' "$output"; then
+  cat "$output" >&2
+  printf 'RFD checker did not colorize the passing result\n' >&2
+  exit 1
+fi
+
+if ! NO_COLOR=1 FORCE_COLOR=1 RFD_DIR="$rfd_root" bash "$checker" > "$output" 2>&1; then
+  cat "$output" >&2
+  printf 'expected RFD checker to pass with NO_COLOR set\n' >&2
+  exit 1
+fi
+if grep -Fq $'\033' "$output"; then
+  cat "$output" >&2
+  printf 'RFD checker emitted color despite NO_COLOR\n' >&2
+  exit 1
+fi
 
 printf 'RFD checker tests passed.\n'

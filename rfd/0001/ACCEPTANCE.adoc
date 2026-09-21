@@ -44,6 +44,12 @@ production-mode package under nested Cage. The evidence check intentionally
 uses kiosk shell directly so each preview receives the exact virtual output
 dimensions instead of Cage's independent nested-output size.
 
+The `login-output-smoke` check launches the package against a two-output
+headless Sway session and verifies that authentication renders on the selected
+output while the other output keeps unobstructed wallpaper, including output
+removal, re-enable, mode change, and caret and input preservation across the
+migration.
+
 == Review checks
 
 Review generated captures using these stable criteria:

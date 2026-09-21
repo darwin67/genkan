@@ -108,6 +108,12 @@ each new boundary, and do not ship a production path that unlocks without PAM.
   ordinary client, injected input, and deterministic test-only PAM policy.
 - [X] Verify lock readiness, lock denial, duplicate invocation, initial output
   coverage, output hotplug/removal, mixed scaling, and compositor finish events.
+- [X] Verify that every output keeps opaque lock coverage while only the selected
+  authentication output presents the dimmed interface, that the remaining
+  outputs stay on unobstructed wallpaper, and that output removal retires the
+  old presentation before the fallback output is promoted; cover two-output
+  migration and the `--authentication-output` preference in
+  [[https://github.com/darwin67/genkan/pull/31][PR #31]].
 - [X] Verify keyboard and pointer isolation before and after explicit unlock.
 - [X] Verify failed and multi-prompt authentication retain the lock and correct
   authentication explicitly restores the existing session.

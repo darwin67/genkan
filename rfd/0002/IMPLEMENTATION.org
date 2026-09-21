@@ -204,8 +204,22 @@ inside the package output.
   underlays.
 - [ ] Verify all existing text, focus, control-boundary, menu, and dialog
   contrast targets with the video darkening treatment.
-- [ ] Add deterministic tests for pipeline state transitions, first-frame
+- [X] Add deterministic tests for pipeline state transitions, first-frame
   fallback, latest-frame replacement, looping, failure, and bounded retry.
+  The state transitions are covered by
+  ~terminal_failure_cannot_be_overwritten_by_a_frame~,
+  ~discontinuity_snaps_a_dissolve_and_reports_a_publish~, and
+  ~late_decode_after_the_dissolve_window_switches_immediately~. The
+  pre-first-frame poster fallback is covered by
+  ~receiving_failure_disposes_the_player~, latest-frame replacement by
+  ~publishing_replaces_an_unconsumed_frame~ and
+  ~iced_keeps_displaying_the_previous_frame_until_allocation_finishes~, looping
+  by ~crossfade_holds_then_dissolves_to_the_opening_frame~,
+  ~late_terminal_frames_do_not_cancel_loop_transition~, and
+  ~playback_deadlines_cover_startup_frames_and_loop_seek~, failure by
+  ~receiving_failure_preserves_the_last_displayed_frame~ and
+  ~terminal_failure_during_allocation_preserves_the_displayed_frame~, and the
+  bounded software-decoder retry by ~software_retry_only_precedes_the_first_frame~.
 - [ ] Add animated evidence that observes distinct valid frames without
   weakening the stable deterministic screenshot checks.
 - [ ] Measure startup latency, steady-state CPU/GPU use, frame delivery, and
