@@ -178,6 +178,29 @@ Account and session changes are disabled during protocol transitions where
 changing them would race authentication or session startup. Failed
 authentication returns to a recoverable state without restarting the greeter.
 
+== Output placement
+
+Cage keeps one window covering the full desktop, so Genkan decides where its own
+interface appears. The greeter presents authentication on exactly one output,
+called the authentication output, and leaves the remaining outputs on
+unobstructed wallpaper without account tiles, prompts, notices, or utility
+controls.
+
+Selection is deterministic and shared with the session locker. An explicitly
+requested connector wins when it is present; otherwise Genkan prefers the first
+connector name other than `eDP-1` in lexicographic order, falls back to `eDP-1`
+when no other named output exists, and accepts an unnamed output only as a last
+resort. `--authentication-output DP-2` is an administrative override like
+`--username`: a requested connector that is absent does not fail startup and
+falls back through the same rules.
+
+Placement is re-evaluated when outputs are connected, removed, rearranged, or
+rescaled while the greeter runs. Losing the authentication output moves the
+interface to the fallback output without restarting authentication or changing
+the active attempt, and the layout preserves focus, caret position, and input
+visibility across output removal and resize. The session locker reuses the same
+policy; link:../0003/README.adoc[RFD 3] records the lock-side behavior.
+
 == Notice placement and recovery
 
 Messages belong to the operation that produced them rather than one global
