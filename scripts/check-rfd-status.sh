@@ -7,6 +7,14 @@ rfd_root="${RFD_DIR:-${repo_root}/rfd}"
 states='prediscussion|ideation|discussion|published|committed|abandoned'
 discussion_pattern='^https?://[^/?#[:space:]]+([/?#][^[:space:]]*)?$'
 
+if [[ -z ${NO_COLOR:-} && (-t 1 || -n ${FORCE_COLOR:-}) ]]; then
+  color_reset=$'\033[0m'; color_bold=$'\033[1m'; color_red=$'\033[31m'
+  color_green=$'\033[32m'; color_yellow=$'\033[33m'; color_blue=$'\033[34m'; color_dim=$'\033[2m'
+else
+  color_reset=""; color_bold=""; color_red=""; color_green=""
+  color_yellow=""; color_blue=""; color_dim=""
+fi
+
 failures=0
 row_rfds=()
 row_states=()
@@ -16,8 +24,19 @@ row_labels=()
 title_width=35
 
 problem() {
-  printf '%s\n' "$*" >&2
+  printf '%s%s%s\n' "$color_red" "$*" "$color_reset" >&2
   failures=$((failures + 1))
+}
+
+colorize_state() {
+  local state=$1 padded=$2
+  case "$state" in
+    prediscussion|ideation) printf '%s%s%s' "$color_blue" "$padded" "$color_reset" ;;
+    discussion) printf '%s%s%s' "$color_yellow" "$padded" "$color_reset" ;;
+    published|committed) printf '%s%s%s' "$color_green" "$padded" "$color_reset" ;;
+    abandoned) printf '%s%s%s' "$color_dim" "$padded" "$color_reset" ;;
+    *) printf '%s%s%s' "$color_red" "$padded" "$color_reset" ;;
+  esac
 }
 
 attribute() {
@@ -45,7 +64,7 @@ valid_authors() {
 }
 
 if [[ ! -d $rfd_root ]]; then
-  printf 'RFD directory not found: %s\n' "$rfd_root" >&2
+  printf '%sRFD directory not found%s: %s\n' "$color_red" "$color_reset" "$rfd_root" >&2
   exit 1
 fi
 
@@ -174,12 +193,13 @@ done
 
 printf -v title_rule '%*s' "$title_width" ''
 title_rule=${title_rule// /-}
-printf '%-4s  %-13s  %5s  %-*s  %s\n' RFD State Tasks "$title_width" Title Labels
-printf '%-4s  %-13s  %5s  %-*s  %s\n' ---- ------------- ----- "$title_width" "$title_rule" --------------------
+printf '%s%-4s  %-13s  %5s  %-*s  %s%s\n' "$color_bold" RFD State Tasks "$title_width" Title Labels "$color_reset"
+printf '%s%-4s  %-13s  %5s  %-*s  %s%s\n' "$color_dim" ---- ------------- ----- "$title_width" "$title_rule" -------------------- "$color_reset"
 for index in "${!row_rfds[@]}"; do
-  printf '%-4s  %-13s  %5s  %-*s  %s\n' \
+  state_field=$(printf '%-13s' "${row_states[$index]}")
+  printf '%-4s  %s  %5s  %-*s  %s\n' \
     "${row_rfds[$index]}" \
-    "${row_states[$index]}" \
+    "$(colorize_state "${row_states[$index]}" "$state_field")" \
     "${row_tasks[$index]}" \
     "$title_width" \
     "${row_titles[$index]}" \
@@ -187,12 +207,12 @@ for index in "${!row_rfds[@]}"; do
 done
 
 if [[ $found -eq 0 ]]; then
-  printf 'no RFDs found in %s\n' "$rfd_root" >&2
+  printf '%sno RFDs found%s in %s\n' "$color_red" "$color_reset" "$rfd_root" >&2
   exit 1
 fi
 if [[ $failures -gt 0 ]]; then
-  printf '\nRFD status check failed with %s issue(s).\n' "$failures" >&2
+  printf '\n%sRFD status check failed%s with %s issue(s).\n' "$color_red" "$color_reset" "$failures" >&2
   exit 1
 fi
 
-printf '\nRFD status check passed.\n'
+printf '\n%sRFD status check passed.%s\n' "$color_green" "$color_reset"
