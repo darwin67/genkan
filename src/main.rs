@@ -1008,7 +1008,7 @@ mod tests {
     fn command_help_describes_wallpaper_fallbacks() {
         let lock_audit = include_str!("../rfd/0003/SESSION_LOCK_AUDIT.adoc");
         let lock_rfd = include_str!("../rfd/0003/README.adoc");
-        let wallpaper_implementation = include_str!("../rfd/0002/IMPLEMENTATION.org");
+        let wallpaper_implementation = include_str!("../rfd/0002/IMPLEMENTATION.adoc");
         let help = Arguments::command()
             .find_subcommand_mut("login")
             .expect("login subcommand")

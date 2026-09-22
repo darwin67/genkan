@@ -44,9 +44,9 @@ run_failure() {
 }
 
 write_valid_rfd() {
-  local state=$1 discussion=$2 implementation_format=${3:-org} implementation_name
+  local state=$1 discussion=$2 implementation_format=${3:-adoc} implementation_name
   case "$implementation_format" in
-    org) implementation_name=IMPLEMENTATION.org ;;
+    adoc) implementation_name=IMPLEMENTATION.adoc ;;
     md) implementation_name=IMPLEMENTATION.md ;;
     *) printf 'unsupported test implementation format: %s\n' "$implementation_format" >&2; exit 1 ;;
   esac
@@ -63,13 +63,13 @@ write_valid_rfd() {
 
 See link:${implementation_name}[implementation checklist].
 EOF
-  if [[ $implementation_format == org ]]; then
+  if [[ $implementation_format == adoc ]]; then
     cat > "$rfd_root/0001/$implementation_name" <<'EOF'
-#+TITLE: RFD 0001 implementation checklist
+= RFD 0001 implementation checklist
 
-Implements [[file:README.adoc][RFD 1: Valid RFD]].
+Implements link:README.adoc[RFD 1: Valid RFD].
 
-- [ ] Complete the work.
+* [ ] Complete the work.
 EOF
   else
     cat > "$rfd_root/0001/$implementation_name" <<'EOF'
@@ -83,9 +83,9 @@ EOF
 }
 
 reset_fixtures; write_valid_rfd discussion https://example.com/pull/1
-cat >> "$rfd_root/0001/IMPLEMENTATION.org" <<'EOF'
-- [X] Finished task.
-  - [x] Finished nested task.
+cat >> "$rfd_root/0001/IMPLEMENTATION.adoc" <<'EOF'
+* [x] Finished task.
+** [x] Finished nested task.
 EOF
 run_success "0001  discussion       2/3"
 
@@ -107,7 +107,7 @@ reset_fixtures; write_valid_rfd prediscussion "" md
 run_success "0001  prediscussion    0/1"
 
 reset_fixtures; write_valid_rfd prediscussion ""
-rm "$rfd_root/0001/IMPLEMENTATION.org"
+rm "$rfd_root/0001/IMPLEMENTATION.adoc"
 run_failure "missing implementation checklist"
 
 reset_fixtures; write_valid_rfd prediscussion ""
@@ -167,18 +167,18 @@ reset_fixtures; write_valid_rfd prediscussion http://
 run_failure "discussion must be empty or an HTTP(S) URL"
 
 reset_fixtures; write_valid_rfd prediscussion ""
-sed -i.bak '1s/checklist/list/' "$rfd_root/0001/IMPLEMENTATION.org"
-rm "$rfd_root/0001/IMPLEMENTATION.org.bak"
+sed -i.bak '1s/checklist/list/' "$rfd_root/0001/IMPLEMENTATION.adoc"
+rm "$rfd_root/0001/IMPLEMENTATION.adoc.bak"
 run_failure "invalid implementation checklist heading"
 
 reset_fixtures; write_valid_rfd prediscussion ""
-sed -i.bak '/link:IMPLEMENTATION.org/d' "$rfd_root/0001/README.adoc"
+sed -i.bak '/link:IMPLEMENTATION.adoc/d' "$rfd_root/0001/README.adoc"
 rm "$rfd_root/0001/README.adoc.bak"
 run_failure "RFD must link to its implementation checklist"
 
 reset_fixtures; write_valid_rfd prediscussion ""
-sed -i.bak 's/\[\[file:README.adoc\]/[[file:OTHER.adoc]/' "$rfd_root/0001/IMPLEMENTATION.org"
-rm "$rfd_root/0001/IMPLEMENTATION.org.bak"
+sed -i.bak 's/link:README.adoc\[/link:OTHER.adoc[/' "$rfd_root/0001/IMPLEMENTATION.adoc"
+rm "$rfd_root/0001/IMPLEMENTATION.adoc.bak"
 run_failure "implementation checklist must link to its RFD"
 
 reset_fixtures; write_valid_rfd prediscussion ""

@@ -18,7 +18,7 @@ them to 1080p. Playback is a presentation concern only; it must not affect
 authentication, account discovery, session selection, or power operations.
 
 Implementation progress is tracked in
-link:IMPLEMENTATION.org[the implementation checklist].
+link:IMPLEMENTATION.adoc[the implementation checklist].
 
 == Context
 

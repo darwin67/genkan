@@ -1,0 +1,399 @@
+= RFD 0004 implementation checklist
+
+Implements link:README.adoc[RFD 4: Dynamic HEIC desktop wallpaper].
+
+The phases are ordered. Preserve the existing MOV login and lock wallpaper
+behavior while establishing the reusable dynamic-wallpaper boundary.
+
+== Phase 1: Establish fixtures and format model
+
+* [x] Acquire or reproducibly generate a minimal multi-image HEIC fixture with
+  known `h24`, `solar`, embedded appearance, and standalone `apr` metadata.
+* [x] Acquire an independently authored fixture, verify its image order,
+  metadata indices, and distinguishable pixels through macOS ImageIO, and
+  record that evidence separately from Genkan's parser assumptions.
+* [x] Record fixture provenance, hash, top-level image ordering, dimensions,
+  metadata structure, and decoded reference pixels.
+* [x] Specify the Apple namespace URI and namespace-expanded property matching,
+  verify decoded standalone `apr` versus embedded `ap` shapes and zero-based
+  indices against ImageIO, and cover conflicting-duplicate and
+  solar/time/appearance precedence in format-model tests.
+* [x] Define typed time, solar, appearance, schedule-point, and image-reference
+  models without coupling them to iced, layer-shell, or GeoClue.
+* [x] Add deterministic clock and location inputs for tests and previews.
+
+== Phase 2: Parse and decode dynamic HEIC
+
+* [x] Add pinned `libheif` runtime and build dependencies with a verified HEVC
+  decode backend on x86_64-linux and aarch64-linux.
+* [x] Add maintained Rust `libheif`, XML, Base64, and binary-property-list
+  dependencies using the minimum feature set required for decode.
+* [x] Open only absolute regular local files through a stable descriptor and
+  reject URIs, FIFOs, devices, and pathname replacement. The container is
+  validated and copied to an anonymous descriptor before libheif parses it, so
+  rewriting the bound inode afterwards cannot change what is decoded.
+* [x] Create the libheif context, apply source, item, tile, dimension, metadata,
+  nesting, decoded-memory, and working-memory limits before parsing, and retain
+  a descriptor-owning `Read + Seek` reader for lazy decode.
+* [x] Capture one ordered top-level item-ID vector, resolve every metadata index
+  through it without compaction after handle failure, and inspect all
+  primary-image XMP MIME metadata blocks.
+* [x] Parse Apple `h24`, `solar`, and `apr` properties while ignoring unrelated
+  metadata and unknown future keys.
+* [x] Bound Base64, XML, and property-list expansion during parsing, then
+  validate value counts, image indices, finite numeric domains, dimensions,
+  decoded lengths, and arithmetic before frame allocation.
+* [x] Decode a selected item to packed RGBA without invoking a shell or external
+  conversion command.
+* [x] Convert supported color profiles and embedded orientation to opaque SDR
+  sRGB RGBA8; reject or fall back from unsupported HDR and color metadata.
+* [x] Test malformed containers and metadata against the limits before adding a
+  desktop or authentication presentation consumer.
+
+== Phase 3: Implement `h24` scheduling and transitions
+
+* [x] Compute `t_now` from local wall-clock seconds divided by 86,400, require
+  `0 <= t < 1`, use `t <= t_now` selection, and define empty, duplicate, and
+  exact-boundary behavior in tests.
+* [x] Recompute after time-zone, daylight-saving, clock, suspend, and resume
+  changes rather than replaying skipped times, including repeated-hour tests.
+* [x] Wake at relevant schedule boundaries, resynchronize at least every 60
+  seconds, and avoid an unnecessary static-frame redraw loop.
+* [x] Implement a two-second boundary-starting dissolve, immediate switch after
+  a late decode or unequal dimensions, and immediate reselection after clock
+  discontinuity.
+* [x] Attach a request-generation token to decode completion so stale work
+  cannot replace a frame selected after a clock or schedule change.
+* [x] Bound decoded endpoints, the displayed or pending blend, and decoder
+  working memory; release obsolete engine-owned roles promptly.
+* [x] Keep reduced-motion HEIC scheduling active while disabling dissolves;
+  preserve the existing fixed-poster meaning for reduced-motion MOV playback.
+* [x] Use appearance metadata as an explicit static preference and fallback
+  without depending on a desktop-environment theme API.
+* [x] Add all schedule, transition, stale-work, resource, and failure regression
+  tests in this phase rather than deferring them to final verification.
+
+== Phase 4: Add the layer-shell desktop runtime
+
+* [x] Add `genkan wallpaper --file` as a dedicated logged-in-user state machine
+  with no greetd, PAM, lock, session-selection, or power behavior.
+* [x] Require wlr layer-shell and fail without opening an ordinary fallback
+  window when the compositor does not support it.
+* [x] Add a dedicated Smithay Client Toolkit layer-shell runtime with a bounded
+  shared-memory renderer; share neutral RGBA helpers rather than the lock
+  runtime or authentication presentation.
+* [x] Bound renderer-owned buffers and in-flight decode/result queues.
+* [x] Create one explicit-output background surface with all-edge anchors,
+  exclusive zone `-1`, keyboard interactivity `none`, and an empty input region
+  for every output.
+* [x] Perform the initial bufferless commit, acknowledge configure before
+  attachment, reuse buffers only after release, and pace animation through
+  compositor frame callbacks.
+* [x] Handle output addition, removal, logical size, transform, and mixed scale
+  without restarting the shared scheduler or decoder.
+* [x] Render aspect-preserving cover independently on laptop, 1080p, 4K,
+  ultrawide, portrait, and mixed-output layouts.
+* [x] Verify the desktop wallpaper remains an ordinary occluded client while
+  `genkan lock` owns compositor session-lock surfaces.
+* [x] Document compositor autostart as the initial activation mechanism without
+  wrapping validated session commands, installing a generic UID-wide user
+  service, or delaying desktop startup.
+* [x] Add headless layer-shell protocol, multi-output, input-region, buffer,
+  rendering, memory, and failure tests in this phase.
+
+== Phase 5: Add optional desktop GeoClue solar selection
+
+* [x] Add one high-level Genkan desktop solar enablement path without exposing
+  provider, application-authorization, service URL, or coordinate settings.
+* [x] Request only city-level location through the logged-in user's GeoClue
+  agent after the initial wallpaper frame is available and never block desktop
+  startup or wallpaper surface configuration.
+* [x] Map each authored altitude and azimuth vector to the nearest point on a
+  one-minute sampled and locally refined 24-hour trajectory, with explicit
+  azimuth convention, angular-distance, tie, duplicate-time, and polar tests.
+* [x] Feed mapped times through the Phase 3 scheduler and recalculate at local
+  midnight or after a meaningful location change.
+* [x] Keep a successful location in process memory, refresh no more often than
+  every six hours, and exclude coordinates, network observations, metadata, and
+  raw service errors from diagnostics.
+* [x] Fall back to a valid `h24` schedule and then an appearance or primary
+  static frame after denial, timeout, unavailable service, or coarse accuracy;
+  do not invalidate a retained location merely because the network disconnects.
+* [x] Extend the NixOS module so solar enablement provisions GeoClue and the
+  user-session agent authorization without mirroring raw GeoClue settings or
+  automatically activating a compositor process.
+* [x] Verify the application and agent authorization contract against the real
+  pinned GeoClue daemon in addition to deterministic mocked-location tests. The
+  `geoclue-solar-vm` NixOS check runs the packaged wallpaper with `--solar`
+  against the pinned daemon, a deterministic static source, and the
+  user-session demo agent, and observes the solar schedule being applied.
+* [x] Keep login and lock location requests out of the initial implementation;
+  do not clear the host-wide agent whitelist or use `system=true` as a bypass.
+
+== Phase 6: Reuse HEIC in login and lock
+
+* [x] Place dynamic HEIC behind the existing wallpaper state without regressing
+  packaged MOV catalog playback, posters, reduced motion, or generated fallback.
+  `wallpaper::State` gains a `HeicPlayer` that publishes through the same poster
+  and allocation path, selected only by a HEIC/HEIF `--wallpaper-file`.
+* [x] Keep login, lock, and desktop top-level lifecycle and side effects
+  separate while sharing only parser, scheduler, decoder, and frame types. The
+  login/lock source drives `Document`, `Playback`, and the HEIC `RgbaFrame`
+  inside a resource-bounded `heic-worker` child process that relays frames over
+  a pipe; a dedicated supervisor thread owns the worker's spawn, reads,
+  termination, and reap so no blocking process operation runs on the
+  lock-owning thread; the desktop keeps its own layer-shell runtime.
+* [x] Preserve the greeter's authentication-region dimming and leave the desktop
+  wallpaper unobstructed. The HEIC source only replaces the background frame;
+  the dimming overlay and desktop runtime are unchanged.
+* [x] Ensure HEIC parsing, scheduling, decoding, blending, and decorative-frame
+  failures cannot affect authentication, session start, lock readiness,
+  failed-authentication recovery, or unlock authority. The parser and decoder
+  run below a process boundary, so an infallible allocation abort or crash in
+  quick-xml, base64, `plist`, or libheif is contained in the child; the relay
+  repeats the decoder's per-axis and byte ceilings, the helper asks for a
+  parent-death signal with `PR_SET_PDEATHSIG` before opening the file (the
+  greeter's supervisor reaps it while the greeter lives; after greeter death the
+  adopter of the reparented helper reaps it), and login
+  starts the source only on iced's wgpu renderer (the software backend keeps the
+  poster). A refused backend or a worker failure reports a bounded decorative
+  failure that keeps the poster or last frame. These are process and protocol
+  limits, not an operating-system memory sandbox.
+* [x] Preserve RFD 3's fatal handling for mandatory lock-surface, configure,
+  buffer, and renderer failures: abort without issuing `unlock_and_destroy`.
+* [x] Verify that login and lock make no GeoClue request and that reduced-motion
+  HEIC continues time scheduling without a dissolve. `HeicPlayer` uses
+  `Playback::new` (solar disabled) and both behaviors are covered by regression
+  tests.
+
+== Phase 7: Packaging, documentation, and verification
+
+* [x] Extend the wallpaper manifest for immutable HEIC assets with provenance,
+  rights, hashes, byte size, item structure, and schedule metadata. The
+  manifest gains a `\[[dynamic_heic]]` array; each entry records the delivery
+  mode, provenance, rights, source page, install name, SHA-256, Nix hash, byte
+  size, top-level item IDs, primary and metadata items, dimensions, color
+  space, and decoded `h24`, `solar`, and appearance schedule metadata.
+* [x] Package HEIC assets as pinned fixed-output sources with no runtime media
+  download and document local-file behavior separately. `delivery =
+  "repository"` assets are pinned by their committed bytes and
+  `delivery = "r2"` assets are fetched with `pkgs.fetchurl` from the recorded
+  delivery URL and Nix hash, exactly like the MOV catalog; both are installed
+  under `share/genkan/wallpapers` and verified by the `heic-assets` check.
+  `docs/deployment.md` states that `--file` remains the only way to select a
+  local file, that the file must be an existing absolute regular `.heic` or
+  `.heif` file bound by descriptor, that the validated container is copied
+  before decoding so rewriting the bound inode afterwards has no effect, and
+  that local files are never uploaded, copied into the store, or published.
+* [x] Document the high-level solar opt-in, GeoClue's possible network use,
+  supported compositors, competing wallpaper managers, reduced motion, and
+  all fallback behavior. `docs/deployment.md` and `README.md` cover the
+  compositor scope, the requirement to disable a competing wallpaper process,
+  compositor autostart, reduced-motion scheduling versus a MOV poster, the
+  solar opt-in and its possible network geolocation, and the appearance and
+  primary-image fallbacks. `docs/development.md` records the wallpaper smoke
+  evidence and the new `heic-assets` target.
+* [x] Add headless layer-shell multi-output and session-lock coexistence smoke
+  tests with distinct pixel evidence and no live GeoClue dependency. The
+  desktop wallpaper smoke asserts the `zwlr_layer_shell_v1` globals, per-output
+  anchors, exclusive zone, keyboard interactivity, empty input region,
+  bufferless commit before attachment, release-aware buffers, and
+  aspect-preserving cover against independent ImageMagick references on two
+  differently scaled outputs. It confirms that a foreground `genkan lock` fully
+  occludes the client and that explicit unlock restores it, and it fails if any
+  run mentions GeoClue while `--solar` was not requested.
+* [x] Capture and inspect representative time transition, portrait, ultrawide,
+  mixed-scale, and locked presentation evidence. The smoke writes
+  `transition-before.png`, `transition-during.png`, `transition-after.png`,
+  `mixed-scale-landscape.png`, `mixed-scale-portrait.png`, `ultrawide.png`,
+  `locked-landscape.png`, and `locked-portrait.png`. The transition capture
+  uses a second-precision POSIX `TZ` offset to place local wall-clock time
+  twenty seconds before the fixture's 06:00 boundary, so the default two-second
+  dissolve from the red frame to the green frame is observed rather than
+  assumed, with enough lead for a slow software-rendered startup. Each phase is
+  captured in order and must be a near-uniform, blend-compatible field matching
+  the fixture's palette and red-plus-green intensity, so an unrelated or
+  spatially split frame cannot stand in for a phase that never happened.
+* [x] Run `make verify`, `make e2e`, the session-lock VM, and applicable
+  physical graphics checks on supported AMD and NVIDIA hosts. `make verify`,
+  `greetd-e2e`, and `session-lock-vm` pass. `make hardware-smoke` passed on the
+  available AMD host (4 connected outputs, 3 external); no NVIDIA host was
+  available for this change.
+
+=== Phase 7 verification record
+
+* On 2026-09-16, `make verify` passed: formatting, Clippy over the default,
+  `lock-test`, and `e2e` feature sets, the Rust unit and integration suites,
+  the shell regression fixtures, RFD metadata and reference images, the Nix
+  package, `heic-assets`, `graphics-smoke`, `desktop-wallpaper-smoke`,
+  `session-lock-smoke`, and `preview-evidence` (28 deterministic captures).
+* The package installs `synthetic-all-properties.heic` and
+  `wallpapper-h24.heic` beside the MOV catalog under
+  `share/genkan/wallpapers`. The `heic-assets` check re-derives each
+  repository-delivered asset's byte size and SHA-256 from the installed source
+  and fails on any mismatch, so a silent fixture or manifest edit cannot
+  invalidate the recorded pins.
+* The transition evidence decoded to a red frame (mean `r=249`, `g=5`), a
+  genuine blend (mean `r=39`, `g=216`), and a green frame (mean `r=7`,
+  `g=248`) on an 800x450 output, which confirms that the boundary produced a
+  bounded dissolve rather than an immediate switch or a stale frame. The
+  ultrawide capture is a 1280x360 cover crop of the 12x8 diagnostic fixture
+  whose corner samples match the top and bottom block rows, and the locked
+  captures differ from the wallpaper in every pixel.
+* A catalog macOS dynamic HEIC is a data-only addition: upload the object to
+  the delivery host and add a `\[[dynamic_heic]]` entry with
+  `delivery = "r2"`, `r2_url`, `nix_hash`, `sha256`, and its structure and
+  schedule metadata. The `r2` fetch path mirrors the MOV catalog and does not
+  change any runtime code.
+
+=== Phase 7 HEIC asset survey
+
+Two real multi-image dynamic HEICs were acquired, packaged, and published, and
+the survey below records what was found, what was rejected, and why.
+
+* The engine could not open any real dynamic HEIC before this phase. Three
+  independent defects were found and fixed: `max_items` conflated a
+  container-item ceiling with a top-level-image ceiling (a tiled 4K image
+  contributes one `ipma` entry and one `iloc` record per tile, so an 8-image
+  wallpaper declares 328 records against a limit of 64); the reader rejected
+  every XML property list, which is the encoding Apple and the `wallpapper` and
+  `Equinox` generators actually emit; and the XML preflight needed its own
+  bounded expansion. Both packaged assets are XML-encoded, so the fix is now
+  exercised by real data rather than synthetic fixtures alone.
+* Published and packaged:
++
+--
+** `tahoe-dynamic.heic` (`ad735/macos-heic-wallpaper`, 25,790,869 bytes, 8
+    top-level 3840x2160 images, XML `h24.ti` at 0.125 spacing). Decodes 8/8
+    frames through the shipped engine.
+** `tahoe-time-of-day.heic` (Basic Apple Guy's dynamic Tahoe time-of-day
+    release, 38,101,558 bytes, 5 top-level 6016x3384 images, XML `h24.ti` with
+    an embedded light/dark appearance pair). Decodes 5/5 frames.
+--
++
+Both are `delivery = "r2"` manifest entries, which is the first exercise of
+that fetch path. Nix retrieves each as a hash-pinned fixed-output source and
+the `heic-assets` check re-derives size and SHA-256 from the installed file.
+* Deferred rather than rejected, despite being genuine dynamic HEICs. Both were
+  packaged once the embedded-profile and frame-ceiling work landed; see "Phase 7
+  HEIC color and size follow-up" below.
+** `alphaArgon/SequoiaGraphicWallpaper` `Sequoia Graphic.heic` is a real
+    8-image, 6016x6016 solar wallpaper with a 10-point `solar.si` schedule and
+    an embedded appearance pair, and is the largest real solar-schedule sample
+    found. Its structure was inspected with `heif-info` and with the parser
+    under relaxed source and pixel ceilings, where it opens with 8 items and the
+    10-point schedule. Under the shipped defaults it is rejected before parsing
+    at all, because 70,842,628 bytes exceeds the 64 MiB source ceiling. Even
+    under a relaxed ceiling its frames carry an embedded ICC profile that the
+    color policy rejects, so it cannot decode.
+** `Evian-Zhang/DWBuilder` `demo/Chinese_dynamic.heic` is a 12-image,
+    2560x1440 solar wallpaper that parses its 12 solar points under the shipped
+    ceilings, but its frames carry a Microsoft sRGB ICC profile and cannot
+    decode.
+* Not dynamic wallpapers at all. The `.heic` files offered by the wallpaper
+  archive pages are single-image stills: `heif-info` reports one top-level image
+  and no `apple_desktop` metadata for the retained still files (24,645,024,
+  23,879,919, 6,089,113, and 5,867,919 bytes). Their only XMP property is an
+  Adobe Photoshop `xmp:CreateDate`. macOS ships the corresponding artwork as
+  aerial MOV video through `com.apple.idleassetsd`, which the RFD 2 catalog
+  already covers, so no HEIC variant of that artwork is needed.
+* Two limits were the blockers for the solar samples above. Both were resolved
+  by issues #46 and #47, and the resolution is recorded under "Phase 7 HEIC
+  color and size follow-up" below:
+** `max_pixels` was 33,554,432 pixels, below the 36,192,256 pixels of a
+    6016x6016 asset, so the Sequoia sample was above it as well as above the
+    source ceiling. The 2560x1440 Chinese sample was well inside it.
+** Embedded ICC profiles were rejected rather than ignored, because silently
+    dropping a profile would display wrong colors. Honoring one required a real
+    ICC-to-sRGB conversion path, which the RFD lists as required behavior.
+* The `rights` field records the actual situation for each packaged asset rather
+  than asserting a license: the Tahoe sources are macOS-derived and carry no
+  open-content license. That is a deliberate product decision recorded here, not
+  an oversight.
+* Resume this item when a genuine multi-image dynamic HEIC that is both licensed
+  for redistribution and free of an embedded ICC profile is available, or when
+  the ICC conversion path is implemented. A license-clean candidate is also
+  achievable by generating one with the pinned `wallpapper` or `Equinox` tooling
+  from original or openly licensed artwork.
+
+=== Phase 7 HEIC color and size follow-up
+
+Issues #46 and #47 were the two blockers recorded above, and both landed
+together because the Sequoia sample needs each of them.
+
+* Embedded ICC profiles are now converted to sRGB instead of rejected. The
+  decoder builds a transform from the item's profile with `moxcms` and applies
+  it to the decoded RGBA pixels while they are still straight, before alpha is
+  composited over opaque black. A profile is refused, not ignored, when it is
+  malformed, empty, larger than `max_color_profile_bytes` (1 MiB, the same value
+  libheif applies while reading it), not an RGB profile, or one no transform can
+  be built for. The existing NCLX policy is unchanged: an item that carries NCLX
+  rather than ICC is still validated against sRGB primaries and the sRGB
+  transfer function.
+* An embedded profile is preflighted before the profile parser sees it. The
+  parser bounds each tag against its own extent but not the sum across tags or
+  across the records inside one tag, so a profile that fits the byte ceiling can
+  make it materialize far more memory than the profile occupies: a 64 KiB
+  localization tag with many records referencing one payload expanded to 149 MB
+  of retained strings, and the same shape at the 1 MiB ceiling extrapolates to
+  tens of gigabytes. The parser also reads the header's declared profile extent
+  without requiring it to match the bytes it was handed. The preflight
+  establishes the extent, `max_color_profile_tags` (64, against 10 to 17 in real
+  profiles), the bounds of every tag, `max_color_profile_text_bytes` (4 MiB of
+  decoded text), and `max_color_profile_text_records` (1,024 localization
+  records, because the parser keeps three strings per record whatever length the
+  record declares, and a profile that localizes its description and copyright
+  into dozens of languages reaches that count legitimately). It charges decoded
+  sizes rather than encoded ones, since UTF-16 to UTF-8 and lossy UTF-8
+  conversion both expand, and it mirrors the parser's early stop. Where the two
+  can disagree it over-charges rather than under-charges, so a text-typed tag the
+  parser would ignore is still charged. It reads only offsets and lengths and
+  allocates nothing.
+* A `colr` box that declares a `prof` or `rICC` profile with no payload is
+  refused by the container preflight. libheif accepts the empty declaration and
+  reports the profile as present with size zero, and the wrapper's accessor maps
+  a zero size to "no profile", so the decoder could not otherwise tell an empty
+  declaration from an absent one and would have displayed the frame with
+  unspecified color instead of refusing it.
+* The conversion adds a bounded scratch chunk of 1 MiB rather than a second
+  full-frame buffer, so a converted frame costs one frame plus a constant. The
+  frame itself is still bounded by `max_output_bytes`, which is checked before
+  any allocation.
+* The frame ceilings were raised because a real 6K dynamic wallpaper exceeds
+  them: `max_source_bytes` from 64 MiB to 128 MiB (the Sequoia sample is
+  70,842,628 bytes), `max_pixels` from 33,554,432 to 67,108,864 (6016x6016 is
+  36,192,256 pixels, and 8192x8192 is the new square bound), and
+  `max_output_bytes` from 128 MiB to 256 MiB so it stays four bytes per pixel
+  for the largest admitted frame. `max_libheif_memory_bytes` moved from 384 MiB
+  to 512 MiB to leave room above a single largest-frame decode. The relay's
+  `MAX_HEIC_FRAME_BYTES` and the playback `MAX_FRAME_BYTES` moved to 256 MiB
+  with it so no layer refuses a frame the decoder accepts.
+* The memory tradeoff is explicit: the previous ceilings admitted at most a
+  128 MiB RGBA8 frame, and the new ones admit a 256 MiB one. A 6016x6016 frame
+  is 138 MiB, and playback retains at most three frames plus one renderer-owned
+  copy, so a 6K wallpaper can hold several hundred MiB. That is the cost of
+  supporting 6K assets at all; the ceiling values only decide how much headroom
+  above 6K is permitted. The per-axis limits stay at 16,384, so the area budget
+  is the effective bound.
+* Regression coverage is both generated and real.
+  `tests/fixtures/dynamic-heic/generate-icc.c` authors three fixtures with a
+  self-authored ICC v2.1.0 profile: `synthetic-icc.heic` (five 8x8 solid colors
+  whose linear-light values must convert to specific sRGB values),
+  `synthetic-icc-unsupported.heic` (a CMYK profile that must fail closed), and
+  `synthetic-icc-6k.heic` (a single 6016x6016 image, above both raised
+  ceilings). The two decodable ones are catalog entries, so the packaged
+  `heic-decode` check covers them; the CMYK one is deliberately not a catalog
+  entry because every catalog asset must decode.
+* Both real solar samples are published as catalog assets and decode end to end.
+  `chinese-hour-names.heic` is `Evian-Zhang/DWBuilder`'s
+  `demo/Chinese_dynamic.heic` (154,126 bytes, 2560x1440, 12-point `solar.si`
+  schedule, Microsoft sRGB ICC profile): the twelve traditional Chinese two-hour
+  periods lettered one per frame in white on black, so it is a decode and
+  schedule regression asset rather than wallpaper artwork. `sequoia-graphic.heic`
+  is `alphaArgon/SequoiaGraphicWallpaper`'s `Sequoia Graphic.heic` (70,842,628
+  bytes, 6016x6016, 10-point `solar.si` schedule with an embedded light/dark
+  appearance pair and an Apple display ICC profile). Both are delivered from R2
+  as hash-pinned fixed-output sources, so the packaged `heic-decode` check
+  decodes all 12 and all 8 of their frames and `heic-assets` re-derives their
+  byte sizes and SHA-256. Their `rights` fields record that neither source
+  declares a license rather than asserting one.
