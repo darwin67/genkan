@@ -208,6 +208,7 @@ let
       pkgs.libxkbcommon
       pkgs.pam
       pkgs.pkg-config
+      pkgs.python3
       pkgs.util-linux
       rustToolchain
     ]
@@ -333,6 +334,7 @@ let
   # together rather than silently reducing what is verified.
   heicDecodeExcludedAssets = builtins.filter (asset: !(asset.decode_verified or true)) dynamicHeicAssets;
   heicDecodeCheck =
+    assert builtins.length dynamicHeicAssets > 0;
     assert builtins.length heicDecodeExcludedAssets == 0;
     pkgs.runCommand "genkan-heic-decode-check"
       {

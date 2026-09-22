@@ -41,6 +41,7 @@ check-rfds:
 	@./scripts/check-rfd-status.sh
 	@./scripts/check-rfd-status-test.sh
 	@./scripts/check-reference-images.sh
+	@./scripts/check-wallpaper-manifest.py
 
 smoke:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).graphics-smoke --print-build-logs
