@@ -34,6 +34,7 @@ gui = [
     "dep:iced_runtime",
     "dep:libc",
     "dep:libheif-rs",
+    "dep:moxcms",
     "dep:plist",
     "dep:quick-xml",
     "dep:rclip-desktop-entry",
@@ -76,6 +77,10 @@ iced = { version = "0.14.0", default-features = false, features = ["advanced", "
 iced_runtime = { version = "0.14.0", optional = true }
 libc = { version = "=0.2.189", optional = true }
 libheif-rs = { version = "3.0.0", default-features = false, features = ["v1_23"], optional = true }
+# The default feature set includes the LUT transform paths that ICC v2 and v4
+# `mntr`/`RGB ` profiles depend on, plus runtime-detected SIMD acceleration for
+# the per-pixel conversion.
+moxcms = { version = "0.8.1", optional = true }
 plist = { version = "1.10.1", default-features = false, optional = true }
 quick-xml = { version = "0.42.0", default-features = false, optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }

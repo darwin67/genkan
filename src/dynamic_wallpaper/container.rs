@@ -187,6 +187,7 @@ impl<'a> Walk<'a> {
             b"urim" => self.walk(header.body_start + 8, header.body_end, depth + 1),
             b"tref" => self.parse_tref(header),
             b"ftyp" => self.parse_ftyp(header),
+            b"colr" => self.parse_colr(header),
             b"mini" => {
                 self.saw_mini = true;
                 Ok(())
@@ -238,6 +239,33 @@ impl<'a> Walk<'a> {
         }
         self.sequence_brand =
             is_sequence_brand(&body[0..4]) || body[8..].chunks_exact(4).any(is_sequence_brand);
+        Ok(())
+    }
+
+    /// Rejects a colour information box that declares an embedded ICC profile
+    /// without carrying one.
+    ///
+    /// libheif accepts a `colr` box whose type is `prof` or `rICC` and whose
+    /// profile payload is empty, and reports the profile as present with size
+    /// zero. The wrapper's accessor maps a zero size to "no profile", so the
+    /// decoder cannot tell an empty declaration from an absent one and would
+    /// display the frame with unspecified color instead of refusing it. The
+    /// distinction is visible here, so the empty declaration is refused before
+    /// the parser can drop it.
+    fn parse_colr(&mut self, header: &Header) -> Result<(), Error> {
+        let body = self.read(
+            header.body_start,
+            header.body_end - header.body_start,
+            header.body_end,
+        )?;
+        if body.len() < 4 {
+            return Err(Error::Container(
+                "colour information box is truncated".into(),
+            ));
+        }
+        if matches!(&body[0..4], b"prof" | b"rICC") && body.len() == 4 {
+            return Err(Error::Container("embedded colour profile is empty".into()));
+        }
         Ok(())
     }
 
@@ -1006,6 +1034,61 @@ mod tests {
             boxed(b"iprp", &ipma(&[(1, 1), (2, 1)])),
         ]);
         assert!(preflight(&bytes, &budget()).is_ok());
+    }
+
+    #[test]
+    fn rejects_an_empty_embedded_colour_profile() {
+        // libheif accepts a `colr` box that declares a `prof` or `rICC` profile
+        // with no payload and reports the profile as present with size zero.
+        // The wrapper's accessor maps a zero size to "no profile", so the
+        // decoder cannot tell the empty declaration from an absent one and
+        // would display the frame with unspecified color instead of refusing
+        // it. The preflight refuses it before the parser can drop it.
+        for kind in [b"prof", b"rICC"] {
+            let bytes = meta(&[
+                iinf(&[infe(1, b"hvc1", None)]),
+                iloc(&[(1, 1024)]),
+                boxed(b"iprp", &boxed(b"ipco", &boxed(b"colr", kind))),
+            ]);
+            assert!(
+                matches!(
+                    preflight(&bytes, &budget()),
+                    Err(Error::Container(reason)) if reason.contains("empty")
+                ),
+                "{kind:?} with no payload was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_a_colour_profile_that_carries_bytes() {
+        let bytes = meta(&[
+            iinf(&[infe(1, b"hvc1", None)]),
+            iloc(&[(1, 1024)]),
+            boxed(b"iprp", &boxed(b"ipco", &boxed(b"colr", b"profprofile"))),
+            // An `nclx` box has no profile payload and must stay accepted.
+            boxed(
+                b"iprp",
+                &boxed(
+                    b"ipco",
+                    &boxed(b"colr", b"nclx\x00\x01\x00\x01\x00\x01\x80"),
+                ),
+            ),
+        ]);
+        assert!(preflight(&bytes, &budget()).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_truncated_colour_information_box() {
+        let bytes = meta(&[
+            iinf(&[infe(1, b"hvc1", None)]),
+            iloc(&[(1, 1024)]),
+            boxed(b"iprp", &boxed(b"ipco", &boxed(b"colr", b"pr"))),
+        ]);
+        assert!(matches!(
+            preflight(&bytes, &budget()),
+            Err(Error::Container(reason)) if reason.contains("truncated")
+        ));
     }
 
     #[test]

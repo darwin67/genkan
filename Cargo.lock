@@ -1029,6 +1029,7 @@ dependencies = [
  "image 0.24.9",
  "libc",
  "libheif-rs",
+ "moxcms",
  "plist",
  "quick-xml 0.42.0",
  "rclip-desktop-entry",

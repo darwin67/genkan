@@ -4,12 +4,13 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::FromRawFd;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use base64::Engine as _;
 use libheif_rs::{
     ColorProfileNCLX, ColorSpace, DecodingOptions, HeifContext, LibHeif, RgbChroma, StreamReader,
 };
+use moxcms::{ColorProfile, DataColorSpace, Layout, TransformExecutor, TransformOptions};
 use plist::{Dictionary, Value};
 use quick_xml::events::Event;
 use quick_xml::name::ResolveResult;
@@ -60,6 +61,29 @@ struct Limits {
     max_pixels: u64,
     max_metadata_block_bytes: usize,
     max_metadata_bytes: usize,
+    /// Bytes of one embedded ICC profile. libheif applies the same value while
+    /// reading the profile, and the decoder applies it again before parsing one
+    /// so a profile that reaches Rust unconverted is still bounded.
+    max_color_profile_bytes: usize,
+    /// Tags in one embedded ICC profile. Every tag is parsed separately, and
+    /// the profile parser validates each allocation against that tag's own
+    /// extent rather than against the profile, so the tag count is what bounds
+    /// the aggregate. Real display profiles carry well under twenty.
+    max_color_profile_tags: usize,
+    /// Decoded text one embedded ICC profile may materialize, summed over every
+    /// tag. The profile parser allocates a separate string per localization
+    /// record and bounds each record against the tag but not their sum, so a
+    /// profile at the byte ceiling can otherwise expand to tens of gigabytes.
+    /// Real descriptive text is a few dozen bytes.
+    max_color_profile_text_bytes: usize,
+    /// Localization records one embedded ICC profile may materialize, summed
+    /// over every tag. The parser keeps three strings per record regardless of
+    /// the record's declared length, so a flood of zero-length records costs
+    /// record storage without costing any text bytes. A profile that localizes
+    /// its description and copyright into dozens of languages reaches this
+    /// legitimately, so the ceiling sits far above any real profile while the
+    /// text ceiling still bounds what the records can carry.
+    max_color_profile_text_records: usize,
     max_xml_depth: usize,
     max_xml_events: usize,
     max_plist_bytes: usize,
@@ -103,6 +127,22 @@ impl Default for Limits {
             max_pixels: 32 * 1024 * 1024,
             max_metadata_block_bytes: 1024 * 1024,
             max_metadata_bytes: 4 * 1024 * 1024,
+            // Real display profiles are a few kilobytes; the ceiling bounds what
+            // the profile parser may walk before the transform is built.
+            max_color_profile_bytes: 1024 * 1024,
+            // A real 6K wallpaper's profile carries 10 to 17 tags. The ceiling
+            // is generous against that and still bounds the aggregate of the
+            // parser's per-tag allocations.
+            max_color_profile_tags: 64,
+            // Real descriptive text is a few dozen bytes. The ceiling is
+            // generous against that and still bounds the parser's retained text
+            // well below the frame budgets.
+            max_color_profile_text_bytes: 4 * 1024 * 1024,
+            // A heavily localized profile carries dozens of records per
+            // descriptive tag. The ceiling is far above that, and the text
+            // ceiling is what bounds the amplification a flood of records
+            // would otherwise reach.
+            max_color_profile_text_records: 1_024,
             max_xml_depth: 32,
             max_xml_events: 4_096,
             max_plist_bytes: 512 * 1024,
@@ -230,7 +270,7 @@ impl Document {
             .set_max_bayer_pattern_pixels(u32::try_from(limits.max_pixels).unwrap_or(u32::MAX));
         security_limits.set_max_items(limits.max_container_items);
         security_limits.set_max_color_profile_size(
-            u32::try_from(limits.max_metadata_block_bytes).unwrap_or(u32::MAX),
+            u32::try_from(limits.max_color_profile_bytes).unwrap_or(u32::MAX),
         );
         // libheif eagerly loads metadata while parsing. The pinned Nix build has no
         // compressed-metadata codecs, so this per-item ceiling and
@@ -306,7 +346,7 @@ impl Document {
             .image_handle(item_id.value())
             .map_err(container_error)?;
         validate_dimensions(&handle, &self.limits)?;
-        validate_color(&handle)?;
+        let color = validate_color(&handle, &self.limits)?;
 
         let mut options = DecodingOptions::new()
             .ok_or_else(|| Error::Decode("could not allocate decoding options".into()))?;
@@ -316,7 +356,11 @@ impl Document {
         let image = libheif()
             .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgba), Some(options))
             .map_err(decode_error)?;
-        if image.color_profile_raw().is_some() {
+        // libheif hands the item's ICC profile through to the decoded image
+        // instead of converting it, so the transform validated on the handle
+        // describes exactly these pixels. A profile that appears only on the
+        // decoded image would tag pixels that were never validated.
+        if color.is_none() && image.color_profile_raw().is_some() {
             return Err(Error::UnsupportedColor("decoded ICC profile"));
         }
         if let Some(profile) = image.color_profile_nclx() {
@@ -342,8 +386,9 @@ impl Document {
             plane.stride,
             plane.width,
             plane.height,
-            self.limits.max_output_bytes,
+            &self.limits,
             premultiplied_alpha,
+            color.as_ref().map(|color| color.transform.as_ref()),
         )
     }
 }
@@ -405,17 +450,313 @@ fn validate_dimensions(handle: &libheif_rs::ImageHandle, limits: &Limits) -> Res
     Ok(())
 }
 
-fn validate_color(handle: &libheif_rs::ImageHandle) -> Result<(), Error> {
+/// The four-character type signatures whose payload the profile parser reads as
+/// text, one allocation per localization or script record.
+const ICC_TEXT_TYPES: [&[u8; 4]; 3] = [b"mluc", b"desc", b"text"];
+
+/// Structural preflight for an embedded ICC profile, run before the profile
+/// parser sees it.
+///
+/// The profile parser bounds each tag against its own extent but not the sum
+/// across tags or across the records inside one tag, so a profile that fits the
+/// byte ceiling can still make it materialize far more memory than the profile
+/// occupies. The parser also reads the declared profile extent without
+/// requiring it to match the bytes it was handed, so a profile can describe one
+/// size and occupy another.
+///
+/// This walk establishes the extent, the tag count, the bounds of every tag,
+/// the decoded text budget, and the localization-record budget, and rejects
+/// anything it cannot account for. It reads only offsets and lengths, never
+/// allocates, and therefore runs in time proportional to the tag count.
+fn preflight_icc_profile(bytes: &[u8], limits: &Limits) -> Result<(), Error> {
+    const HEADER_BYTES: usize = 128;
+    const TAG_ENTRY_BYTES: usize = 12;
+
+    if bytes.len() < HEADER_BYTES + 4 {
+        return Err(Error::UnsupportedColor("malformed embedded ICC profile"));
+    }
+    // The header's first field is the profile's own length. The parser reads it
+    // but never compares it with the bytes it was given, so a profile can
+    // declare any extent at all; require agreement.
+    let declared = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    if usize::try_from(declared).ok() != Some(bytes.len()) {
+        return Err(Error::UnsupportedColor("embedded ICC profile extent"));
+    }
+    let tag_count = u32::from_be_bytes([
+        bytes[HEADER_BYTES],
+        bytes[HEADER_BYTES + 1],
+        bytes[HEADER_BYTES + 2],
+        bytes[HEADER_BYTES + 3],
+    ]);
+    let tag_count = usize::try_from(tag_count).unwrap_or(usize::MAX);
+    if tag_count > limits.max_color_profile_tags {
+        return Err(Error::UnsupportedColor("embedded ICC profile tag count"));
+    }
+    let table_end = HEADER_BYTES
+        .checked_add(4)
+        .and_then(|start| {
+            tag_count
+                .checked_mul(TAG_ENTRY_BYTES)
+                .and_then(|bytes| start.checked_add(bytes))
+        })
+        .ok_or(Error::UnsupportedColor("malformed embedded ICC profile"))?;
+    if table_end > bytes.len() {
+        return Err(Error::UnsupportedColor("malformed embedded ICC profile"));
+    }
+
+    let mut text_bytes = 0usize;
+    let mut text_records = 0usize;
+    for index in 0..tag_count {
+        let entry = HEADER_BYTES + 4 + index * TAG_ENTRY_BYTES;
+        let offset = u32::from_be_bytes([
+            bytes[entry + 4],
+            bytes[entry + 5],
+            bytes[entry + 6],
+            bytes[entry + 7],
+        ]);
+        let size = u32::from_be_bytes([
+            bytes[entry + 8],
+            bytes[entry + 9],
+            bytes[entry + 10],
+            bytes[entry + 11],
+        ]);
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        let size = usize::try_from(size).unwrap_or(usize::MAX);
+        // The parser treats a zero size as "to the end of the profile" for the
+        // tone-curve reader, so mirror that rather than reading it as empty.
+        let end = if size == 0 {
+            bytes.len()
+        } else {
+            offset
+                .checked_add(size)
+                .ok_or(Error::UnsupportedColor("malformed embedded ICC profile"))?
+        };
+        if offset > bytes.len() || end > bytes.len() {
+            return Err(Error::UnsupportedColor("malformed embedded ICC profile"));
+        }
+        let tag = &bytes[offset..end];
+        if !ICC_TEXT_TYPES.iter().any(|kind| tag.starts_with(*kind)) {
+            continue;
+        }
+        charge_icc_text(tag, &mut text_bytes, &mut text_records, limits)?;
+    }
+    Ok(())
+}
+
+/// Charges the text one tag will make the profile parser allocate.
+///
+/// The accounting mirrors the parser's control flow and charges *decoded* sizes
+/// rather than encoded ones: the parser converts UTF-16 to UTF-8 and converts
+/// lossy UTF-8, both of which can produce more bytes than they consume. It
+/// stops where the parser stops, counts each record once even when several
+/// records reference the same bytes, and counts records separately from bytes
+/// because the parser keeps three strings per record whatever length the record
+/// declares.
+///
+/// It is deliberately conservative where the two disagree, so a text-typed tag
+/// the parser would ignore is still charged and a truncated record still
+/// consumes its record budget. Over-charging only refuses a profile the parser
+/// would have read more cheaply; under-charging is what this exists to
+/// prevent.
+fn charge_icc_text(
+    tag: &[u8],
+    text: &mut usize,
+    records: &mut usize,
+    limits: &Limits,
+) -> Result<(), Error> {
+    match &tag[..4] {
+        b"mluc" => {
+            if tag.len() < 28 {
+                return Ok(());
+            }
+            let count = u32::from_be_bytes([tag[8], tag[9], tag[10], tag[11]]);
+            let count = usize::try_from(count).unwrap_or(usize::MAX);
+            // The first record's length and offset sit at fixed positions.
+            if !charge_icc_record(
+                tag,
+                u32::from_be_bytes([tag[24], tag[25], tag[26], tag[27]]),
+                u32::from_be_bytes([tag[20], tag[21], tag[22], tag[23]]),
+                text,
+                records,
+                limits,
+            )? {
+                return Ok(());
+            }
+            for record in 1..count {
+                let Some(header) = 28usize
+                    .checked_add(record.saturating_sub(1).saturating_mul(12))
+                    .and_then(|start| tag.get(start..start + 12))
+                else {
+                    return Ok(());
+                };
+                if !charge_icc_record(
+                    tag,
+                    u32::from_be_bytes([header[8], header[9], header[10], header[11]]),
+                    u32::from_be_bytes([header[4], header[5], header[6], header[7]]),
+                    text,
+                    records,
+                    limits,
+                )? {
+                    return Ok(());
+                }
+            }
+        }
+        b"desc" => {
+            // A v2 `textDescriptionType`: an ASCII section at offset 12, then a
+            // Unicode language code and count, then the Unicode string. The
+            // parser reads both sections, not just the ASCII one.
+            if tag.len() < 12 {
+                return Ok(());
+            }
+            let ascii = u32::from_be_bytes([tag[8], tag[9], tag[10], tag[11]]);
+            let ascii = usize::try_from(ascii).unwrap_or(usize::MAX);
+            let Some(ascii_end) = 12usize.checked_add(ascii) else {
+                return Ok(());
+            };
+            // The parser rejects a description whose ASCII section runs past
+            // the tag, so nothing is allocated and the profile fails anyway.
+            if ascii_end > tag.len() {
+                return Ok(());
+            }
+            charge_icc_text_bytes(lossy_text_bound(ascii), text, limits)?;
+            let Some(header) = tag.get(ascii_end..ascii_end + 8) else {
+                return Ok(());
+            };
+            *records = records.saturating_add(1);
+            if *records > limits.max_color_profile_text_records {
+                return Err(Error::UnsupportedColor("embedded ICC profile text records"));
+            }
+            let units = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+            let units = usize::try_from(units).unwrap_or(usize::MAX);
+            let Some(encoded) = units.checked_mul(2) else {
+                return Ok(());
+            };
+            if ascii_end
+                .checked_add(8)
+                .and_then(|start| start.checked_add(encoded))
+                .is_none_or(|end| end > tag.len())
+            {
+                return Ok(());
+            }
+            charge_icc_text_bytes(utf16_text_bound(encoded), text, limits)?;
+        }
+        // A `text` tag reads everything after its type and reserved bytes and
+        // converts it lossily.
+        _ => {
+            let bytes = tag.len().saturating_sub(8);
+            charge_icc_text_bytes(lossy_text_bound(bytes), text, limits)?;
+        }
+    }
+    Ok(())
+}
+
+/// Charges one localization record and reports whether the parser would read it.
+///
+/// The parser stops reading a tag when a record's range runs past it, so a
+/// record that does not fit is not charged and ends the walk.
+fn charge_icc_record(
+    tag: &[u8],
+    offset: u32,
+    length: u32,
+    text: &mut usize,
+    records: &mut usize,
+    limits: &Limits,
+) -> Result<bool, Error> {
+    let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+    let length = usize::try_from(length).unwrap_or(usize::MAX);
+    if offset.checked_add(length).is_none_or(|end| end > tag.len()) {
+        return Ok(false);
+    }
+    *records = records.saturating_add(1);
+    if *records > limits.max_color_profile_text_records {
+        return Err(Error::UnsupportedColor("embedded ICC profile text records"));
+    }
+    charge_icc_text_bytes(utf16_text_bound(length), text, limits)?;
+    Ok(true)
+}
+
+/// Upper bound on the UTF-8 bytes a UTF-16 payload of `bytes` decodes to.
+///
+/// Three UTF-8 bytes per two-byte code unit is the worst case for a code unit
+/// that is not part of a surrogate pair.
+fn utf16_text_bound(bytes: usize) -> usize {
+    bytes.saturating_mul(3) / 2
+}
+
+/// Upper bound on the UTF-8 bytes a lossy UTF-8 conversion of `bytes` produces.
+///
+/// Every invalid byte becomes a three-byte replacement character.
+fn lossy_text_bound(bytes: usize) -> usize {
+    bytes.saturating_mul(3)
+}
+
+/// Adds one decoded size to the text total.
+fn charge_icc_text_bytes(decoded: usize, total: &mut usize, limits: &Limits) -> Result<(), Error> {
+    *total = total
+        .checked_add(decoded)
+        .ok_or(Error::UnsupportedColor("embedded ICC profile text size"))?;
+    if *total > limits.max_color_profile_text_bytes {
+        return Err(Error::UnsupportedColor("embedded ICC profile text size"));
+    }
+    Ok(())
+}
+
+/// A validated ICC-to-sRGB transform for one embedded profile.
+///
+/// An embedded profile is converted rather than ignored: dropping it would
+/// display the wallpaper with the wrong colors, which RFD 4 rejects. Profiles
+/// that cannot be converted are refused instead of displayed with unspecified
+/// color.
+struct IccTransform {
+    transform: Arc<dyn TransformExecutor<u8> + Send + Sync>,
+}
+
+impl IccTransform {
+    fn new(profile: &libheif_rs::ColorProfileRaw, limits: &Limits) -> Result<Self, Error> {
+        let bytes = profile.data.as_slice();
+        if bytes.is_empty() || bytes.len() > limits.max_color_profile_bytes {
+            return Err(Error::UnsupportedColor("embedded ICC profile size"));
+        }
+        preflight_icc_profile(bytes, limits)?;
+        let source = ColorProfile::new_from_slice(bytes)
+            .map_err(|_| Error::UnsupportedColor("malformed embedded ICC profile"))?;
+        if source.color_space != DataColorSpace::Rgb {
+            return Err(Error::UnsupportedColor("non-RGB embedded ICC profile"));
+        }
+        let destination = ColorProfile::new_srgb();
+        let transform = source
+            .create_transform_8bit(
+                Layout::Rgba,
+                &destination,
+                Layout::Rgba,
+                TransformOptions::default(),
+            )
+            .map_err(|_| Error::UnsupportedColor("unconvertible embedded ICC profile"))?;
+        Ok(Self { transform })
+    }
+}
+
+/// Validates the color metadata and returns the sRGB transform an embedded ICC
+/// profile needs, if the item carries one.
+///
+/// The check runs before the decode so an unsupported profile costs nothing
+/// beyond reading its bytes, and the returned transform is applied to the
+/// decoded pixels.
+fn validate_color(
+    handle: &libheif_rs::ImageHandle,
+    limits: &Limits,
+) -> Result<Option<IccTransform>, Error> {
     if handle.luma_bits_per_pixel() > 8 || handle.chroma_bits_per_pixel() > 8 {
         return Err(Error::UnsupportedColor("HDR bit depth"));
     }
-    if handle.color_profile_raw().is_some() {
-        return Err(Error::UnsupportedColor("embedded ICC profile"));
-    }
+    let color = handle
+        .color_profile_raw()
+        .map(|profile| IccTransform::new(&profile, limits))
+        .transpose()?;
     if let Some(profile) = handle.color_profile_nclx() {
         validate_nclx(&profile)?;
     }
-    Ok(())
+    Ok(color)
 }
 
 fn validate_nclx(profile: &ColorProfileNCLX) -> Result<(), Error> {
@@ -446,13 +787,28 @@ fn validate_nclx_encoding(
     Ok(())
 }
 
+/// Tightly packed RGBA bytes the ICC conversion transform consumes at a time.
+///
+/// The conversion works on a fixed scratch chunk rather than a second
+/// full-frame buffer, so a converted frame costs one frame plus this constant
+/// instead of two frames.
+const ICC_CONVERSION_CHUNK_BYTES: usize = 1024 * 1024;
+
+/// Packs one decoded plane into tightly packed, opaque RGBA8.
+///
+/// Alpha is composited over opaque black, which is the "alpha is composited
+/// over opaque black" half of RFD 4's rendering contract. An embedded ICC
+/// profile is converted to sRGB before that compositing step, while the color
+/// channels are still straight rather than alpha-multiplied, because a
+/// nonlinear transform does not commute with premultiplication.
 fn pack_rgba(
     source: &[u8],
     stride: usize,
     width: u32,
     height: u32,
-    max_output_bytes: usize,
+    limits: &Limits,
     premultiplied_alpha: bool,
+    color: Option<&(dyn TransformExecutor<u8> + Send + Sync)>,
 ) -> Result<RgbaFrame, Error> {
     let row_bytes = usize::try_from(width)
         .ok()
@@ -461,7 +817,7 @@ fn pack_rgba(
     let output_bytes = row_bytes
         .checked_mul(usize::try_from(height).map_err(|_| Error::Limit("decoded image memory"))?)
         .ok_or(Error::Limit("decoded image memory"))?;
-    if output_bytes > max_output_bytes {
+    if output_bytes > limits.max_output_bytes {
         return Err(Error::Limit("decoded image memory"));
     }
     if stride < row_bytes {
@@ -481,6 +837,71 @@ fn pack_rgba(
     for row in source.chunks(stride).take(height as usize) {
         pixels.extend_from_slice(&row[..row_bytes]);
     }
+    if let Some(transform) = color {
+        if premultiplied_alpha {
+            unpremultiply(&mut pixels);
+        }
+        convert_to_srgb(&mut pixels, transform)?;
+    }
+    // A conversion leaves the color channels straight, so the compositing step
+    // has to apply alpha itself even when the decoder premultiplied it.
+    composite_over_black(&mut pixels, premultiplied_alpha && color.is_none());
+    Ok(RgbaFrame {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Converts tightly packed RGBA pixels to sRGB through `transform`.
+///
+/// The conversion runs over bounded chunks so the working set is a constant
+/// rather than a second frame. The pixel budget was already checked against
+/// `max_output_bytes` by the caller, so a frame that reaches here is one the
+/// decoder was willing to allocate.
+fn convert_to_srgb(
+    pixels: &mut [u8],
+    transform: &(dyn TransformExecutor<u8> + Send + Sync),
+) -> Result<(), Error> {
+    let chunk = ICC_CONVERSION_CHUNK_BYTES.min(pixels.len());
+    let mut scratch = Vec::new();
+    scratch
+        .try_reserve_exact(chunk)
+        .map_err(|_| Error::Limit("ICC conversion buffer"))?;
+    scratch.resize(chunk, 0);
+    for chunk in pixels.chunks_mut(ICC_CONVERSION_CHUNK_BYTES) {
+        let scratch = &mut scratch[..chunk.len()];
+        transform
+            .transform(chunk, scratch)
+            .map_err(|_| Error::UnsupportedColor("embedded ICC profile conversion failed"))?;
+        chunk.copy_from_slice(scratch);
+    }
+    Ok(())
+}
+
+/// Divides alpha back out of premultiplied color channels.
+///
+/// A fully transparent pixel carries no color to recover, so it becomes black,
+/// which is what compositing it over opaque black would produce anyway.
+fn unpremultiply(pixels: &mut [u8]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        let alpha = u16::from(pixel[3]);
+        if alpha == 255 {
+            continue;
+        }
+        if alpha == 0 {
+            pixel[..3].fill(0);
+            continue;
+        }
+        for channel in &mut pixel[..3] {
+            *channel = ((u16::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+        }
+    }
+}
+
+/// Composites straight or premultiplied alpha over opaque black and clears the
+/// alpha channel, so every frame is opaque RGBA8.
+fn composite_over_black(pixels: &mut [u8], premultiplied_alpha: bool) {
     for pixel in pixels.chunks_exact_mut(4) {
         let alpha = u16::from(pixel[3]);
         if !premultiplied_alpha {
@@ -490,11 +911,6 @@ fn pack_rgba(
         }
         pixel[3] = 255;
     }
-    Ok(RgbaFrame {
-        width,
-        height,
-        pixels,
-    })
 }
 
 fn read_metadata(
@@ -1610,6 +2026,506 @@ mod tests {
         ));
     }
 
+    /// Reads the embedded ICC profile of a fixture's first top-level image.
+    fn fixture_profile(name: &str) -> Vec<u8> {
+        let document = Document::open(&fixture(name)).unwrap();
+        let handle = document
+            .context
+            .image_handle(document.item_ids().next().unwrap())
+            .unwrap();
+        handle
+            .color_profile_raw()
+            .expect("the fixture carries an ICC profile")
+            .data
+    }
+
+    fn raw_profile(bytes: Vec<u8>) -> libheif_rs::ColorProfileRaw {
+        libheif_rs::ColorProfileRaw::new(libheif_rs::color_profile_types::PROF, bytes)
+    }
+
+    /// Repoints one of a fixture's descriptive tags at an appended `mluc` tag
+    /// with `records` localization records that all reference the same
+    /// `payload` bytes, leaving every other tag intact. This is the shape that
+    /// made the profile parser materialize far more memory than the profile
+    /// occupies: it bounds each record against the tag but not the sum across
+    /// records.
+    fn repoint_at_mluc(
+        profile: &mut Vec<u8>,
+        signature: &[u8; 4],
+        tag_size: usize,
+        records: usize,
+        payload: usize,
+    ) {
+        let tag_count =
+            u32::from_be_bytes([profile[128], profile[129], profile[130], profile[131]]) as usize;
+        let entry = (0..tag_count)
+            .map(|index| 132 + 12 * index)
+            .find(|entry| &profile[*entry..*entry + 4] == signature)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fixture has no {} tag",
+                    String::from_utf8_lossy(signature)
+                )
+            });
+        let appended_at = profile.len();
+
+        let mut tag = vec![0u8; tag_size];
+        tag[0..4].copy_from_slice(b"mluc");
+        tag[8..12].copy_from_slice(&(records as u32).to_be_bytes());
+        let offset = tag_size - payload;
+        // The first record's length and offset sit at fixed positions.
+        tag[20..24].copy_from_slice(&(payload as u32).to_be_bytes());
+        tag[24..28].copy_from_slice(&(offset as u32).to_be_bytes());
+        for record in 1..records {
+            let at = 28 + 12 * (record - 1);
+            tag[at + 4..at + 8].copy_from_slice(&(payload as u32).to_be_bytes());
+            tag[at + 8..at + 12].copy_from_slice(&(offset as u32).to_be_bytes());
+        }
+
+        profile.extend_from_slice(&tag);
+        let total = profile.len() as u32;
+        profile[0..4].copy_from_slice(&total.to_be_bytes());
+        profile[entry + 4..entry + 8].copy_from_slice(&(appended_at as u32).to_be_bytes());
+        profile[entry + 8..entry + 12].copy_from_slice(&(tag_size as u32).to_be_bytes());
+    }
+
+    /// A fixture profile whose `desc` tag is an `mluc` tag of the given shape.
+    fn mluc_profile(tag_size: usize, records: usize, payload: usize) -> Vec<u8> {
+        let mut profile = fixture_profile("synthetic-icc.heic");
+        repoint_at_mluc(&mut profile, b"desc", tag_size, records, payload);
+        profile
+    }
+
+    #[test]
+    fn the_fixture_profile_is_structurally_conforming() {
+        // The fixture is the valid-profile control for the preflight, so its
+        // own structure has to hold: a declared extent that matches the bytes,
+        // a tag table that fits and is sorted, tag data on four-byte
+        // boundaries, and the tags a v2 display profile is required to carry.
+        // It also pins reproducibility, because the generator previously
+        // serialized uninitialized reserved bytes and regenerating the fixture
+        // changed its hash.
+        for name in ["synthetic-icc.heic"] {
+            let profile = fixture_profile(name);
+            assert_eq!(
+                usize::try_from(u32::from_be_bytes([
+                    profile[0], profile[1], profile[2], profile[3]
+                ]))
+                .unwrap(),
+                profile.len(),
+                "{name} declares an extent that is not its length"
+            );
+            assert_eq!(profile.len() % 4, 0, "{name} is not four-byte aligned");
+            let tag_count =
+                u32::from_be_bytes([profile[128], profile[129], profile[130], profile[131]])
+                    as usize;
+            assert!(tag_count > 0 && 132 + 12 * tag_count <= profile.len());
+
+            let mut signatures = Vec::new();
+            for index in 0..tag_count {
+                let entry = 132 + 12 * index;
+                signatures.push(profile[entry..entry + 4].to_vec());
+                let offset = u32::from_be_bytes([
+                    profile[entry + 4],
+                    profile[entry + 5],
+                    profile[entry + 6],
+                    profile[entry + 7],
+                ]) as usize;
+                let size = u32::from_be_bytes([
+                    profile[entry + 8],
+                    profile[entry + 9],
+                    profile[entry + 10],
+                    profile[entry + 11],
+                ]) as usize;
+                assert_eq!(offset % 4, 0, "{name} tag {index} is not aligned");
+                assert!(size > 0 && offset + size <= profile.len());
+                assert_eq!(
+                    &profile[offset + 4..offset + 8],
+                    &[0, 0, 0, 0],
+                    "{name} tag {index} reserved bytes are not zeroed"
+                );
+            }
+            // ICC requires unique signatures, not a particular order; the
+            // generator writes them ascending so the fixture stays
+            // deterministic, and pinning that catches an accidental reorder.
+            let mut sorted = signatures.clone();
+            sorted.sort();
+            assert_eq!(signatures, sorted, "{name} tag table changed order");
+            let mut unique = sorted.clone();
+            unique.dedup();
+            assert_eq!(unique.len(), sorted.len(), "{name} repeats a signature");
+            for required in [
+                b"desc".as_slice(),
+                b"cprt".as_slice(),
+                b"wtpt".as_slice(),
+                b"rXYZ".as_slice(),
+                b"gXYZ".as_slice(),
+                b"bXYZ".as_slice(),
+                b"rTRC".as_slice(),
+                b"gTRC".as_slice(),
+                b"bTRC".as_slice(),
+            ] {
+                assert!(
+                    signatures.iter().any(|signature| signature == required),
+                    "{name} is missing the required {} tag",
+                    String::from_utf8_lossy(required)
+                );
+            }
+
+            // The description carries the full v2 tail: a Unicode language code
+            // and count, then the ScriptCode code, count, and its fixed 67-byte
+            // description field.
+            let index = signatures
+                .iter()
+                .position(|signature| signature == b"desc")
+                .expect("the fixture has a desc tag");
+            let entry = 132 + 12 * index;
+            let offset = u32::from_be_bytes([
+                profile[entry + 4],
+                profile[entry + 5],
+                profile[entry + 6],
+                profile[entry + 7],
+            ]) as usize;
+            let size = u32::from_be_bytes([
+                profile[entry + 8],
+                profile[entry + 9],
+                profile[entry + 10],
+                profile[entry + 11],
+            ]) as usize;
+            let payload = &profile[offset..offset + size];
+            assert_eq!(&payload[0..4], b"desc");
+            let ascii =
+                u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]]) as usize;
+            assert_eq!(ascii, 41, "{name} description length changed");
+            assert_eq!(
+                size - 12 - ascii,
+                78,
+                "{name} description is missing its v2 tail"
+            );
+            assert_eq!(
+                payload[12 + ascii - 1],
+                0,
+                "{name} description is not NUL terminated"
+            );
+            assert_eq!(
+                &payload[12 + ascii..],
+                &[0u8; 78],
+                "{name} description tail is not zero filled"
+            );
+
+            // The header has to name a v2.1.0 RGB display profile with an XYZ
+            // connection space and the D50 PCS illuminant.
+            assert_eq!(
+                u32::from_be_bytes([profile[8], profile[9], profile[10], profile[11]]),
+                0x0210_0000,
+                "{name} is not a v2.1.0 profile"
+            );
+            assert_eq!(&profile[12..16], b"mntr", "{name} is not a display profile");
+            assert_eq!(&profile[16..20], b"RGB ", "{name} is not an RGB profile");
+            assert_eq!(&profile[20..24], b"XYZ ", "{name} PCS is not XYZ");
+            assert_eq!(&profile[36..40], b"acsp", "{name} has no ICC signature");
+            assert_eq!(
+                [
+                    u32::from_be_bytes([profile[68], profile[69], profile[70], profile[71]]),
+                    u32::from_be_bytes([profile[72], profile[73], profile[74], profile[75]]),
+                    u32::from_be_bytes([profile[76], profile[77], profile[78], profile[79]]),
+                ],
+                [0x0000_f6d6, 0x0001_0000, 0x0000_d32d],
+                "{name} PCS illuminant is not D50"
+            );
+
+            // The copyright tag is a `text` type whose notice is NUL
+            // terminated.
+            let index = signatures
+                .iter()
+                .position(|signature| signature == b"cprt")
+                .expect("the fixture has a cprt tag");
+            let entry = 132 + 12 * index;
+            let offset = u32::from_be_bytes([
+                profile[entry + 4],
+                profile[entry + 5],
+                profile[entry + 6],
+                profile[entry + 7],
+            ]) as usize;
+            let size = u32::from_be_bytes([
+                profile[entry + 8],
+                profile[entry + 9],
+                profile[entry + 10],
+                profile[entry + 11],
+            ]) as usize;
+            let payload = &profile[offset..offset + size];
+            assert_eq!(&payload[0..4], b"text");
+            assert_eq!(
+                payload[size - 1],
+                0,
+                "{name} copyright is not NUL terminated"
+            );
+
+            // The preflight must accept what the generator produced.
+            assert!(preflight_icc_profile(&profile, &Limits::default()).is_ok());
+        }
+    }
+
+    #[test]
+    fn icc_preflight_rejects_text_that_exceeds_the_byte_ceiling() {
+        // Few enough records to stay under the record ceiling, but each one
+        // references half the tag, so the sum is what exceeds the budget. This
+        // is the shape that expanded a 64 KiB tag into 149 MB of retained
+        // strings before the preflight existed.
+        let profile = mluc_profile(512 * 1024, 16, 256 * 1024);
+        assert!(profile.len() <= Limits::default().max_color_profile_bytes);
+        assert!(matches!(
+            IccTransform::new(&raw_profile(profile), &Limits::default()),
+            Err(Error::UnsupportedColor("embedded ICC profile text size"))
+        ));
+    }
+
+    #[test]
+    fn icc_preflight_rejects_a_flood_of_zero_length_records() {
+        // The parser keeps three strings per record whatever length the record
+        // declares, so zero-length records cost record storage without costing
+        // any text. Only the record ceiling can refuse this shape.
+        let profile = mluc_profile(64 * 1024, (64 * 1024 - 28) / 12, 0);
+        assert!(matches!(
+            IccTransform::new(&raw_profile(profile), &Limits::default()),
+            Err(Error::UnsupportedColor("embedded ICC profile text records"))
+        ));
+    }
+
+    #[test]
+    fn icc_preflight_accepts_a_heavily_localized_profile() {
+        // A profile that localizes its description and copyright into dozens of
+        // languages is legitimate, so the record ceiling has to sit well above
+        // the per-tag count a real file reaches.
+        let mut profile = fixture_profile("synthetic-icc.heic");
+        repoint_at_mluc(&mut profile, b"desc", 32 * 1024, 200, 16);
+        repoint_at_mluc(&mut profile, b"cprt", 32 * 1024, 200, 16);
+        assert!(profile.len() <= Limits::default().max_color_profile_bytes);
+        assert!(
+            preflight_icc_profile(&profile, &Limits::default()).is_ok(),
+            "400 localization records across two tags must be accepted"
+        );
+        // Two tags of 600 records each exceed the ceiling, and the records are
+        // what refuses it: every payload is small enough that the text ceiling
+        // would not.
+        let mut profile = fixture_profile("synthetic-icc.heic");
+        repoint_at_mluc(&mut profile, b"desc", 32 * 1024, 600, 16);
+        repoint_at_mluc(&mut profile, b"cprt", 32 * 1024, 600, 16);
+        assert!(matches!(
+            preflight_icc_profile(&profile, &Limits::default()),
+            Err(Error::UnsupportedColor("embedded ICC profile text records"))
+        ));
+    }
+
+    #[test]
+    fn icc_preflight_accepts_bounded_text_records() {
+        // One record referencing a small payload is the ordinary shape and must
+        // keep working, so the ceilings refuse amplification rather than text.
+        let profile = mluc_profile(64 * 1024, 1, 32);
+        assert!(preflight_icc_profile(&profile, &Limits::default()).is_ok());
+    }
+
+    #[test]
+    fn icc_preflight_charges_decoded_rather_than_encoded_sizes() {
+        // UTF-16 decodes to at most three UTF-8 bytes per two-byte code unit,
+        // and lossy UTF-8 conversion turns every invalid byte into a three-byte
+        // replacement character. A budget expressed in encoded lengths would
+        // undercount both by up to a factor of three.
+        let limits = Limits::default();
+        let mut text = 0usize;
+        let mut records = 0usize;
+        // Two code units decode to six bytes, not four.
+        let mut mluc = vec![0u8; 32];
+        mluc[0..4].copy_from_slice(b"mluc");
+        mluc[8..12].copy_from_slice(&1u32.to_be_bytes());
+        mluc[20..24].copy_from_slice(&4u32.to_be_bytes());
+        mluc[24..28].copy_from_slice(&28u32.to_be_bytes());
+        mluc.extend_from_slice(&[0u8; 4]);
+        charge_icc_text(&mluc, &mut text, &mut records, &limits).unwrap();
+        assert_eq!(text, 6);
+        assert_eq!(records, 1);
+
+        // A description's ASCII section is charged at its worst-case expansion,
+        // and its Unicode section is charged too.
+        let mut desc = vec![0u8; 12];
+        desc[0..4].copy_from_slice(b"desc");
+        desc[8..12].copy_from_slice(&4u32.to_be_bytes());
+        desc.extend_from_slice(b"abcd");
+        desc.extend_from_slice(&0u32.to_be_bytes()); // Unicode language code
+        desc.extend_from_slice(&2u32.to_be_bytes()); // two UTF-16 code units
+        desc.extend_from_slice(&[0u8; 4]);
+        text = 0;
+        records = 0;
+        charge_icc_text(&desc, &mut text, &mut records, &limits).unwrap();
+        assert_eq!(text, 12 + 6);
+        assert_eq!(records, 1);
+    }
+
+    #[test]
+    fn icc_preflight_rejects_a_declared_extent_that_does_not_match() {
+        let limits = Limits::default();
+        let mut too_small = fixture_profile("synthetic-icc.heic");
+        too_small[0..4].copy_from_slice(&[0, 0, 0, 0]);
+        assert!(matches!(
+            preflight_icc_profile(&too_small, &limits),
+            Err(Error::UnsupportedColor("embedded ICC profile extent"))
+        ));
+        let mut too_large = fixture_profile("synthetic-icc.heic");
+        too_large[0..4].copy_from_slice(&[0x00, 0x10, 0x00, 0x00]);
+        assert!(matches!(
+            preflight_icc_profile(&too_large, &limits),
+            Err(Error::UnsupportedColor("embedded ICC profile extent"))
+        ));
+    }
+
+    #[test]
+    fn icc_preflight_rejects_a_tag_count_or_extent_above_the_ceiling() {
+        let limits = Limits::default();
+        let mut profile = fixture_profile("synthetic-icc.heic");
+        profile[128..132].copy_from_slice(&(u32::MAX).to_be_bytes());
+        assert!(matches!(
+            preflight_icc_profile(&profile, &limits),
+            Err(Error::UnsupportedColor("embedded ICC profile tag count"))
+        ));
+
+        let mut profile = fixture_profile("synthetic-icc.heic");
+        profile[128..132].copy_from_slice(&1u32.to_be_bytes());
+        // The single tag entry claims an extent past the profile.
+        profile[132..136].copy_from_slice(b"desc");
+        profile[136..140].copy_from_slice(&8u32.to_be_bytes());
+        profile[140..144].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(matches!(
+            preflight_icc_profile(&profile, &limits),
+            Err(Error::UnsupportedColor("malformed embedded ICC profile"))
+        ));
+
+        let tight = Limits {
+            max_color_profile_tags: 1,
+            ..Limits::default()
+        };
+        assert!(matches!(
+            preflight_icc_profile(&fixture_profile("synthetic-icc.heic"), &tight),
+            Err(Error::UnsupportedColor("embedded ICC profile tag count"))
+        ));
+    }
+
+    #[test]
+    fn embedded_icc_profile_is_converted_to_srgb() {
+        // The fixture's profile has the sRGB/Rec.709 primaries and a gamma 1.0
+        // tone curve, so every pixel is the sRGB encoding of the linear-light
+        // value the file declares. The expected values are that encoding
+        // rounded to eight bits, and the tolerance covers the lossy HEVC round
+        // trip through 4:2:0 chroma.
+        let document = Document::open(&fixture("synthetic-icc.heic")).unwrap();
+        assert_eq!(document.item_ids().count(), 5);
+        for (position, expected) in [
+            [241, 99, 99, 255],
+            [99, 241, 99, 255],
+            [99, 99, 241, 255],
+            [188, 188, 188, 255],
+            [99, 99, 99, 255],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_color(
+                &document
+                    .decode(ImageReference::from_position(position))
+                    .unwrap(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn an_unconvertible_embedded_profile_fails_closed() {
+        let document = Document::open(&fixture("synthetic-icc-unsupported.heic")).unwrap();
+        assert!(matches!(
+            document.decode(ImageReference::from_position(0)),
+            Err(Error::UnsupportedColor("non-RGB embedded ICC profile"))
+        ));
+    }
+
+    #[test]
+    fn icc_validation_rejects_malformed_empty_and_oversized_profiles() {
+        let limits = Limits::default();
+        assert!(matches!(
+            IccTransform::new(&raw_profile(Vec::new()), &limits),
+            Err(Error::UnsupportedColor("embedded ICC profile size"))
+        ));
+        assert!(matches!(
+            IccTransform::new(&raw_profile(b"not a color profile".to_vec()), &limits),
+            Err(Error::UnsupportedColor("malformed embedded ICC profile"))
+        ));
+        assert!(matches!(
+            IccTransform::new(
+                &raw_profile(fixture_profile("synthetic-icc-unsupported.heic")),
+                &limits
+            ),
+            Err(Error::UnsupportedColor("non-RGB embedded ICC profile"))
+        ));
+        let tight = Limits {
+            max_color_profile_bytes: 8,
+            ..Limits::default()
+        };
+        assert!(matches!(
+            IccTransform::new(&raw_profile(fixture_profile("synthetic-icc.heic")), &tight),
+            Err(Error::UnsupportedColor("embedded ICC profile size"))
+        ));
+    }
+
+    #[test]
+    fn premultiplied_channels_are_recovered_before_a_conversion() {
+        let mut pixels = [64, 32, 0, 128, 255, 255, 255, 0];
+        unpremultiply(&mut pixels);
+        assert_eq!(pixels, [128, 64, 0, 128, 0, 0, 0, 0]);
+        composite_over_black(&mut pixels, false);
+        assert_eq!(pixels, [64, 32, 0, 255, 0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn packing_converts_premultiplied_colors_before_compositing() {
+        // Drives a partially transparent pixel through the real ICC transform,
+        // which is the only way to catch a reordering of the conversion and the
+        // compositing step: a nonlinear transform does not commute with
+        // premultiplication, so converting first and compositing second gives a
+        // different answer than the reverse.
+        let profile = fixture_profile("synthetic-icc.heic");
+        let transform = IccTransform::new(&raw_profile(profile), &Limits::default()).unwrap();
+        let limits = Limits::default();
+
+        // Half-transparent mid gray, already premultiplied by the decoder.
+        let premultiplied = [64, 64, 64, 128];
+        let packed = pack_rgba(
+            &premultiplied,
+            4,
+            1,
+            1,
+            &limits,
+            true,
+            Some(transform.transform.as_ref()),
+        )
+        .unwrap();
+
+        // Straightening gives 128, the conversion encodes linear 128/255 to
+        // 188, and compositing over black at half alpha gives 94.
+        assert_eq!(packed.pixels, [94, 94, 94, 255]);
+
+        // A straight pixel at full alpha only exercises the conversion.
+        let straight = [128, 128, 128, 255];
+        let packed = pack_rgba(
+            &straight,
+            4,
+            1,
+            1,
+            &limits,
+            false,
+            Some(transform.transform.as_ref()),
+        )
+        .unwrap();
+        assert_eq!(packed.pixels, [188, 188, 188, 255]);
+    }
+
     #[test]
     fn rejects_malformed_container_and_tight_limits() {
         let path = std::env::temp_dir().join(format!("genkan-invalid-heic-{}", std::process::id()));
@@ -1748,32 +2664,49 @@ mod tests {
 
     #[test]
     fn packing_rejects_bad_stride_truncation_and_output_limit() {
-        assert!(pack_rgba(&[0; 8], 3, 1, 1, 4, false).is_err());
-        assert!(pack_rgba(&[0; 3], 4, 1, 1, 4, false).is_err());
+        let output_bytes = Limits {
+            max_output_bytes: 4,
+            ..Limits::default()
+        };
+        assert!(pack_rgba(&[0; 8], 3, 1, 1, &output_bytes, false, None).is_err());
+        assert!(pack_rgba(&[0; 3], 4, 1, 1, &output_bytes, false, None).is_err());
+        let too_small = Limits {
+            max_output_bytes: 3,
+            ..Limits::default()
+        };
         assert!(matches!(
-            pack_rgba(&[0; 4], 4, 1, 1, 3, false),
+            pack_rgba(&[0; 4], 4, 1, 1, &too_small, false, None),
             Err(Error::Limit("decoded image memory"))
         ));
     }
 
     #[test]
     fn packing_makes_straight_and_premultiplied_pixels_opaque() {
+        let limits = Limits::default();
         assert_eq!(
-            pack_rgba(&[64, 32, 0, 128], 4, 1, 1, 4, true)
+            pack_rgba(&[64, 32, 0, 128], 4, 1, 1, &limits, true, None)
                 .unwrap()
                 .pixels,
             [64, 32, 0, 255]
         );
         assert_eq!(
-            pack_rgba(&[64, 32, 0, 128], 4, 1, 1, 4, false)
+            pack_rgba(&[64, 32, 0, 128], 4, 1, 1, &limits, false, None)
                 .unwrap()
                 .pixels,
             [32, 16, 0, 255]
         );
         assert_eq!(
-            pack_rgba(&[255, 100, 1, 0, 7, 8, 9, 255], 8, 2, 1, 8, false)
-                .unwrap()
-                .pixels,
+            pack_rgba(
+                &[255, 100, 1, 0, 7, 8, 9, 255],
+                8,
+                2,
+                1,
+                &limits,
+                false,
+                None
+            )
+            .unwrap()
+            .pixels,
             [0, 0, 0, 255, 7, 8, 9, 255]
         );
     }

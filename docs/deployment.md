@@ -177,6 +177,14 @@ before libheif parses it, so rewriting the bound inode afterwards cannot change
 what is decoded. Local files are never uploaded, copied into the store, or
 published.
 
+Frames are published as opaque SDR RGBA8 in sRGB. An embedded ICC profile is
+converted to sRGB rather than ignored, because dropping one would display the
+wallpaper with the wrong colors, and a file whose profile cannot be converted —
+a non-RGB color space, a malformed profile, or one above the 1 MiB profile
+ceiling — is refused rather than displayed with unspecified color. An item that
+carries NCLX instead of ICC is still required to declare sRGB primaries and the
+sRGB transfer function.
+
 The initial backend requires `zwlr_layer_shell_v1` and is intended for niri,
 Sway, River, Hyprland, and other compatible wlroots-oriented compositors. It
 fails instead of opening an ordinary window when layer shell is unavailable.

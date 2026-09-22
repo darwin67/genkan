@@ -271,7 +271,9 @@ the survey below records what was found, what was rejected, and why.
   Both are ~delivery = "r2"~ manifest entries, which is the first exercise of
   that fetch path. Nix retrieves each as a hash-pinned fixed-output source and
   the ~heic-assets~ check re-derives size and SHA-256 from the installed file.
-- Rejected for the packaged catalog despite being genuine dynamic HEICs:
+- Deferred rather than rejected, despite being genuine dynamic HEICs. Both were
+  packaged once the embedded-profile and frame-ceiling work landed; see "Phase 7
+  HEIC color and size follow-up" below.
   - ~alphaArgon/SequoiaGraphicWallpaper~ ~Sequoia Graphic.heic~ is a real
     8-image, 6016x6016 solar wallpaper with a 10-point ~solar.si~ schedule and
     an embedded appearance pair, and is the largest real solar-schedule sample
@@ -292,15 +294,15 @@ the survey below records what was found, what was rejected, and why.
   Adobe Photoshop ~xmp:CreateDate~. macOS ships the corresponding artwork as
   aerial MOV video through ~com.apple.idleassetsd~, which the RFD 2 catalog
   already covers, so no HEIC variant of that artwork is needed.
-- Two limits remain deliberately unchanged and are the blockers for the solar
-  samples above:
-  - ~max_pixels~ is 33,554,432 pixels, below the 36,192,256 pixels of a
-    6016x6016 asset, so the Sequoia sample is above it as well as above the
-    source ceiling. The 2560x1440 Chinese sample is well inside it.
-  - Embedded ICC profiles are rejected rather than ignored, because silently
-    dropping a profile would display wrong colors. Honoring one requires a real
+- Two limits were the blockers for the solar samples above. Both were resolved
+  by issues #46 and #47, and the resolution is recorded under "Phase 7 HEIC
+  color and size follow-up" below:
+  - ~max_pixels~ was 33,554,432 pixels, below the 36,192,256 pixels of a
+    6016x6016 asset, so the Sequoia sample was above it as well as above the
+    source ceiling. The 2560x1440 Chinese sample was well inside it.
+  - Embedded ICC profiles were rejected rather than ignored, because silently
+    dropping a profile would display wrong colors. Honoring one required a real
     ICC-to-sRGB conversion path, which the RFD lists as required behavior.
-  Neither is a limit tweak; both are follow-up work.
 - The ~rights~ field records the actual situation for each packaged asset rather
   than asserting a license: the Tahoe sources are macOS-derived and carry no
   open-content license. That is a deliberate product decision recorded here, not
@@ -310,3 +312,67 @@ the survey below records what was found, what was rejected, and why.
   the ICC conversion path is implemented. A license-clean candidate is also
   achievable by generating one with the pinned ~wallpapper~ or ~Equinox~ tooling
   from original or openly licensed artwork.
+
+** Phase 7 HEIC color conversion follow-up
+
+Issue #46 was one of the two blockers recorded above; #47 (the frame ceilings)
+is a separate change.
+
+- Embedded ICC profiles are now converted to sRGB instead of rejected. The
+  decoder builds a transform from the item's profile with ~moxcms~ and applies
+  it to the decoded RGBA pixels while they are still straight, before alpha is
+  composited over opaque black. A profile is refused, not ignored, when it is
+  malformed, empty, larger than ~max_color_profile_bytes~ (1 MiB, the same value
+  libheif applies while reading it), not an RGB profile, or one no transform can
+  be built for. The existing NCLX policy is unchanged: an item that carries NCLX
+  rather than ICC is still validated against sRGB primaries and the sRGB
+  transfer function.
+- An embedded profile is preflighted before the profile parser sees it. The
+  parser bounds each tag against its own extent but not the sum across tags or
+  across the records inside one tag, so a profile that fits the byte ceiling can
+  make it materialize far more memory than the profile occupies: a 64 KiB
+  localization tag with many records referencing one payload expanded to 149 MB
+  of retained strings, and the same shape at the 1 MiB ceiling extrapolates to
+  tens of gigabytes. The parser also reads the header's declared profile extent
+  without requiring it to match the bytes it was handed. The preflight
+  establishes the extent, ~max_color_profile_tags~ (64, against 10 to 17 in real
+  profiles), the bounds of every tag, ~max_color_profile_text_bytes~ (4 MiB of
+  decoded text), and ~max_color_profile_text_records~ (1,024 localization
+  records, because the parser keeps three strings per record whatever length the
+  record declares, and a profile that localizes its description and copyright
+  into dozens of languages reaches that count legitimately). It charges decoded
+  sizes rather than encoded ones, since UTF-16 to UTF-8 and lossy UTF-8
+  conversion both expand, and it mirrors the parser's early stop. Where the two
+  can disagree it over-charges rather than under-charges, so a text-typed tag the
+  parser would ignore is still charged. It reads only offsets and lengths and
+  allocates nothing.
+- A ~colr~ box that declares a ~prof~ or ~rICC~ profile with no payload is
+  refused by the container preflight. libheif accepts the empty declaration and
+  reports the profile as present with size zero, and the wrapper's accessor maps
+  a zero size to "no profile", so the decoder could not otherwise tell an empty
+  declaration from an absent one and would have displayed the frame with
+  unspecified color instead of refusing it.
+- The conversion adds a bounded scratch chunk of 1 MiB rather than a second
+  full-frame buffer, so a converted frame costs one frame plus a constant. The
+  frame itself is still bounded by ~max_output_bytes~, which is checked before
+  any allocation.
+- Regression coverage is both generated and real.
+  ~tests/fixtures/dynamic-heic/generate-icc.c~ authors two fixtures with a
+  self-authored ICC v2.1.0 profile: ~synthetic-icc.heic~ (five 8x8 solid colors
+  whose linear-light values must convert to specific sRGB values) and
+  ~synthetic-icc-unsupported.heic~ (a CMYK profile that must fail closed). The
+  decodable one is a catalog entry, so the packaged ~heic-decode~ check covers
+  it; the CMYK one is deliberately not a catalog entry because every catalog
+  asset must decode.
+- The smaller real solar sample is published as a catalog asset and decodes end
+  to end. ~chinese-hour-names.heic~ is ~Evian-Zhang/DWBuilder~'s
+  ~demo/Chinese_dynamic.heic~ (154,126 bytes, 2560x1440, 12-point ~solar.si~
+  schedule, Microsoft sRGB ICC profile): the twelve traditional Chinese two-hour
+  periods lettered one per frame in white on black, so it is a decode and
+  schedule regression asset rather than wallpaper artwork. It is delivered from
+  R2 as a hash-pinned fixed-output source like the other third-party assets, so
+  the packaged ~heic-decode~ check decodes all 12 of its frames and the
+  ~heic-assets~ check re-derives its byte size and SHA-256 from the installed
+  file. Its ~rights~ field records that the source repository declares no license
+  rather than asserting one. The larger Sequoia sample also needs the frame
+  ceilings raised, which is the separate follow-up for #47.
