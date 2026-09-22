@@ -99,7 +99,12 @@ struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_source_bytes: 64 * 1024 * 1024,
+            // A real 6K dynamic wallpaper is 70,842,628 bytes, so the source
+            // ceiling admits one with roughly 2x headroom. This is the ceiling
+            // that bounds the container preflight buffer and the anonymous
+            // snapshot handed to libheif, so it is also the largest copy this
+            // process makes before any decode.
+            max_source_bytes: 128 * 1024 * 1024,
             // Tile-based images put one `ipma` entry and one `iloc` record on
             // every tile, so a 4K multi-image wallpaper needs hundreds of these
             // records even though it exposes a handful of top-level images.
@@ -124,7 +129,12 @@ impl Default for Limits {
             max_tiles: 4_096,
             max_width: 16_384,
             max_height: 16_384,
-            max_pixels: 32 * 1024 * 1024,
+            // 64 Mi pixels admits the 36,192,256-pixel 6016x6016 frames of a
+            // real 6K wallpaper and still bounds an 8192x8192 square. The
+            // ceiling is the frame-area budget rather than a shape budget: the
+            // per-axis limits above bound the dimensions and this one bounds
+            // the memory, so raising it is what lets 6K assets through.
+            max_pixels: 64 * 1024 * 1024,
             max_metadata_block_bytes: 1024 * 1024,
             max_metadata_bytes: 4 * 1024 * 1024,
             // Real display profiles are a few kilobytes; the ceiling bounds what
@@ -151,8 +161,17 @@ impl Default for Limits {
             max_expanded_plist_bytes: 16 * 1024 * 1024,
             max_plist_depth: 32,
             max_schedule_points: 256,
-            max_output_bytes: 128 * 1024 * 1024,
-            max_libheif_memory_bytes: 384 * 1024 * 1024,
+            // Four bytes per pixel for the largest frame `max_pixels` admits, so
+            // the two ceilings stay consistent and the pixel ceiling is what
+            // actually bounds a frame. One decoded frame at that size is 256
+            // MiB, and the ICC conversion adds a fixed scratch chunk rather than
+            // a second frame.
+            max_output_bytes: 256 * 1024 * 1024,
+            // libheif allocates the decoded planes and the RGB output for one
+            // image at a time. A 6016x6016 8-bit frame is roughly 54 MiB of
+            // planes plus the 138 MiB RGB conversion, so this leaves room for
+            // tile and item overhead above a single largest-frame decode.
+            max_libheif_memory_bytes: 512 * 1024 * 1024,
         }
     }
 }
@@ -2105,7 +2124,7 @@ mod tests {
         // It also pins reproducibility, because the generator previously
         // serialized uninitialized reserved bytes and regenerating the fixture
         // changed its hash.
-        for name in ["synthetic-icc.heic"] {
+        for name in ["synthetic-icc.heic", "synthetic-icc-6k.heic"] {
             let profile = fixture_profile(name);
             assert_eq!(
                 usize::try_from(u32::from_be_bytes([
@@ -2472,6 +2491,22 @@ mod tests {
             IccTransform::new(&raw_profile(fixture_profile("synthetic-icc.heic")), &tight),
             Err(Error::UnsupportedColor("embedded ICC profile size"))
         ));
+    }
+
+    #[test]
+    fn a_six_k_frame_decodes_within_the_default_limits() {
+        // 6016x6016 is 36,192,256 pixels and 144,769,024 bytes of RGBA8, above
+        // the 33,554,432-pixel and 128 MiB ceilings the decoder used to apply.
+        // The fixture also carries the linear-light profile, so the conversion
+        // runs across 138 scratch chunks rather than a single one.
+        let document = Document::open(&fixture("synthetic-icc-6k.heic")).unwrap();
+        let frame = document.decode(ImageReference::from_position(0)).unwrap();
+        assert_eq!((frame.width, frame.height), (6_016, 6_016));
+        assert_eq!(frame.pixels.len(), 6_016 * 6_016 * 4);
+        for pixel in frame.pixels.chunks_exact(4) {
+            assert!(pixel[..3].iter().all(|channel| channel.abs_diff(188) <= 3));
+            assert_eq!(pixel[3], 255);
+        }
     }
 
     #[test]

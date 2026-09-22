@@ -313,10 +313,10 @@ the survey below records what was found, what was rejected, and why.
   achievable by generating one with the pinned ~wallpapper~ or ~Equinox~ tooling
   from original or openly licensed artwork.
 
-** Phase 7 HEIC color conversion follow-up
+** Phase 7 HEIC color and size follow-up
 
-Issue #46 was one of the two blockers recorded above; #47 (the frame ceilings)
-is a separate change.
+Issues #46 and #47 were the two blockers recorded above, and both landed
+together because the Sequoia sample needs each of them.
 
 - Embedded ICC profiles are now converted to sRGB instead of rejected. The
   decoder builds a transform from the item's profile with ~moxcms~ and applies
@@ -356,23 +356,41 @@ is a separate change.
   full-frame buffer, so a converted frame costs one frame plus a constant. The
   frame itself is still bounded by ~max_output_bytes~, which is checked before
   any allocation.
+- The frame ceilings were raised because a real 6K dynamic wallpaper exceeds
+  them: ~max_source_bytes~ from 64 MiB to 128 MiB (the Sequoia sample is
+  70,842,628 bytes), ~max_pixels~ from 33,554,432 to 67,108,864 (6016x6016 is
+  36,192,256 pixels, and 8192x8192 is the new square bound), and
+  ~max_output_bytes~ from 128 MiB to 256 MiB so it stays four bytes per pixel
+  for the largest admitted frame. ~max_libheif_memory_bytes~ moved from 384 MiB
+  to 512 MiB to leave room above a single largest-frame decode. The relay's
+  ~MAX_HEIC_FRAME_BYTES~ and the playback ~MAX_FRAME_BYTES~ moved to 256 MiB
+  with it so no layer refuses a frame the decoder accepts.
+- The memory tradeoff is explicit: the previous ceilings admitted at most a
+  128 MiB RGBA8 frame, and the new ones admit a 256 MiB one. A 6016x6016 frame
+  is 138 MiB, and playback retains at most three frames plus one renderer-owned
+  copy, so a 6K wallpaper can hold several hundred MiB. That is the cost of
+  supporting 6K assets at all; the ceiling values only decide how much headroom
+  above 6K is permitted. The per-axis limits stay at 16,384, so the area budget
+  is the effective bound.
 - Regression coverage is both generated and real.
-  ~tests/fixtures/dynamic-heic/generate-icc.c~ authors two fixtures with a
+  ~tests/fixtures/dynamic-heic/generate-icc.c~ authors three fixtures with a
   self-authored ICC v2.1.0 profile: ~synthetic-icc.heic~ (five 8x8 solid colors
-  whose linear-light values must convert to specific sRGB values) and
-  ~synthetic-icc-unsupported.heic~ (a CMYK profile that must fail closed). The
-  decodable one is a catalog entry, so the packaged ~heic-decode~ check covers
-  it; the CMYK one is deliberately not a catalog entry because every catalog
-  asset must decode.
-- The smaller real solar sample is published as a catalog asset and decodes end
-  to end. ~chinese-hour-names.heic~ is ~Evian-Zhang/DWBuilder~'s
+  whose linear-light values must convert to specific sRGB values),
+  ~synthetic-icc-unsupported.heic~ (a CMYK profile that must fail closed), and
+  ~synthetic-icc-6k.heic~ (a single 6016x6016 image, above both raised
+  ceilings). The two decodable ones are catalog entries, so the packaged
+  ~heic-decode~ check covers them; the CMYK one is deliberately not a catalog
+  entry because every catalog asset must decode.
+- Both real solar samples are published as catalog assets and decode end to end.
+  ~chinese-hour-names.heic~ is ~Evian-Zhang/DWBuilder~'s
   ~demo/Chinese_dynamic.heic~ (154,126 bytes, 2560x1440, 12-point ~solar.si~
   schedule, Microsoft sRGB ICC profile): the twelve traditional Chinese two-hour
   periods lettered one per frame in white on black, so it is a decode and
-  schedule regression asset rather than wallpaper artwork. It is delivered from
-  R2 as a hash-pinned fixed-output source like the other third-party assets, so
-  the packaged ~heic-decode~ check decodes all 12 of its frames and the
-  ~heic-assets~ check re-derives its byte size and SHA-256 from the installed
-  file. Its ~rights~ field records that the source repository declares no license
-  rather than asserting one. The larger Sequoia sample also needs the frame
-  ceilings raised, which is the separate follow-up for #47.
+  schedule regression asset rather than wallpaper artwork. ~sequoia-graphic.heic~
+  is ~alphaArgon/SequoiaGraphicWallpaper~'s ~Sequoia Graphic.heic~ (70,842,628
+  bytes, 6016x6016, 10-point ~solar.si~ schedule with an embedded light/dark
+  appearance pair and an Apple display ICC profile). Both are delivered from R2
+  as hash-pinned fixed-output sources, so the packaged ~heic-decode~ check
+  decodes all 12 and all 8 of their frames and ~heic-assets~ re-derives their
+  byte sizes and SHA-256. Their ~rights~ fields record that neither source
+  declares a license rather than asserting one.

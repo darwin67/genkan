@@ -6,7 +6,7 @@
  * These fixtures carry a self-authored profile instead of a third-party one, so
  * the repository redistributes no profile it does not own.
  *
- * usage: generate-icc OUTPUT.heic linear|unsupported
+ * usage: generate-icc OUTPUT.heic linear|unsupported|sixk
  *
  *   linear       8x8, five solid colors, with a linear-light matrix-shaper RGB
  *                profile. Its colorants are the sRGB/Rec.709 primaries adapted
@@ -16,6 +16,11 @@
  *   unsupported  8x8, one solid color, with a profile whose data color space is
  *                CMYK. The decoder must refuse it rather than display it with
  *                unspecified color.
+ *   sixk         6016x6016, one solid color, with the same linear-light
+ *                profile. Its dimensions are above the 33,554,432-pixel and
+ *                128 MiB ceilings the decoder used to apply, so it fails if
+ *                either ceiling regresses, and it proves the conversion runs at
+ *                the largest frame the decoder admits.
  *
  * Build with a C compiler and libheif development files:
  *
@@ -23,6 +28,7 @@
  *     $(pkg-config --libs libheif) -lm -o generate-icc
  *   ./generate-icc synthetic-icc.heic linear
  *   ./generate-icc synthetic-icc-unsupported.heic unsupported
+ *   ./generate-icc synthetic-icc-6k.heic sixk
  */
 
 #include <libheif/heif.h>
@@ -263,7 +269,7 @@ int main(int argc, char **argv)
     int height;
 
     if (argc != 3) {
-        fail("usage: generate-icc OUTPUT.heic linear|unsupported");
+        fail("usage: generate-icc OUTPUT.heic linear|unsupported|sixk");
     }
 
     memset(profile, 0, sizeof(profile));
@@ -277,6 +283,11 @@ int main(int argc, char **argv)
         profile_size = build_cmyk_profile(profile);
         width = 8;
         height = 8;
+    } else if (strcmp(argv[2], "sixk") == 0) {
+        profile_size = build_matrix_shaper_profile(
+            profile, 1.0, "Genkan linear-light Rec.709 test profile");
+        width = 6016;
+        height = 6016;
     } else {
         fail("unknown fixture kind");
         return EXIT_FAILURE;

@@ -21,7 +21,7 @@ const FAILED_TAG: u8 = b'E';
 const HEADER_BYTES: usize = 12;
 /// Mirrors `src/wallpaper.rs`: the relay refuses more than the decoder allows.
 const MAX_FRAME_DIMENSION: u32 = 16_384;
-const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 /// Generous enough for a real libheif decode, short enough to fail CI.
 const DEADLINE: Duration = Duration::from_secs(60);
 

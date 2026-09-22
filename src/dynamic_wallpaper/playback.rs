@@ -13,7 +13,7 @@ use super::{
 const RESYNCHRONIZE_AFTER: Duration = Duration::from_secs(60);
 const DISSOLVE_DURATION: Duration = Duration::from_secs(2);
 const CLOCK_TOLERANCE_NANOSECONDS: i128 = 1_000_000_000;
-const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -47,7 +47,7 @@ const HEIC_FRAME_TAG: u8 = b'F';
 const HEIC_FAILED_TAG: u8 = b'E';
 const HEIC_HEADER_BYTES: usize = 12;
 const MAX_HEIC_FRAME_DIMENSION: u32 = 16_384;
-const MAX_HEIC_FRAME_BYTES: usize = 128 * 1024 * 1024;
+const MAX_HEIC_FRAME_BYTES: usize = 256 * 1024 * 1024;
 static POSTERS: [OnceLock<Result<image::Handle, String>>; 5] = [const { OnceLock::new() }; 5];
 
 #[derive(Debug, Clone, Copy)]
