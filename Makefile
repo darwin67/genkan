@@ -11,7 +11,7 @@ dev:
 
 animated-dev:
 	@test -n "$(GENKAN_WALLPAPER_DIR)" || { echo "GENKAN_WALLPAPER_DIR is unavailable; run this target inside nix develop" >&2; exit 1; }
-	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --animated-preview --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)" --wallpaper-file "$(GENKAN_WALLPAPER_DIR)/$(WALLPAPER).mov"
+	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --animated-preview --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)" --wallpaper-file "$(GENKAN_WALLPAPER_DIR)/mov/$(WALLPAPER).mov"
 
 lock-dev:
 	cargo run --bin genkan -- lock --preview "$(LOCK_PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)"
