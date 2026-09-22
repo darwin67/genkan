@@ -311,6 +311,15 @@ test_ci_watches_the_wallpaper_catalog() {
     fail "CI push and pull_request filters must watch assets/**"
 }
 
+test_ci_scopes_cargo_caches_to_the_flake_lock() {
+  # A cached target/ holds build scripts linked against the store paths of the
+  # nixpkgs revision that produced them. Restoring one after a flake.lock bump
+  # makes cargo execute build scripts whose interpreter no longer exists, so
+  # every cargo cache key and its restore key must include the flake lock hash.
+  [[ $(grep -Fc "hashFiles('flake.lock')" "$repo_root/.github/workflows/ci.yml") == 6 ]] || \
+    fail "every cargo cache key and restore key must be scoped to flake.lock"
+}
+
 test_ci_serializes_software_graphics_checks() {
   grep -Fq \
     'run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs' \
@@ -1092,6 +1101,7 @@ test_representative_selection_placement_and_cleanup
 test_no_tracked_nix_result_links
 test_ci_watches_all_scripts
 test_ci_watches_the_wallpaper_catalog
+test_ci_scopes_cargo_caches_to_the_flake_lock
 test_ci_serializes_software_graphics_checks
 test_ci_runs_geoclue_solar_vm
 test_dev_preview_does_not_inherit_host_identity

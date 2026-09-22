@@ -65,10 +65,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-fmt-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-fmt-cargo-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-fmt-cargo-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-fmt-cargo-${{ hashFiles('flake.lock') }}-
 
       - run: nix develop --command make fmt
 
@@ -87,10 +86,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-lint-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-lint-cargo-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-lint-cargo-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-lint-cargo-${{ hashFiles('flake.lock') }}-
 
       - run: nix develop --command make lint
 
@@ -109,10 +107,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-test-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-test-cargo-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-test-cargo-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-test-cargo-${{ hashFiles('flake.lock') }}-
 
       - run: nix develop --command make test
       - run: nix develop --command make check-rfds
