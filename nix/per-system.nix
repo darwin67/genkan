@@ -327,15 +327,13 @@ let
   # the packaged symlinks, the shipped container preflight, the metadata parser,
   # and tiled decoding end to end. A regression that only breaks real multi-image
   # wallpapers fails the build here instead of only in the graphical smoke test.
-  # Assets that record `decode_verified = false` are known not to decode; the
-  # manifest entry names the reason and the tracking issue. At least one asset
-  # must stay verified, and only a reviewed exception may be excluded, so a
-  # future `false` cannot quietly drop a working asset from the check.
-  heicDecodeVerifiedAssets = builtins.filter (asset: asset.decode_verified or true) dynamicHeicAssets;
+  # Every catalog asset must decode: an entry that records
+  # `decode_verified = false` fails the check instead of dropping out of it, so
+  # re-introducing an exception has to change this check and the manifest entry
+  # together rather than silently reducing what is verified.
   heicDecodeExcludedAssets = builtins.filter (asset: !(asset.decode_verified or true)) dynamicHeicAssets;
   heicDecodeCheck =
-    assert builtins.length heicDecodeVerifiedAssets > 0;
-    assert builtins.all (asset: asset.id == "wallpapper-h24") heicDecodeExcludedAssets;
+    assert builtins.length heicDecodeExcludedAssets == 0;
     pkgs.runCommand "genkan-heic-decode-check"
       {
         nativeBuildInputs = [ pkgs.coreutils ];
@@ -345,7 +343,7 @@ let
           ${package}/bin/genkan verify-wallpapers \
             --file ${package}/share/genkan/wallpapers/${asset.install_name} \
             --expect-frames ${toString asset.structure.image_count}
-        '') heicDecodeVerifiedAssets}
+        '') dynamicHeicAssets}
         touch $out
       '';
 in

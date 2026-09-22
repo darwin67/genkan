@@ -108,6 +108,15 @@ evidence in the linked GitHub Actions run. The macOS CI job continues checking
 both fixtures so later byte or metadata changes cannot silently invalidate the
 recorded evidence.
 
+This fixture carries a coded picture margin that `wallpapper` derived from
+macOS ImageIO: its SPS declares a 160x64 coded picture that crops to the
+declared 8x8. libheif 1.23.1 and 1.23.2 tightened the permitted coded size to
+one coding unit beyond `ispe` and rejected the file before the decoder plugin
+ran; libheif 1.23.3 added a 65536-pixel floor to that tightening
+(link:https://github.com/strukturag/libheif/issues/1856[libheif issue #1856]).
+Decoding this fixture therefore requires libheif 1.23.3 or later, which is the
+version the pinned nixpkgs provides.
+
 == Geometry smoke fixture
 
 `generate-geometry.c` authors a single-image, nonuniform 12 by 8 HEIC for the

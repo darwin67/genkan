@@ -120,9 +120,10 @@ match its manifest entry.
 
 `make heic-decode` opens every installed dynamic HEIC through the shipped parser
 and decodes all of its frames, checking the top-level image count against the
-manifest's `structure.image_count`. An asset whose manifest entry records
-`decode_verified = false` is skipped, and the entry names the reason and the
-tracking issue.
+manifest's `structure.image_count`. Every catalog asset must decode: an entry
+that records `decode_verified = false` fails the check instead of being skipped,
+so a known-undecodable asset has to be re-justified in the check and the
+manifest entry together.
 
 Authentication changes should also run the x86_64 NixOS VM test:
 

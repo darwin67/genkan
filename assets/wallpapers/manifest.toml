@@ -415,13 +415,14 @@ install_name = "wallpapper-h24.heic"
 sha256 = "2f82da28545f7d26eb79132d918f1b969d50b29044351ce3732197283e41474f"
 nix_hash = "sha256-L4LaKFRffSbreRMtkY8blp1QspBENRzjcyGXKD5BR08="
 byte_size = 4300
-# libheif 1.23.1 tightens the permitted image size to (ispe + one coding unit)^2
-# before handing bytes to the decoder. This fixture's SPS declares a 160x64 coded
-# picture that crops to the declared 8x8, so the tightened ceiling of 5184 rejects
-# it even though libheif 1.21.2 decodes the same bytes to the expected 8x8 solids.
-# The limitation is upstream, not a Genkan parsing defect, and is tracked as
-# issue #50; set this back to true once the decoder accepts the file again.
-decode_verified = false
+# libheif 1.23.1 and 1.23.2 tightened the permitted coded picture size to
+# (ispe + one coding unit)^2 before handing bytes to the decoder. This fixture's
+# SPS declares a 160x64 coded picture that crops to the declared 8x8, so the
+# tightened 5184-pixel ceiling rejected it even though the bytes are valid.
+# libheif 1.23.3 added a 65536-pixel floor to that tightening (upstream issue
+# #1856), which accepts this coded size again; decoding therefore requires
+# libheif 1.23.3 or later.
+decode_verified = true
 
 [dynamic_heic.structure]
 container = "HEIF"
