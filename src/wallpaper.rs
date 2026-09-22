@@ -47,7 +47,7 @@ const HEIC_FRAME_TAG: u8 = b'F';
 const HEIC_FAILED_TAG: u8 = b'E';
 const HEIC_HEADER_BYTES: usize = 12;
 const MAX_HEIC_FRAME_DIMENSION: u32 = 16_384;
-const MAX_HEIC_FRAME_BYTES: usize = 128 * 1024 * 1024;
+const MAX_HEIC_FRAME_BYTES: usize = 256 * 1024 * 1024;
 static POSTERS: [OnceLock<Result<image::Handle, String>>; 5] = [const { OnceLock::new() }; 5];
 
 #[derive(Debug, Clone, Copy)]
@@ -1992,7 +1992,13 @@ fn decode_poster(spec: &PlaybackSpec) -> Result<image::Handle, String> {
 
 fn wallpaper_path_for_executable(executable: &Path, install_name: &str) -> Option<PathBuf> {
     let prefix = executable.parent()?.parent()?;
-    Some(prefix.join("share/genkan/wallpapers").join(install_name))
+    // MOV videos and their posters are installed under `mov/`; dynamic HEICs
+    // live under `heic/` and are only ever selected through `--file`.
+    Some(
+        prefix
+            .join("share/genkan/wallpapers/mov")
+            .join(install_name),
+    )
 }
 
 fn pipeline_error(reason: &str) -> String {
@@ -2055,7 +2061,7 @@ mod tests {
                 "tahoe-beach.mov"
             ),
             Some(PathBuf::from(
-                "/nix/store/genkan/share/genkan/wallpapers/tahoe-beach.mov"
+                "/nix/store/genkan/share/genkan/wallpapers/mov/tahoe-beach.mov"
             ))
         );
     }
@@ -2917,12 +2923,14 @@ mod tests {
 
     #[test]
     fn heic_relay_rejects_a_payload_above_the_byte_cap_without_reading_it() {
-        // 8192 by 8192 RGBA is 256 MiB: above the 128 MiB ceiling without
-        // overflowing, so only the byte ceiling can refuse it.
-        assert!(expected_frame_bytes(8_192, 8_192).is_none());
+        // 8192 by 8192 RGBA is 256 MiB: above the byte ceiling only once the
+        // frame is larger than the decoder's largest admissible frame, so the
+        // byte ceiling is what refuses it.
+        assert!(expected_frame_bytes(8_192, 8_192).is_some());
+        assert!(expected_frame_bytes(16_384, 16_384).is_none());
         let payload_reads = Arc::new(AtomicUsize::new(0));
         let mut reader = PayloadProbe {
-            prefix: relay_header_bytes(HEIC_FRAME_TAG, 8_192, 8_192, 256 * 1024 * 1024),
+            prefix: relay_header_bytes(HEIC_FRAME_TAG, 16_384, 16_384, 1024 * 1024 * 1024),
             offset: 0,
             payload_reads: Arc::clone(&payload_reads),
         };
@@ -2999,6 +3007,7 @@ mod tests {
     fn heic_relay_rejects_a_frame_the_decoder_would_have_refused() {
         // The relay's ceilings mirror `dynamic_wallpaper::heic`'s limits.
         assert_eq!(expected_frame_bytes(3_840, 2_160), Some(3_840 * 2_160 * 4));
+        assert_eq!(expected_frame_bytes(6_016, 6_016), Some(6_016 * 6_016 * 4));
         assert!(expected_frame_bytes(0, 2_160).is_none());
         assert!(expected_frame_bytes(3_840, 0).is_none());
         assert!(expected_frame_bytes(16_385, 1).is_none());

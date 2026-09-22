@@ -60,9 +60,12 @@ let
       inherit posterSource;
     }
   ) wallpaperManifest.wallpaper;
+  # MOV wallpapers and their posters are installed under `mov/`, and dynamic
+  # HEIC assets under `heic/`, so the installed tree names the format instead of
+  # mixing both under one directory. The R2 layout mirrors it.
   installWallpaper = wallpaper: ''
-    ln -s ${wallpaper.videoSource} "$wallpaperDirectory/${wallpaper.install_name}"
-    ln -s ${wallpaper.posterSource} "$wallpaperDirectory/${wallpaper.poster.file}"
+    ln -s ${wallpaper.videoSource} "$wallpaperDirectory/mov/${wallpaper.install_name}"
+    ln -s ${wallpaper.posterSource} "$wallpaperDirectory/mov/${wallpaper.poster.file}"
   '';
 
   # Immutable dynamic HEIC assets. A repository-delivered asset is pinned by its
@@ -91,7 +94,7 @@ let
     }
   ) wallpaperManifest.dynamic_heic;
   installHeicAsset = asset: ''
-    ln -s ${asset.source} "$wallpaperDirectory/${asset.install_name}"
+    ln -s ${asset.source} "$wallpaperDirectory/heic/${asset.install_name}"
   '';
   heicAssetCheck =
     pkgs.runCommand "genkan-heic-asset-check"
@@ -105,16 +108,24 @@ let
         '') dynamicHeicAssets}
         touch $out
       '';
-  devWallpaperDirectory = pkgs.linkFarm "genkan-wallpapers" (
-    map (wallpaper: {
-      name = wallpaper.install_name;
-      path = wallpaper.videoSource;
-    }) wallpapers
-    ++ map (asset: {
-      name = asset.install_name;
-      path = asset.source;
-    }) dynamicHeicAssets
-  );
+  # The development directory mirrors the installed tree: `mov/` for the MOV
+  # videos and `heic/` for the dynamic HEICs. `linkFarm` names are single path
+  # components, so the two subdirectories are created directly rather than
+  # through a farm.
+  devWallpaperDirectory =
+    pkgs.runCommand "genkan-wallpapers"
+      {
+        nativeBuildInputs = [ pkgs.coreutils ];
+      }
+      ''
+        mkdir -p $out/mov $out/heic
+        ${pkgs.lib.concatMapStringsSep "\n" (wallpaper: ''
+          ln -s ${wallpaper.videoSource} "$out/mov/${wallpaper.install_name}"
+        '') wallpapers}
+        ${pkgs.lib.concatMapStringsSep "\n" (asset: ''
+          ln -s ${asset.source} "$out/heic/${asset.install_name}"
+        '') dynamicHeicAssets}
+      '';
 
   package = rustPlatform.buildRustPackage {
     pname = "genkan";
@@ -133,7 +144,7 @@ let
     ];
     postInstall = ''
       wallpaperDirectory=$out/share/genkan/wallpapers
-      mkdir -p "$wallpaperDirectory"
+      mkdir -p "$wallpaperDirectory/mov" "$wallpaperDirectory/heic"
       install -m 0444 ${../assets/wallpapers/manifest.toml} "$wallpaperDirectory/manifest.toml"
       ${pkgs.lib.concatMapStringsSep "\n" installWallpaper wallpapers}
       ${pkgs.lib.concatMapStringsSep "\n" installHeicAsset dynamicHeicAssets}
@@ -343,7 +354,7 @@ let
       ''
         ${pkgs.lib.concatMapStringsSep "\n" (asset: ''
           ${package}/bin/genkan verify-wallpapers \
-            --file ${package}/share/genkan/wallpapers/${asset.install_name} \
+            --file ${package}/share/genkan/wallpapers/heic/${asset.install_name} \
             --expect-frames ${toString asset.structure.image_count}
         '') dynamicHeicAssets}
         touch $out

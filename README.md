@@ -98,9 +98,10 @@ a dedicated non-interactive background client:
 genkan wallpaper --file /absolute/path/to/wallpaper.heic
 ```
 
-The package also installs hash-pinned HEIC format samples under
-`share/genkan/wallpapers` for local inspection. This command is separate from
-login and lock. Files with Apple `solar` metadata
+The package also installs hash-pinned wallpaper samples under
+`share/genkan/wallpapers` for local inspection: `mov/` holds the MOV videos and
+their posters, and `heic/` holds the dynamic HEIC assets. This command is
+separate from login and lock. Files with Apple `solar` metadata
 can opt into GeoClue-backed city-level scheduling with `--solar`. See the
 [deployment guide](docs/deployment.md#desktop-wallpaper) for compositor support,
 solar behavior, and autostart examples.

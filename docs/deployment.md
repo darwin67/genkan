@@ -158,13 +158,15 @@ non-interactive background-layer surface per output:
 genkan wallpaper --file /home/alice/Pictures/dynamic.heic
 ```
 
-The package also installs hash-pinned dynamic HEIC samples under
+The package also installs hash-pinned wallpaper samples under
 `share/genkan/wallpapers`, recorded in the
 [wallpaper manifest](../assets/wallpapers/manifest.toml) with their provenance,
-rights, SHA-256, byte size, item structure, and schedule metadata. Repository
-samples are pinned by their committed bytes; a catalog asset delivered from the
-R2 host records its delivery URL and is fetched by Nix as a hash-pinned
-fixed-output source. A wallpaper process never downloads media.
+rights, SHA-256, byte size, item structure, and schedule metadata. The installed
+tree names the format: `mov/` holds the MOV videos and their posters, and
+`heic/` holds the dynamic HEIC assets, and the R2 object layout mirrors it.
+Repository samples are pinned by their committed bytes; a catalog asset
+delivered from the R2 host records its delivery URL and is fetched by Nix as a
+hash-pinned fixed-output source. A wallpaper process never downloads media.
 
 `--file` remains the only way to select a local wallpaper, and it accepts an
 existing absolute regular `.heic` or `.heif` file. URIs, FIFOs, devices, and
@@ -174,6 +176,14 @@ validated against the resource ceilings and copied to an anonymous descriptor
 before libheif parses it, so rewriting the bound inode afterwards cannot change
 what is decoded. Local files are never uploaded, copied into the store, or
 published.
+
+Frames are published as opaque SDR RGBA8 in sRGB. An embedded ICC profile is
+converted to sRGB rather than ignored, because dropping one would display the
+wallpaper with the wrong colors, and a file whose profile cannot be converted —
+a non-RGB color space, a malformed profile, or one above the 1 MiB profile
+ceiling — is refused rather than displayed with unspecified color. An item that
+carries NCLX instead of ICC is still required to declare sRGB primaries and the
+sRGB transfer function.
 
 The initial backend requires `zwlr_layer_shell_v1` and is intended for niri,
 Sway, River, Hyprland, and other compatible wlroots-oriented compositors. It

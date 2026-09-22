@@ -64,7 +64,8 @@ lock-dev`.
 
 Real wallpaper playback can be enabled without making preview authentication
 or power actions real. The Nix development shell exposes the pinned videos
-through `GENKAN_WALLPAPER_DIR`:
+through `GENKAN_WALLPAPER_DIR`, under the same `mov/` and `heic/` split as the
+installed tree:
 
 ```sh
 make animated-dev

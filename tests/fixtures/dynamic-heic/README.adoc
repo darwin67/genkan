@@ -117,6 +117,65 @@ ran; libheif 1.23.3 added a 65536-pixel floor to that tightening
 Decoding this fixture therefore requires libheif 1.23.3 or later, which is the
 version the pinned nixpkgs provides.
 
+== Embedded color profile fixtures
+
+`generate-icc.c` authors the fixtures that exercise the ICC-to-sRGB conversion
+and the frame-size ceilings. All three carry a profile this repository authored,
+so no third-party profile bytes are redistributed, and all three are generated
+by one program with libheif 1.23.3 and its x265 encoder in lossless mode:
+
+[source,sh]
+----
+cc $(pkg-config --cflags libheif) generate-icc.c \
+  $(pkg-config --libs libheif) -lm -o generate-icc
+./generate-icc synthetic-icc.heic linear
+./generate-icc synthetic-icc-unsupported.heic unsupported
+./generate-icc synthetic-icc-6k.heic sixk
+----
+
+The `linear` profile is a minimal ICC v2.1.0 matrix-shaper `mntr` profile. Its
+colorants are the sRGB/Rec.709 primaries adapted to the D50 connection space and
+its `curv` tone curve is a single entry with gamma 1.0, so its only difference
+from sRGB is the transfer function. Converting one of its frames to sRGB is
+therefore `srgb_encode(value / 255)`, which is what the decoder test asserts.
+
+The `linear` profile is a complete ICC v2.1.0 `mntr` profile: it carries the
+required `desc` and `cprt` tags, the description's ScriptCode section is present
+at its full fixed size, and every tag payload begins on a four-byte boundary.
+The generator clears its profile buffer, so reserved and padding bytes are zero
+rather than stack contents, and repeated runs produce byte-identical output. The
+earlier version serialized uninitialized reserved bytes, which made the hash
+depend on the stack. `the_fixture_profile_is_structurally_conforming` re-derives
+the declared extent, the tag table, the required tags, the description layout,
+the tag alignment, and the zeroed reserved bytes from the checked-in files, so a
+generator regression cannot silently change what the fixtures mean.
+
+Fixture records:
+
+* `synthetic-icc.heic`: 5 top-level 8 by 8 images, one per solid color, in
+  `(224,32,32)`, `(32,224,32)`, `(32,32,224)`, `(128,128,128)`, `(32,32,32)`
+  order, each carrying the `linear` profile. The decoded sRGB values are
+  `(241,99,99)`, `(99,241,99)`, `(99,99,241)`, `(188,188,188)`, and
+  `(99,99,99)`; the test tolerance covers the lossy HEVC round trip through
+  4:2:0 chroma. Byte size 1,631; SHA-256
+  `1f2e98c523c47825c8add10de3e75949870a539bdae234c9e1477ce3d9c5002b`.
+* `synthetic-icc-unsupported.heic`: 1 top-level 8 by 8 image with a profile whose
+  data color space is `CMYK`. Decoding must fail with `non-RGB embedded ICC
+  profile` rather than display the frame with unspecified color. Byte size 583;
+  SHA-256
+  `b09c38bee05ca3700ad4da1c52b67ea559d4ae665e3c4f81916c8790d2126fcb`.
+* `synthetic-icc-6k.heic`: 1 top-level 6016 by 6016 image of `(128,128,128)` with
+  the `linear` profile. It is 36,192,256 pixels and 144,769,024 bytes of RGBA8,
+  above the 33,554,432-pixel and 128 MiB ceilings the decoder applied before
+  issues #46 and #47, so it fails if either ceiling regresses. Its conversion
+  also spans more than one scratch chunk. Byte size 22,818; SHA-256
+  `bce83439ff6f3bed32e8b4a6d39d8571054df562e52827f84fc05593ed21a27b`.
+
+The two 8 by 8 fixtures declare their `ispe` inside a coded picture padded to a
+full 64 by 64 HEVC coding unit, so they require libheif 1.23.3 for the same
+reason `imageio-wallpapper-h24.heic` does. The 6016 by 6016 fixture is an exact
+multiple of the coding unit size and carries no crop.
+
 == Geometry smoke fixture
 
 `generate-geometry.c` authors a single-image, nonuniform 12 by 8 HEIC for the

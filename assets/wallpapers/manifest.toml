@@ -6,6 +6,10 @@ verified_at = "2026-09-01"
 [delivery]
 r2_bucket = "genkan-assets"
 base_url = "https://assets.genkan.dwu.sh/wallpapers/"
+# Objects are split by format under the base URL: `mov/` holds the MOV videos
+# and `heic/` holds the dynamic HEIC assets. The installed tree mirrors it, so
+# `share/genkan/wallpapers/mov` and `share/genkan/wallpapers/heic` name the
+# format rather than mixing both in one directory.
 content_type = "video/quicktime"
 cache_control = "public, max-age=31536000, immutable"
 cache_rule_id = "36ea271e0e884369ae43b5328d2c817f"
@@ -52,7 +56,7 @@ name = "Tahoe Beach"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-tahoe-wallpaper-desktop-pictures-5k/"
 source_file_url = "https://drive.google.com/file/d/1uuApUmafIUDskzYPfNPDhsGhQ0eef6jx/view"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/tahoe-beach-5917a9d17ec32b6a4552c530c81515aff4517fa4cd3ebd712d69d0ab2e6618cc.mov"
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/tahoe-beach-5917a9d17ec32b6a4552c530c81515aff4517fa4cd3ebd712d69d0ab2e6618cc.mov"
 install_name = "tahoe-beach.mov"
 sha256 = "5917a9d17ec32b6a4552c530c81515aff4517fa4cd3ebd712d69d0ab2e6618cc"
 nix_hash = "sha256-WRep0X7DK2pFUsUwyBUVr/RRf6TNPr1xLWnQqy5mGMw="
@@ -103,7 +107,7 @@ name = "Sequoia Sunrise"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
 source_file_url = "https://drive.google.com/file/d/1qZg0jWnUwHKaB4F2xFzfBqFHEKgXeFoT/view"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/sequoia-sunrise-40c8e66d5b1b90c078493355884bc75ee2ec2688003708a8decbd7c45c837435.mov"
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/sequoia-sunrise-40c8e66d5b1b90c078493355884bc75ee2ec2688003708a8decbd7c45c837435.mov"
 install_name = "sequoia-sunrise.mov"
 sha256 = "40c8e66d5b1b90c078493355884bc75ee2ec2688003708a8decbd7c45c837435"
 nix_hash = "sha256-QMjmbVsbkMB4STNViEvHXuLsJogANwio3svXxFyDdDU="
@@ -154,7 +158,7 @@ name = "Sequoia Morning"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
 source_file_url = "https://drive.google.com/file/d/1q6oUEsY62qC6RnJIJex1I5vhRXwDJe5o/view"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/sequoia-morning-8362ed905f4d541a936db43efe7b5ca563ab9fd3eb6cd23fb7fd19f01544080a.mov"
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/sequoia-morning-8362ed905f4d541a936db43efe7b5ca563ab9fd3eb6cd23fb7fd19f01544080a.mov"
 install_name = "sequoia-morning.mov"
 sha256 = "8362ed905f4d541a936db43efe7b5ca563ab9fd3eb6cd23fb7fd19f01544080a"
 nix_hash = "sha256-g2LtkF9NVBqTbbQ+/ntcpWOrn9PrbNI/t/0Z8BVECAo="
@@ -205,7 +209,7 @@ name = "Sequoia Night"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
 source_file_url = "https://drive.google.com/file/d/16R5qX4--VdAEr7lUe4AsukqK_MVYtKEi/view"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/sequoia-night-652c8bbc8f93d2c50394c8f314a0f07f83845844d1b25ae3b92ae546ccaefe23.mov"
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/sequoia-night-652c8bbc8f93d2c50394c8f314a0f07f83845844d1b25ae3b92ae546ccaefe23.mov"
 install_name = "sequoia-night.mov"
 sha256 = "652c8bbc8f93d2c50394c8f314a0f07f83845844d1b25ae3b92ae546ccaefe23"
 nix_hash = "sha256-ZSyLvI+T0sUDlMjzFKDwf4OEWETRslrjuSrlRsyu/iM="
@@ -256,7 +260,7 @@ name = "Golden Gate"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-golden-gate-wallpaper-desktop-pictures-5k/"
 source_file_url = "https://drive.google.com/file/d/1R5vVgXaLBuDZpYifOHPR0mIHAbqLpx_G/view"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/golden-gate-1192ff0b0c0174f3eace6d0d255f51cc981fb7868e110a8c8ca63c1b3394c3de.mov"
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/golden-gate-1192ff0b0c0174f3eace6d0d255f51cc981fb7868e110a8c8ca63c1b3394c3de.mov"
 install_name = "golden-gate.mov"
 sha256 = "1192ff0b0c0174f3eace6d0d255f51cc981fb7868e110a8c8ca63c1b3394c3de"
 nix_hash = "sha256-EZL/CwwBdPPqzm0NJV9RzJgft4aOEQqMjKY8GzOUw94="
@@ -314,7 +318,7 @@ delivery = "r2"
 provenance = "Authored on macOS by ad735/macos-heic-wallpaper (Tahoe.heic), a real multi-image dynamic wallpaper generated with Apple tooling. Verified independently with libheif heif-info and Genkan's own parser: 8 top-level 3840x2160 images with an XML h24 time sequence."
 source_page_url = "https://github.com/ad735/macos-heic-wallpaper"
 rights = "Artwork derived from macOS; no open-content license is declared by the source repository."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/tahoe-dynamic-c5394f3cc0b547d665c2b65ba0eb8d12c5bbd1f6dd67a20e641153c3bcbabf91.heic"
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/tahoe-dynamic-c5394f3cc0b547d665c2b65ba0eb8d12c5bbd1f6dd67a20e641153c3bcbabf91.heic"
 install_name = "tahoe-dynamic.heic"
 sha256 = "c5394f3cc0b547d665c2b65ba0eb8d12c5bbd1f6dd67a20e641153c3bcbabf91"
 nix_hash = "sha256-xTlPPMC1R9ZlwrZboOuNEsW70fbdZ6IOZBFTw7y6v5E="
@@ -352,7 +356,7 @@ delivery = "r2"
 provenance = "Authored by Basic Apple Guy as the dynamic Tahoe time-of-day release: four macOS Tahoe stills upscaled to 5K and packed into a single dynamic HEIC. Verified with libheif heif-info and Genkan's own parser: 5 top-level 6016x3384 images with an XML h24 time sequence and an embedded light/dark appearance pair."
 source_page_url = "https://basicappleguy.com/basicappleblog/dynamic-tahoe-wallpapers"
 rights = "Fan-authored derivative of macOS artwork; distributed non-commercially by the author, with no open-content license."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/tahoe-time-of-day-9de03b172203a362a74423afe0aa43620801a2c7e6c1112bdebd7d3bbb04d526.heic"
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/tahoe-time-of-day-9de03b172203a362a74423afe0aa43620801a2c7e6c1112bdebd7d3bbb04d526.heic"
 install_name = "tahoe-time-of-day.heic"
 sha256 = "9de03b172203a362a74423afe0aa43620801a2c7e6c1112bdebd7d3bbb04d526"
 nix_hash = "sha256-neA7FyIDo2KnRCOv4KpDYggBosfmwREr3r19O7sE1SY="
@@ -445,4 +449,140 @@ color_space = "sRGB"
 h24_points = [{ index = 0, t = 0.0 }, { index = 1, t = 0.25 }, { index = 2, t = 0.5 }, { index = 3, t = 0.75 }]
 standalone_appearance = false
 embedded_h24_appearance = { light = 0, dark = 3 }
+embedded_solar_appearance = false
+
+[[dynamic_heic]]
+id = "chinese-hour-names"
+name = "Traditional Chinese hour names (12 variants)"
+delivery = "r2"
+provenance = "Evian-Zhang/DWBuilder demo/Chinese_dynamic.heic: the twelve traditional Chinese two-hour periods (十二時辰) lettered one per frame in white on black, packed into one dynamic HEIC with a 12-point solar.si schedule. Verified with libheif heif-info and Genkan's own parser: 12 top-level 2560x1440 images, HEIF item IDs 16, 33, 49, 65, 81, 97, 113, 129, 145, 161, 177, and 193 in collection order, a Microsoft sRGB ICC profile on every frame, and no appearance metadata. The frames are typographic rather than photographic, and are the source repository's 01.png through 23.png, named for the odd hour that opens each period: 雞鳴, 平旦, 日出, 食時, 隅中, 日中, 日昳, 晡時, 日入, 黃昏, 人定, and 夜半. It is the smaller of the two real solar-schedule samples found, the only one with a 12-point schedule, and the one whose only decoding blocker was the embedded profile."
+source_page_url = "https://github.com/Evian-Zhang/DWBuilder"
+rights = "The source repository declares no license, so the asset is published as an unlicensed third-party work with its origin recorded rather than asserted."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/chinese-hour-names-60e8e428058ac9c6776ec72c41fe64ff3dc77544ee1e9498c75e3493ad5de3e8.heic"
+install_name = "chinese-hour-names.heic"
+sha256 = "60e8e428058ac9c6776ec72c41fe64ff3dc77544ee1e9498c75e3493ad5de3e8"
+nix_hash = "sha256-YOjkKAWKycZ3bscsQf5k/z3HdUTuHpSYx140k61d4+g="
+byte_size = 154126
+cacheable_under_plan_limit = true
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 12
+image_item_ids = [16, 33, 49, 65, 81, 97, 113, 129, 145, 161, 177, 193]
+primary_item_id = 16
+width = 2560
+height = 1440
+color_space = "embedded ICC, Microsoft sRGB profile converted to sRGB"
+
+[dynamic_heic.schedule]
+solar_points = [
+  { index = 0, altitude = -8.039355681312456, azimuth = 164.84823195949994 },
+  { index = 1, altitude = -5.735241119771968, azimuth = 134.71349539374125 },
+  { index = 2, altitude = -1.7641686278322655, azimuth = 104.90746456998356 },
+  { index = 3, altitude = 2.8119063915098343, azimuth = 75.25066513561535 },
+  { index = 4, altitude = 6.788427215108525, azimuth = 45.40347073369311 },
+  { index = 5, altitude = 9.098076007367675, azimuth = 15.195031775097583 },
+  { index = 6, altitude = 9.098076007367675, azimuth = 344.80496822490244 },
+  { index = 7, altitude = 6.788427215108525, azimuth = 314.5965292663069 },
+  { index = 8, altitude = 2.8119063915098343, azimuth = 284.74933486438465 },
+  { index = 9, altitude = -1.7641686278322655, azimuth = 255.09253543001643 },
+  { index = 10, altitude = -5.735241119771968, azimuth = 225.28650460625875 },
+  { index = 11, altitude = -8.039355681312456, azimuth = 195.15176804050006 },
+]
+standalone_appearance = false
+embedded_h24_appearance = false
+embedded_solar_appearance = false
+
+[[dynamic_heic]]
+id = "synthetic-icc"
+name = "Synthetic embedded-ICC HEIC"
+delivery = "repository"
+provenance = "Reproducibly generated by tests/fixtures/dynamic-heic/generate-icc.c with libheif 1.23.3 and its x265 encoder in lossless mode. Each of its five solid-color images carries a self-authored ICC v2.1.0 matrix-shaper profile with the sRGB/Rec.709 primaries and a gamma 1.0 tone curve, so decoding converts linear light to sRGB. Contains no third-party artwork or profile bytes."
+source_page_url = "https://github.com/darwin67/genkan/blob/main/tests/fixtures/dynamic-heic/generate-icc.c"
+rights = "Authored for Genkan under the repository MIT license."
+source_path = "tests/fixtures/dynamic-heic/synthetic-icc.heic"
+install_name = "synthetic-icc.heic"
+sha256 = "1f2e98c523c47825c8add10de3e75949870a539bdae234c9e1477ce3d9c5002b"
+nix_hash = "sha256-Hy6YxSPEeCXIrdEN4+dZSYcKU5va4jTJ4Ud849nFACs="
+byte_size = 1631
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 5
+image_item_ids = [1, 2, 3, 4, 5]
+primary_item_id = 1
+width = 8
+height = 8
+color_space = "embedded ICC, linear-light Rec.709 converted to sRGB"
+
+[dynamic_heic.schedule]
+standalone_appearance = false
+embedded_h24_appearance = false
+embedded_solar_appearance = false
+
+[[dynamic_heic]]
+id = "sequoia-graphic-solar"
+name = "Sequoia Graphic solar (8 variants)"
+delivery = "r2"
+provenance = "alphaArgon/SequoiaGraphicWallpaper: macOS Sequoia's Metal-rendered graphic wallpaper captured at ten sunlight angles and packed into one dynamic HEIC. Verified with libheif heif-info and Genkan's own parser: 8 top-level 6016x6016 images, HEIF item IDs 37, 76, 114, 152, 190, 228, 266, and 304 in collection order, a 10-point solar.si schedule that revisits images 0 and 1, an embedded light/dark appearance pair, and an Apple display ICC profile on every frame. It is the largest real solar-schedule sample in the catalog and the asset that set the source-size and pixel ceilings."
+source_page_url = "https://github.com/alphaArgon/SequoiaGraphicWallpaper"
+rights = "The source repository declares no license and states that the graphic contents are copyrighted by Apple, so the asset is published with its origin recorded rather than asserted."
+r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/sequoia-graphic-4a6440528354be1439c418ef89c341d1dffb49c1d552fc0ff96210eb6a8f3726.heic"
+install_name = "sequoia-graphic.heic"
+sha256 = "4a6440528354be1439c418ef89c341d1dffb49c1d552fc0ff96210eb6a8f3726"
+nix_hash = "sha256-SmRAUoNUvhQ5xBjvicNB0d/7ScHVUvwP+WIQ62qPNyY="
+byte_size = 70842628
+cacheable_under_plan_limit = true
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 8
+image_item_ids = [37, 76, 114, 152, 190, 228, 266, 304]
+primary_item_id = 37
+width = 6016
+height = 6016
+color_space = "embedded ICC, Apple display profile converted to sRGB"
+
+[dynamic_heic.schedule]
+solar_points = [
+  { index = 0, altitude = 25.0, azimuth = 110.0 },
+  { index = 1, altitude = -25.0, azimuth = 70.0 },
+  { index = 2, altitude = -9.0, azimuth = 80.0 },
+  { index = 3, altitude = 0.0, azimuth = 90.0 },
+  { index = 4, altitude = 10.0, azimuth = 100.0 },
+  { index = 0, altitude = 25.0, azimuth = 250.0 },
+  { index = 5, altitude = 10.0, azimuth = 260.0 },
+  { index = 6, altitude = 0.0, azimuth = 270.0 },
+  { index = 7, altitude = -9.0, azimuth = 280.0 },
+  { index = 1, altitude = -25.0, azimuth = 290.0 },
+]
+standalone_appearance = false
+embedded_h24_appearance = false
+embedded_solar_appearance = { light = 0, dark = 1 }
+
+[[dynamic_heic]]
+id = "synthetic-icc-6k"
+name = "Synthetic 6016x6016 embedded-ICC HEIC"
+delivery = "repository"
+provenance = "Reproducibly generated by tests/fixtures/dynamic-heic/generate-icc.c with libheif 1.23.3 and its x265 encoder in lossless mode. A single 6016x6016 solid-color image carrying the same self-authored linear-light Rec.709 profile as synthetic-icc.heic, so the decoder test covers the 36,192,256-pixel and 144,769,024-byte frame that issues #46 and #47 raised the ceilings for. Contains no third-party artwork or profile bytes."
+source_page_url = "https://github.com/darwin67/genkan/blob/main/tests/fixtures/dynamic-heic/generate-icc.c"
+rights = "Authored for Genkan under the repository MIT license."
+source_path = "tests/fixtures/dynamic-heic/synthetic-icc-6k.heic"
+install_name = "synthetic-icc-6k.heic"
+sha256 = "bce83439ff6f3bed32e8b4a6d39d8571054df562e52827f84fc05593ed21a27b"
+nix_hash = "sha256-vOg0Of9vO+0y6LSm052FcQVN9WLlKCf4T8BVk+0hons="
+byte_size = 22818
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 1
+image_item_ids = [1]
+primary_item_id = 1
+width = 6016
+height = 6016
+color_space = "embedded ICC, linear-light Rec.709 converted to sRGB"
+
+[dynamic_heic.schedule]
+standalone_appearance = false
+embedded_h24_appearance = false
 embedded_solar_appearance = false
