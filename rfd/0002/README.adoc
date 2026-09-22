@@ -160,6 +160,16 @@ that hostname and path marks the responses eligible for edge caching and honors
 the immutable origin TTL. Versioned object URLs are never overwritten or purged
 during ordinary releases; a changed file receives a new URL.
 
+Objects are grouped by media format under the `/wallpapers/` prefix: `mov/` holds
+the MOV videos and their posters, and `heic/` holds the dynamic HEIC assets. The
+installed tree under `share/genkan/wallpapers` mirrors that split, so a path names
+the format instead of leaving it to be inferred from a file extension.
+
+Immutability is a property of the hash-named object URLs. An unversioned key
+carries no such guarantee and is not part of the delivery contract, so the catalog
+publishes no separate index object; the manifest is the integrity record, and
+retiring an unversioned key is not a purge of versioned content.
+
 Cloudflare must cache both complete and byte-range requests without changing
 content length, range semantics, or object bytes. Verification checks repeated
 requests for a cache hit and confirms that every source remains below the

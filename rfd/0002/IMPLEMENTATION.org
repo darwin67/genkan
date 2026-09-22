@@ -63,6 +63,17 @@ The phases are ordered; complete each phase before beginning the next.
   repeated 1 MiB requests returned ~206~, ~HIT~, the requested
   ~Content-Range~, and bytes matching the corresponding source ranges. The
   largest source is 432,531,222 bytes, below the recorded plan limit.
+- On 2026-09-22 the object layout was split by media format. The MOV videos and
+  their posters moved to ~/wallpapers/mov/~ and the dynamic HEIC assets to
+  ~/wallpapers/heic/~, and the installed tree under ~share/genkan/wallpapers~
+  mirrors that split. Object bytes and hashes are unchanged; each URL gained its
+  format prefix, and every hash-pinned consumer was updated in the same change.
+  The legacy unversioned keys ~/wallpapers/SHA256SUMS~ and the bare-name objects
+  were retired at the same time, because the manifest supersedes the index as the
+  integrity record and an unversioned key is not part of the delivery contract.
+  Both retired keys were confirmed absent from the bucket, and all nine catalog
+  objects were re-verified as ~206~ byte-range responses carrying the recorded
+  ~Cache-Control~.
 - The pinned development environment exposed and inspected ~qtdemux~,
   ~h265parse~, ~avdec_h265~, ~videoconvert~, and ~appsink~. A bounded Tahoe
   sample decoded through that complete software pipeline to RGBA without
