@@ -1525,24 +1525,31 @@ mod tests {
     }
 
     #[test]
-    fn wallpapper_fixture_records_the_decoder_coded_size_limitation() {
-        // libheif 1.23.1 refuses this file before the decoder plugin runs: its
-        // SPS declares a 160x64 coded picture that crops to the declared 8x8,
-        // and the decoder tightens the permitted size to one coding unit beyond
-        // the `ispe` dimensions, which is 72x72 = 5184 for this image. libheif
-        // 1.21.2 decodes the same bytes to the expected 8x8 solids, so this
-        // records an upstream limitation rather than a Genkan parsing defect.
-        // See issue #50. The assertion flips when the decoder accepts the file,
-        // which is also when the manifest's `decode_verified` should go back to
-        // true.
+    fn wallpapper_fixture_decodes_despite_the_coded_picture_margin() {
+        // This file's SPS declares a 160x64 coded picture that crops to the
+        // declared 8x8. libheif 1.23.1 and 1.23.2 tightened the permitted coded
+        // size to one coding unit beyond the `ispe` dimensions, which is
+        // 72x72 = 5184 here, and rejected the file before the decoder plugin
+        // ran. libheif 1.23.3 added a 65536-pixel floor to that tightening
+        // (upstream issue #1856), so the coded margin no longer decides whether
+        // a valid stream decodes. See issue #50.
         let document = Document::open(&fixture("imageio-wallpapper-h24.heic")).unwrap();
-        let error = document
-            .decode(ImageReference::from_position(0))
-            .expect_err("libheif should still reject the coded size");
-        assert!(
-            error.to_string().contains("exceeds the maximum image size"),
-            "unexpected decode error: {error}"
-        );
+        for (index, color) in [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 255, 255],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_color(
+                &document
+                    .decode(ImageReference::from_position(index))
+                    .unwrap(),
+                color,
+            );
+        }
     }
 
     #[test]

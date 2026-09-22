@@ -16,9 +16,10 @@ maximum_cacheable_object_source = "Cloudflare Free plan 512 MB cacheable file-si
 verification = "Complete responses were SHA-256 checked against the source files; repeated complete and 1 MiB byte-range requests returned CDN HIT responses with unchanged lengths, ranges, and bytes."
 
 [loop_analysis]
-# How `endpoint_ssim` is produced. Recorded here because the method for the
-# original four entries was not captured and their values cannot be reproduced;
-# see rfd/0002/IMPLEMENTATION.org. New entries must state their method.
+# How `endpoint_ssim` is produced. All five values were re-derived with this
+# procedure on 2026-09-21 and reproduce the figures recorded when their assets
+# were published; see rfd/0002/IMPLEMENTATION.org. New entries must state their
+# method.
 metric = "ssim"
 tool = "ffmpeg 8.1.2 with the `ssim` filter"
 comparison = "first decoded frame vs final decoded frame, each scaled to the entry's endpoint_comparison_width and endpoint_comparison_height"
@@ -36,8 +37,14 @@ ffmpeg -i first.png -i last.png -lavfi ssim -f null -
 # varies. Decoding from the start and selecting by frame index is what makes the
 # recorded value reproducible.
 caveat = "HEVC reference frames make short-seek extraction of the final frame unreliable; decode from the start and select by index."
-reproducible_for = "golden-gate"
-unreproducible_for = "tahoe-beach, sequoia-sunrise, sequoia-morning, sequoia-night"
+# The final frame is selected by index among the frames the decoder actually
+# produced, so `nb_read_frames` is authoritative rather than the container's
+# declared `frame_count`. The decoded counts are tahoe-beach 28,801,
+# sequoia-sunrise 28,802, sequoia-morning 58,401, sequoia-night 69,985, and
+# golden-gate 14,386. Sequoia Sunrise and Golden Gate declare more frames than
+# decode (28,806 and 14,400), and selecting by those declared counts produces no
+# frame at all rather than a reproducible endpoint.
+reproducible_for = "tahoe-beach, sequoia-sunrise, sequoia-morning, sequoia-night, golden-gate"
 
 [[wallpaper]]
 id = "tahoe-beach"
@@ -88,7 +95,7 @@ crossfade_milliseconds = 2000
 endpoint_comparison_width = 960
 endpoint_comparison_height = 540
 endpoint_ssim = 0.568323
-verification = "The decoded first and final frames are not seamless. A held-final-frame 2 s dissolve into the opening frames was visually checked without a hard jump, blank frame, or corruption."
+verification = "The decoded first and final frames are not seamless. ffmpeg ssim over the two 960x540 endpoint frames reports All:0.568323 using the [loop_analysis] procedure. A held-final-frame 2 s dissolve into the opening frames was visually checked without a hard jump, blank frame, or corruption."
 
 [[wallpaper]]
 id = "sequoia-sunrise"
@@ -139,7 +146,7 @@ crossfade_milliseconds = 1000
 endpoint_comparison_width = 960
 endpoint_comparison_height = 540
 endpoint_ssim = 0.192111
-verification = "The decoded first and final frames are not seamless. A held-final-frame 1 s dissolve limits double-exposed trunks while avoiding a hard jump, blank frame, or corruption under the planned darkening layer."
+verification = "The decoded first and final frames are not seamless. ffmpeg ssim over the two 960x540 endpoint frames reports All:0.192111 using the [loop_analysis] procedure. A held-final-frame 1 s dissolve limits double-exposed trunks while avoiding a hard jump, blank frame, or corruption under the planned darkening layer."
 
 [[wallpaper]]
 id = "sequoia-morning"
@@ -190,7 +197,7 @@ crossfade_milliseconds = 1000
 endpoint_comparison_width = 960
 endpoint_comparison_height = 540
 endpoint_ssim = 0.185277
-verification = "The decoded first and final frames are not seamless. A held-final-frame 1 s dissolve limits double-exposed trunks while avoiding a hard jump, blank frame, or corruption under the planned darkening layer."
+verification = "The decoded first and final frames are not seamless. ffmpeg ssim over the two 960x540 endpoint frames reports All:0.185277 using the [loop_analysis] procedure. A held-final-frame 1 s dissolve limits double-exposed trunks while avoiding a hard jump, blank frame, or corruption under the planned darkening layer."
 
 [[wallpaper]]
 id = "sequoia-night"
@@ -241,7 +248,7 @@ crossfade_milliseconds = 2000
 endpoint_comparison_width = 960
 endpoint_comparison_height = 540
 endpoint_ssim = 0.462603
-verification = "The decoded first and final frames are not seamless. A held-final-frame 2 s dissolve into the opening frames was visually checked without a hard jump, blank frame, or corruption."
+verification = "The decoded first and final frames are not seamless. ffmpeg ssim over the two 960x540 endpoint frames reports All:0.462603 using the [loop_analysis] procedure. A held-final-frame 2 s dissolve into the opening frames was visually checked without a hard jump, blank frame, or corruption."
 
 [[wallpaper]]
 id = "golden-gate"
@@ -415,13 +422,14 @@ install_name = "wallpapper-h24.heic"
 sha256 = "2f82da28545f7d26eb79132d918f1b969d50b29044351ce3732197283e41474f"
 nix_hash = "sha256-L4LaKFRffSbreRMtkY8blp1QspBENRzjcyGXKD5BR08="
 byte_size = 4300
-# libheif 1.23.1 tightens the permitted image size to (ispe + one coding unit)^2
-# before handing bytes to the decoder. This fixture's SPS declares a 160x64 coded
-# picture that crops to the declared 8x8, so the tightened ceiling of 5184 rejects
-# it even though libheif 1.21.2 decodes the same bytes to the expected 8x8 solids.
-# The limitation is upstream, not a Genkan parsing defect, and is tracked as
-# issue #50; set this back to true once the decoder accepts the file again.
-decode_verified = false
+# libheif 1.23.1 and 1.23.2 tightened the permitted coded picture size to
+# (ispe + one coding unit)^2 before handing bytes to the decoder. This fixture's
+# SPS declares a 160x64 coded picture that crops to the declared 8x8, so the
+# tightened 5184-pixel ceiling rejected it even though the bytes are valid.
+# libheif 1.23.3 added a 65536-pixel floor to that tightening (upstream issue
+# #1856), which accepts this coded size again; decoding therefore requires
+# libheif 1.23.3 or later.
+decode_verified = true
 
 [dynamic_heic.structure]
 container = "HEIF"

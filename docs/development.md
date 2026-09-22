@@ -114,15 +114,24 @@ that never happened. Screenshot evidence cannot distinguish a fabricated uniform
 frame from a real dissolve, so this bounds the failure modes rather than proving
 the renderer's internal path.
 
+`make check-rfds` also validates the wallpaper catalog manifest. The loop
+analysis must record the method that produced each `endpoint_ssim`, the
+reproducible set must name exactly the catalog entries, every entry must record
+a plausible endpoint measurement with its verification, `default_wallpaper` must
+name an entry, and no packaged asset may opt out of decode verification. The
+check validates the recorded claims rather than re-measuring them, so it stays
+cheap enough for every change.
+
 `make heic-assets` verifies the pinned dynamic HEIC assets recorded in the
 wallpaper manifest: each repository-delivered asset's byte size and SHA-256 must
 match its manifest entry.
 
 `make heic-decode` opens every installed dynamic HEIC through the shipped parser
 and decodes all of its frames, checking the top-level image count against the
-manifest's `structure.image_count`. An asset whose manifest entry records
-`decode_verified = false` is skipped, and the entry names the reason and the
-tracking issue.
+manifest's `structure.image_count`. Every catalog asset must decode: an entry
+that records `decode_verified = false` fails the check instead of being skipped,
+so a known-undecodable asset has to be re-justified in the check and the
+manifest entry together.
 
 Authentication changes should also run the x86_64 NixOS VM test:
 

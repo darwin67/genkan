@@ -306,6 +306,20 @@ test_ci_watches_all_scripts() {
     fail "CI push and pull_request filters must watch scripts/**"
 }
 
+test_ci_watches_the_wallpaper_catalog() {
+  [[ $(grep -Fc '"assets/**"' "$repo_root/.github/workflows/ci.yml") == 2 ]] || \
+    fail "CI push and pull_request filters must watch assets/**"
+}
+
+test_ci_scopes_cargo_caches_to_the_flake_lock() {
+  # A cached target/ holds build scripts linked against the store paths of the
+  # nixpkgs revision that produced them. Restoring one after a flake.lock bump
+  # makes cargo execute build scripts whose interpreter no longer exists, so
+  # every cargo cache key and its restore key must include the flake lock hash.
+  [[ $(grep -Fc "hashFiles('flake.lock')" "$repo_root/.github/workflows/ci.yml") == 6 ]] || \
+    fail "every cargo cache key and restore key must be scoped to flake.lock"
+}
+
 test_ci_serializes_software_graphics_checks() {
   grep -Fq \
     'run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs' \
@@ -488,6 +502,302 @@ EOF
   expect_failure "failed to enumerate reference images" \
     env PATH="$bin_dir:$PATH" REFERENCE_IMAGE_DIR="$fixture" \
       "$repo_root/scripts/check-reference-images.sh"
+}
+
+make_wallpaper_manifest_fixture() {
+  local fixture=$1
+  cat > "$fixture" <<'EOF'
+schema_version = 1
+catalog_id = "test"
+default_wallpaper = "first"
+
+[loop_analysis]
+metric = "ssim"
+tool = "ffmpeg 8.1.2 with the `ssim` filter"
+comparison = "first decoded frame vs final decoded frame"
+procedure = '''
+ffmpeg -i first.png -i last.png -lavfi ssim -f null -
+'''
+caveat = "decode from the start and select by index"
+reproducible_for = "first, second"
+
+[[wallpaper]]
+id = "first"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.568323
+verification = "measured"
+
+[[wallpaper]]
+id = "second"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 1000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.192111
+verification = "measured"
+
+[[dynamic_heic]]
+id = "asset"
+decode_verified = true
+EOF
+}
+
+expect_wallpaper_manifest_failure() {
+  local fixture=$1 expected=$2
+  expect_failure "$expected" \
+    env WALLPAPER_MANIFEST="$fixture" "$repo_root/scripts/check-wallpaper-manifest.py"
+}
+
+test_wallpaper_manifest_accepts_the_catalog() {
+  "$repo_root/scripts/check-wallpaper-manifest.py" > /dev/null
+
+  local fixture="$tmp_dir/wallpaper-manifest"
+  make_wallpaper_manifest_fixture "$fixture"
+  env WALLPAPER_MANIFEST="$fixture" "$repo_root/scripts/check-wallpaper-manifest.py" > /dev/null ||
+    fail "a complete wallpaper manifest must pass"
+
+  # The check bounds the recorded value rather than second-guessing the
+  # measurement, so numeric spellings and an in-range zero are accepted.
+  sed -i 's/^endpoint_ssim = 0.192111$/endpoint_ssim = 5e-1/' "$fixture"
+  sed -i 's/^endpoint_ssim = 0.568323$/endpoint_ssim = 0/' "$fixture"
+  env WALLPAPER_MANIFEST="$fixture" "$repo_root/scripts/check-wallpaper-manifest.py" > /dev/null ||
+    fail "in-range endpoint_ssim spellings must pass"
+
+  # A loop table may follow an intervening array element. TOML attaches it to
+  # the last wallpaper element, and the check must see the same association.
+  cat > "$fixture" <<'EOF'
+default_wallpaper = "first"
+
+[loop_analysis]
+metric = "ssim"
+tool = "ffmpeg 8.1.2 with the `ssim` filter"
+comparison = "first decoded frame vs final decoded frame"
+procedure = '''
+ffmpeg -i first.png -i last.png -lavfi ssim -f null -
+'''
+reproducible_for = "first"
+
+[[wallpaper]]
+id = "first"
+
+[[dynamic_heic]]
+id = "asset"
+decode_verified = true
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.568323
+verification = "measured"
+EOF
+  env WALLPAPER_MANIFEST="$fixture" "$repo_root/scripts/check-wallpaper-manifest.py" > /dev/null ||
+    fail "a loop table after an intervening array element must still be checked"
+
+  "$repo_root/scripts/check-wallpaper-manifest.py" "$fixture" > /dev/null ||
+    fail "the manifest path may also be given as an argument"
+
+  # The same layout must still report a missing value for its element.
+  sed -i '/^endpoint_ssim = 0.568323$/d' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'first' must record an endpoint_ssim between 0 and 1, got None"
+}
+
+test_wallpaper_manifest_rejects_incomplete_loop_metadata() {
+  local fixture="$tmp_dir/wallpaper-manifest-loop"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i '/^\[loop_analysis\]$/,/^$/d' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "the manifest must record a loop_analysis table describing the method"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i '/^endpoint_ssim = 0.192111$/d' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' must record an endpoint_ssim between 0 and 1, got None"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^endpoint_ssim = 0.192111$/endpoint_ssim = 1.5/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' must record an endpoint_ssim between 0 and 1, got 1.5"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^endpoint_ssim = 0.192111$/endpoint_ssim = "high"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' must record an endpoint_ssim between 0 and 1, got 'high'"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^endpoint_ssim = 0.192111$/endpoint_ssim = true/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' must record an endpoint_ssim between 0 and 1, got True"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^endpoint_ssim = 0.192111$/endpoint_ssim = -0.5/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' must record an endpoint_ssim between 0 and 1, got -0.5"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^endpoint_ssim = 0.192111$/endpoint_ssim = nan/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' must record an endpoint_ssim between 0 and 1, got nan"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^endpoint_ssim = 0.192111$/endpoint_ssim = inf/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' must record an endpoint_ssim between 0 and 1, got inf"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^crossfade_milliseconds = 1000$/crossfade_milliseconds = true/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' crossfade_milliseconds must be a positive integer, got True"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^mode = "held-final-frame-crossfade"$/mode = ""/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'first' must record a loop mode"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^direct_seek_seamless = false$/direct_seek_seamless = 123/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'first' must record direct_seek_seamless as a boolean"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^crossfade_milliseconds = 1000$/crossfade_milliseconds = 0/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'second' crossfade_milliseconds must be a positive integer, got 0"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^endpoint_comparison_width = 960$/endpoint_comparison_width = -960/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'first' endpoint_comparison_width must be a positive integer, got -960"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^verification = "measured"$/verification = ""/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "wallpaper 'first' must record how its loop transition was verified"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^id = "second"$/id = "first"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "wallpaper ids must be unique: first"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  printf '\n[[wallpaper]]\n' >> "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "every wallpaper must record an id"
+}
+
+test_wallpaper_manifest_rejects_unreproducible_values() {
+  local fixture="$tmp_dir/wallpaper-manifest-reproducible"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^reproducible_for = "first, second"$/reproducible_for = "first"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "reproducible_for must name exactly the catalog entries (missing: second; unexpected: none)"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^reproducible_for = "first, second"$/reproducible_for = "first, second, third"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "reproducible_for must name exactly the catalog entries (missing: none; unexpected: third)"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^reproducible_for = "first, second"$/reproducible_for = ""/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "loop analysis must record reproducible_for with every catalog entry"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^reproducible_for = /unreproducible_for = "second"\nreproducible_for = /' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "loop analysis records unreproducible_for"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^reproducible_for = /unreproducible_for = ""\nreproducible_for = /' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "loop analysis records unreproducible_for"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^metric = "ssim"$/metric = "" # recorded/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "loop analysis must record 'metric'"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i '/^ffmpeg -i first.png -i last.png -lavfi ssim -f null -$/d' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "loop analysis must record 'procedure'"
+}
+
+test_wallpaper_manifest_rejects_undecoded_assets() {
+  local fixture="$tmp_dir/wallpaper-manifest-assets"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i '/^\[\[dynamic_heic\]\]$/,/^decode_verified = true$/d' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "the catalog must contain at least one dynamic HEIC asset"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i '/^\[\[dynamic_heic\]\]$/,/^decode_verified = true$/d' "$fixture"
+  sed -i '1i dynamic_heic = []' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "the catalog must contain at least one dynamic HEIC asset"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^decode_verified = true$/decode_verified = false/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "dynamic HEIC asset 'asset' must not record decode_verified = false"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^decode_verified = true$/decode_verified = false # awaiting the fix/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "dynamic HEIC asset 'asset' must not record decode_verified = false"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^decode_verified = true$/decode_verified=false/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "dynamic HEIC asset 'asset' must not record decode_verified = false"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^decode_verified = true$/  decode_verified = false/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "dynamic HEIC asset 'asset' must not record decode_verified = false"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^decode_verified = true$/decode_verified = "false"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "dynamic HEIC asset 'asset' must not record decode_verified = false"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^default_wallpaper = "first"$/default_wallpaper = "first second"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "default_wallpaper 'first second' is not a catalog entry"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/^default_wallpaper = "first"$/default_wallpaper = "missing"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" \
+    "default_wallpaper 'missing' is not a catalog entry"
+}
+
+test_wallpaper_manifest_rejects_unreadable_input() {
+  expect_wallpaper_manifest_failure "$tmp_dir/wallpaper-manifest-absent.toml" \
+    "missing wallpaper manifest: $tmp_dir/wallpaper-manifest-absent.toml"
+
+  local fixture="$tmp_dir/wallpaper-manifest-invalid"
+  printf 'not = = toml\n' > "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "invalid wallpaper manifest $fixture:"
+
+  printf 'metric = "\xff\xfe"\n' > "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "invalid wallpaper manifest $fixture:"
+
+  expect_wallpaper_manifest_failure "$tmp_dir" \
+    "could not read wallpaper manifest $tmp_dir:"
+
+  # The manifest path may also be given as a positional argument.
+  expect_failure_status 2 "usage: check-wallpaper-manifest.py [MANIFEST]" \
+    "$repo_root/scripts/check-wallpaper-manifest.py" "$fixture" extra
 }
 
 make_reference_nix_stub() {
@@ -790,6 +1100,8 @@ test_external_output_must_be_active
 test_representative_selection_placement_and_cleanup
 test_no_tracked_nix_result_links
 test_ci_watches_all_scripts
+test_ci_watches_the_wallpaper_catalog
+test_ci_scopes_cargo_caches_to_the_flake_lock
 test_ci_serializes_software_graphics_checks
 test_ci_runs_geoclue_solar_vm
 test_dev_preview_does_not_inherit_host_identity
@@ -802,6 +1114,11 @@ test_reference_image_manifest_rejects_missing_and_invalid_images
 test_reference_image_manifest_rejects_dimensions_and_extra_entries
 test_reference_image_manifest_rejects_symlinks
 test_reference_image_manifest_propagates_enumeration_failure
+test_wallpaper_manifest_accepts_the_catalog
+test_wallpaper_manifest_rejects_incomplete_loop_metadata
+test_wallpaper_manifest_rejects_unreproducible_values
+test_wallpaper_manifest_rejects_undecoded_assets
+test_wallpaper_manifest_rejects_unreadable_input
 test_reference_image_refresh_uses_capture_only_derivation
 test_reference_image_refresh_is_failure_safe_and_removes_stale_files
 test_reference_image_refresh_rolls_back_replacement_failures

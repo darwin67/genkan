@@ -41,19 +41,23 @@ The phases are ordered; complete each phase before beginning the next.
   comparison rejected direct seeking for every source. Visual transition checks
   selected a 2 s held-frame crossfade for Tahoe Beach and Sequoia Night and a
   1 s crossfade for Sequoia Sunrise and Morning.
-- The ~endpoint_ssim~ values recorded for the original four sources cannot be
-  reproduced from the repository. The exact comparison command was not captured
-  when they were measured, and re-measuring Tahoe Beach with ~ffmpeg~'s ~ssim~
-  filter over the two 960x540 endpoint frames yields ~All:0.687571~ rather than
-  the recorded ~0.568323~; ImageMagick, grayscale, 8-bit, full-resolution, and
-  several adjacent frame pairs were also tried without matching. The values
-  remain useful as a relative ordering, but the absolute figures are not
-  independently verifiable and should not be treated as a reproducible
-  measurement. The Golden Gate entry added later records the exact extraction
-  and comparison commands in the manifest's ~[loop_analysis]~ block together
-  with the tool version, so its value can be re-derived and future entries can
-  follow the same procedure. Re-measuring and re-recording the original four is
-  left as follow-up work rather than silently rewriting them.
+- The ~endpoint_ssim~ values are reproducible from the procedure recorded in
+  the manifest's ~[loop_analysis]~ block. All five were re-derived on 2026-09-21
+  with ffmpeg 8.1.2: Tahoe Beach ~All:0.568323~, Sequoia Sunrise ~0.192111~,
+  Sequoia Morning ~0.185277~, Sequoia Night ~0.462603~, and Golden Gate
+  ~0.497198~, each matching the figure recorded when its asset was published.
+  The exact command behind the earlier Tahoe Beach figure of ~0.687571~ was not
+  preserved, so the cause of that mismatch is not established; the recorded
+  attempts compared other frame pairs, including adjacent endpoint pairs, and
+  decoding from the start and selecting the final frame by decoded index is what
+  reproduces the published value. The decoded frame count is therefore
+  authoritative rather than the container's declared ~frame_count~, which is
+  higher for Sequoia Sunrise (28,802 decoded against 28,806 declared) and
+  Golden Gate (14,386 against 14,400). Re-deriving the values changed no loop
+  decision: the ordering is unchanged, every source is still non-seamless, and
+  the 2 s crossfades for Tahoe Beach and Sequoia Night and the 1 s crossfades
+  for Sequoia Sunrise and Morning remain as selected by the original visual
+  checks.
 - On 2026-09-01, complete CDN responses matched the source SHA-256 hashes and
   content lengths. Repeated complete requests returned ~200~ and ~HIT~;
   repeated 1 MiB requests returned ~206~, ~HIT~, the requested
