@@ -20,7 +20,7 @@ and lock presentations, but desktop ownership remains a separate process and
 Wayland role.
 
 Implementation progress is tracked in
-link:IMPLEMENTATION.org[the implementation checklist].
+link:IMPLEMENTATION.adoc[the implementation checklist].
 
 == Context
 

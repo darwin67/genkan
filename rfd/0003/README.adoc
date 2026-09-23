@@ -431,4 +431,4 @@ while locked. The identity is fixed to the invoking session's real user ID.
 == Implementation
 
 Phased work and verification are tracked in
-link:IMPLEMENTATION.org[RFD 3 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 3 implementation checklist].

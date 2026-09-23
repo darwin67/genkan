@@ -22,7 +22,7 @@ verification = "Complete responses were SHA-256 checked against the source files
 [loop_analysis]
 # How `endpoint_ssim` is produced. All five values were re-derived with this
 # procedure on 2026-09-21 and reproduce the figures recorded when their assets
-# were published; see rfd/0002/IMPLEMENTATION.org. New entries must state their
+# were published; see rfd/0002/IMPLEMENTATION.adoc. New entries must state their
 # method.
 metric = "ssim"
 tool = "ffmpeg 8.1.2 with the `ssim` filter"

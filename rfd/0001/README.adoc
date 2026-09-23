@@ -342,4 +342,4 @@ interactive path.
 == Implementation
 
 Phased work and verification are tracked in
-link:IMPLEMENTATION.org[RFD 1 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 1 implementation checklist].

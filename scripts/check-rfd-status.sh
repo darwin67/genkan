@@ -143,25 +143,25 @@ for entry in "${entries[@]}"; do
   fi
 
   implementations=()
-  [[ -f $entry/IMPLEMENTATION.org ]] && implementations+=("$entry/IMPLEMENTATION.org")
+  [[ -f $entry/IMPLEMENTATION.adoc ]] && implementations+=("$entry/IMPLEMENTATION.adoc")
   [[ -f $entry/IMPLEMENTATION.md ]] && implementations+=("$entry/IMPLEMENTATION.md")
   task_summary=-
   if [[ ${#implementations[@]} -eq 0 ]]; then
-    problem "missing implementation checklist: ${entry_name}/IMPLEMENTATION.org or IMPLEMENTATION.md"
+    problem "missing implementation checklist: ${entry_name}/IMPLEMENTATION.adoc or IMPLEMENTATION.md"
   elif [[ ${#implementations[@]} -gt 1 ]]; then
     problem "multiple implementation checklist formats: ${entry_name}"
   else
     implementation=${implementations[0]}
     implementation_name=$(basename "$implementation")
     read -r total completed < <(
-      awk '/^[[:space:]]*[-+*][[:space:]]+\[[ xX]\][[:space:]]/ {
-             total++; if ($0 ~ /^[[:space:]]*[-+*][[:space:]]+\[[xX]\][[:space:]]/) completed++
+      awk '/^[[:space:]]*[-+*]+[[:space:]]+\[[ xX]\][[:space:]]/ {
+             total++; if ($0 ~ /^[[:space:]]*[-+*]+[[:space:]]+\[[xX]\][[:space:]]/) completed++
            } END { printf "%d %d\n", total, completed }' "$implementation"
     )
     task_summary="${completed}/${total}"
-    if [[ $implementation_name == IMPLEMENTATION.org ]]; then
-      expected_heading="#+TITLE: RFD ${entry_name} implementation checklist"
-      backlink='[[file:README.adoc]['
+    if [[ $implementation_name == IMPLEMENTATION.adoc ]]; then
+      expected_heading="= RFD ${entry_name} implementation checklist"
+      backlink='link:README.adoc['
     else
       expected_heading="# RFD ${entry_name} implementation checklist"
       backlink='](README.adoc)'
@@ -177,7 +177,7 @@ for entry in "${entries[@]}"; do
     fi
   fi
 
-  if grep -Eq '^[[:space:]]*[-+*][[:space:]]+\[[ xX]\][[:space:]]' "$source"; then
+  if grep -Eq '^[[:space:]]*[-+*]+[[:space:]]+\[[ xX]\][[:space:]]' "$source"; then
     problem "implementation checkboxes belong in a separate implementation document: ${entry_name}/README.adoc"
   fi
 
