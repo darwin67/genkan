@@ -1146,6 +1146,7 @@ dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",
  "genkan-output-selection",
+ "proptest",
  "smithay-client-toolkit 0.20.0",
  "thiserror 2.0.20",
  "wayland-client",

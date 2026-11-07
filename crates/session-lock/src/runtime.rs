@@ -2248,6 +2248,9 @@ impl ReadySignal {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
