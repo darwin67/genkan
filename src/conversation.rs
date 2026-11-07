@@ -281,6 +281,9 @@ pub(crate) fn bounded_text(value: &str) -> String {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
