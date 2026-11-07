@@ -317,7 +317,6 @@ impl State {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn disabled() -> Self {
         Self {
             player: None,
@@ -478,7 +477,6 @@ impl State {
         self.frame.is_some()
     }
 
-    #[cfg(test)]
     pub(crate) fn decoder_is_stopped(&self) -> bool {
         self.player.is_none() && self.heic.is_none()
     }

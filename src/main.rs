@@ -80,9 +80,18 @@ struct HeicWorkerArguments {
 
 #[derive(Debug, Args)]
 struct WallpaperArguments {
-    /// Absolute local dynamic HEIC file.
-    #[arg(long, value_parser = parse_heic_wallpaper_file)]
-    file: PathBuf,
+    /// Absolute local dynamic HEIC file (desktop solar scheduling is opt-in).
+    #[arg(long, value_parser = parse_heic_wallpaper_file, conflicts_with_all = ["wallpaper", "wallpaper_file"])]
+    file: Option<PathBuf>,
+    /// Select the same packaged wallpaper as login.
+    #[arg(long, value_enum, default_value = "tahoe-beach")]
+    wallpaper: wallpaper::Catalog,
+    /// Replace the catalog entry with an absolute local MOV or HEIC file.
+    #[arg(long, value_parser = parse_wallpaper_file)]
+    wallpaper_file: Option<PathBuf>,
+    /// Do not create a background surface on this output.
+    #[arg(long, value_parser = parse_output_name)]
+    skip_output: Option<String>,
     /// Disable dissolves while retaining time-of-day frame changes.
     #[arg(long)]
     reduce_motion: bool,
@@ -90,7 +99,7 @@ struct WallpaperArguments {
     #[arg(long, value_enum, default_value = "automatic")]
     appearance: WallpaperAppearance,
     /// Opt into GeoClue-backed solar scheduling when the file provides it.
-    #[arg(long)]
+    #[arg(long, requires = "file")]
     solar: bool,
 }
 
@@ -399,11 +408,19 @@ fn appearance_preference(
 
 fn run_wallpaper(arguments: WallpaperArguments) -> Result<(), Box<dyn std::error::Error>> {
     let appearance = appearance_preference(arguments.appearance);
+    let file = arguments.file.or(arguments.wallpaper_file);
+    let is_heic = file.as_deref().is_some_and(wallpaper::is_heic_path);
     desktop_wallpaper::run(desktop_wallpaper::Config {
-        file: arguments.file,
-        appearance,
-        reduced_motion: arguments.reduce_motion,
+        file: file.clone().filter(|_| is_heic),
+        wallpaper: wallpaper::Settings {
+            catalog: arguments.wallpaper,
+            override_path: file.filter(|_| !is_heic),
+            animate: !is_heic && !arguments.reduce_motion,
+            reduced_motion: arguments.reduce_motion,
+            appearance,
+        },
         solar: arguments.solar,
+        skip_output: arguments.skip_output,
     })?;
     Ok(())
 }
@@ -687,11 +704,23 @@ mod tests {
         ])
         .unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(arguments.file, path);
+        assert_eq!(arguments.file, Some(path));
         assert!(matches!(arguments.appearance, WallpaperAppearance::Dark));
         assert!(arguments.reduce_motion);
         assert!(arguments.solar);
-        assert!(try_parse_wallpaper(["genkan"]).is_err());
+        assert!(try_parse_wallpaper(["genkan"]).is_ok());
+        assert!(try_parse_wallpaper(["genkan", "--solar"]).is_err());
+        let catalog = try_parse_wallpaper([
+            "genkan",
+            "--wallpaper",
+            "golden-gate",
+            "--reduce-motion",
+            "--skip-output",
+            "DP-2",
+        ])
+        .unwrap();
+        assert_eq!(catalog.wallpaper, wallpaper::Catalog::GoldenGate);
+        assert_eq!(catalog.skip_output.as_deref(), Some("DP-2"));
         assert!(Arguments::try_parse_from(["genkan", "login", "--solar"]).is_err());
         assert!(Arguments::try_parse_from(["genkan", "lock", "--solar"]).is_err());
         for invalid in [
