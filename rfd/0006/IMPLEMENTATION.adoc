@@ -43,9 +43,9 @@ Evidence and decisions: link:INVESTIGATION.adoc[niri 26.04 investigation].
 
 == Phase 5: Output naming and lock scaling
 
-* [ ] Accept make, model, and serial names in `--authentication-output` for
+* [x] Accept make, model, and serial names in `--authentication-output` for
   login and lock.
-* [ ] Add `wp_fractional_scale_v1` and `wp_viewporter` support to the session
+* [x] Add `wp_fractional_scale_v1` and `wp_viewporter` support to the session
   lock with an integer fallback.
 
 == Phase 6: NixOS module and documentation

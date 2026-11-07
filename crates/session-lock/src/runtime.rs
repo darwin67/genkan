@@ -32,12 +32,16 @@ use wayland_client::globals::registry_queue_init;
 #[cfg(feature = "lock-test")]
 use wayland_client::protocol::wl_pointer;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_region, wl_seat, wl_shm, wl_surface};
-use wayland_client::{Connection, Proxy, QueueHandle, WEnum};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback;
 
 use super::{
     Action, AnchoredOverlay, Config, Dimming, Event, Input, OverlayLayout, Presentation,
     PresentationFrame, PreviewError, Refresh, RgbaFrame, State, UnlockAuthorization,
+};
+use crate::scaling::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1, wp_viewport, wp_viewporter, Scaling,
+    SurfaceScale,
 };
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -65,7 +69,7 @@ struct Surface {
     output_name: Option<String>,
     lock_surface: SessionLockSurface,
     size: Option<(u32, u32)>,
-    scale: i32,
+    scale: SurfaceScale,
     geometry_generation: u64,
     role_generation: u64,
     buffers: Vec<SurfaceBuffer>,
@@ -138,6 +142,14 @@ struct PlacedOverlay {
 }
 
 impl Surface {
+    fn buffer_size(&self, logical: (u32, u32)) -> Result<(u32, u32), Error> {
+        let (width, height) = self
+            .scale
+            .buffer_size(logical)
+            .ok_or_else(|| Error::Runtime("compositor lock-surface dimensions overflow".into()))?;
+        buffer_size(width, height, 1, wl_output::Transform::Normal)
+    }
+
     fn placed_overlays(
         &mut self,
         frame: Option<&PresentationFrame>,
@@ -152,7 +164,7 @@ impl Surface {
         let Some(frame) = frame else {
             return [None, None];
         };
-        let regions = overlay_regions(frame, width, height, scale);
+        let regions = overlay_regions_at_scale(frame, width, height, scale);
         let overlays = frame.overlays();
         let caches = &mut self.overlay_cache;
         std::array::from_fn(|index| {
@@ -341,7 +353,9 @@ fn select_reusable_buffer(
 struct Runtime {
     conn: Connection,
     compositor: CompositorState,
+    scaling: Scaling,
     output_state: OutputState,
+    output_names: genkan_output_selection::names::OutputNames,
     presentation_time_state: PresentationTimeState,
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -394,7 +408,13 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
     let mut runtime = Runtime {
         conn: conn.clone(),
         compositor,
+        scaling: Scaling::bind(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
+        output_names: genkan_output_selection::names::OutputNames::new(
+            &conn,
+            &globals,
+            config.authentication_output.is_some(),
+        ),
         presentation_time_state: PresentationTimeState::bind(&globals, &qh),
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -523,6 +543,9 @@ impl Runtime {
         if self.terminate {
             return Ok(());
         }
+        if self.output_names.update() {
+            self.refresh_authentication_output();
+        }
         let outputs = self.output_state.outputs().collect::<Vec<_>>();
         for output in outputs {
             self.add_surface(output, qh)?;
@@ -543,6 +566,7 @@ impl Runtime {
             .as_ref()
             .ok_or_else(|| Error::Runtime("lock surface requested without a lock".into()))?;
         let surface = self.compositor.create_surface(qh);
+        let scale = self.scaling.create(&surface, qh);
         let lock_surface = lock.create_lock_surface(surface, &output, qh);
         eprintln!(
             "genkan lock: created lock surface for output {}",
@@ -554,7 +578,7 @@ impl Runtime {
             output_name,
             lock_surface,
             size: None,
-            scale: 1,
+            scale,
             geometry_generation: 0,
             role_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
@@ -593,12 +617,7 @@ impl Runtime {
             let Some((width, height)) = surface.size else {
                 continue;
             };
-            let configured_size = buffer_size(
-                width,
-                height,
-                surface.scale.max(1) as u32,
-                wl_output::Transform::Normal,
-            )?;
+            let configured_size = surface.buffer_size((width, height))?;
             surface.buffers.retain(|item| {
                 item.size == configured_size
                     && item.geometry_generation == surface.geometry_generation
@@ -644,12 +663,7 @@ impl Runtime {
             let Some((width, height)) = surface.size else {
                 continue;
             };
-            let configured_size = buffer_size(
-                width,
-                height,
-                surface.scale.max(1) as u32,
-                wl_output::Transform::Normal,
-            )?;
+            let configured_size = surface.buffer_size((width, height))?;
             surface.buffers.retain(|buffer| {
                 buffer.size == configured_size
                     && buffer.geometry_generation == surface.geometry_generation
@@ -721,9 +735,8 @@ impl Runtime {
         let (width, height) = surface
             .size
             .ok_or_else(|| Error::Runtime("attempted to render an unconfigured surface".into()))?;
-        let scale = surface.scale.max(1) as u32;
-        let (buffer_width, buffer_height) =
-            buffer_size(width, height, scale, wl_output::Transform::Normal)?;
+        let scale = surface.scale.units();
+        let (buffer_width, buffer_height) = surface.buffer_size((width, height))?;
         let bytes = buffer_width
             .checked_mul(buffer_height)
             .and_then(|pixels| usize::try_from(pixels).ok())
@@ -876,7 +889,7 @@ impl Runtime {
         region.add(0, 0, width as i32, height as i32);
         wl_surface.set_opaque_region(Some(&region));
         region.destroy();
-        wl_surface.set_buffer_scale(scale as i32);
+        surface.scale.apply(&wl_surface, (width, height));
         wl_surface.set_buffer_transform(wl_output::Transform::Normal);
         for region in &damaged {
             wl_surface.damage_buffer(
@@ -997,8 +1010,10 @@ impl Runtime {
                 )
             })
             .collect::<Vec<_>>();
-        let selected =
-            select_authentication_index(&candidates, self.authentication_output.as_deref());
+        let requested = self
+            .output_names
+            .resolve(self.authentication_output.as_deref());
+        let selected = select_authentication_index(&candidates, requested.as_deref());
         if self.retiring_authentication.is_some() {
             return;
         }
@@ -1190,9 +1205,7 @@ impl CompositorHandler for Runtime {
             .position(|item| item.lock_surface.wl_surface() == surface)
         {
             let surface = &mut self.surfaces[index];
-            let scale = scale.max(1);
-            if surface.scale != scale {
-                surface.scale = scale;
+            if surface.scale.set_integer(scale) {
                 surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
                 surface.redraw.request_geometry();
                 #[cfg(feature = "lock-test")]
@@ -1260,6 +1273,7 @@ impl OutputHandler for Runtime {
         qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        self.output_names.invalidate();
         if self.session_lock.is_some() && !self.terminate {
             if let Some(surface) = self
                 .surfaces
@@ -1282,6 +1296,7 @@ impl OutputHandler for Runtime {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        self.output_names.invalidate();
         let name = self.output_state.info(&output).and_then(|info| info.name);
         if let Some(surface) = self
             .surfaces
@@ -1299,6 +1314,7 @@ impl OutputHandler for Runtime {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        self.output_names.invalidate();
         if self.retiring_authentication.as_ref() == Some(&output) {
             self.retiring_authentication = None;
             self.authentication_retirement = None;
@@ -1583,6 +1599,39 @@ smithay_client_toolkit::delegate_pointer!(Runtime);
 smithay_client_toolkit::delegate_session_lock!(Runtime);
 smithay_client_toolkit::delegate_shm!(Runtime);
 wayland_client::delegate_noop!(Runtime: ignore wl_region::WlRegion);
+wayland_client::delegate_noop!(Runtime: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+wayland_client::delegate_noop!(Runtime: ignore wp_viewporter::WpViewporter);
+wayland_client::delegate_noop!(Runtime: ignore wp_viewport::WpViewport);
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, wl_surface::WlSurface> for Runtime {
+    fn event(
+        state: &mut Self,
+        _: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        surface: &wl_surface::WlSurface,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            if scale == 0 {
+                state.fail(Error::Runtime("invalid fractional output scale".into()));
+                return;
+            }
+            if let Some(surface) = state
+                .surfaces
+                .iter_mut()
+                .find(|item| item.lock_surface.wl_surface() == surface)
+            {
+                if surface.scale.set_preferred(scale) {
+                    surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
+                    surface.redraw.request_geometry();
+                    #[cfg(feature = "lock-test")]
+                    state.test_observer.record(TestEvent::Geometry);
+                }
+            }
+        }
+    }
+}
 
 fn redraw_can_progress(current_buffer_count: usize, reusable: bool) -> bool {
     reusable || current_buffer_count < BUFFER_COUNT
@@ -1999,6 +2048,15 @@ fn overlay_regions(
     height: u32,
     scale: u32,
 ) -> [Option<Region>; 2] {
+    overlay_regions_at_scale(frame, width, height, scale.saturating_mul(120))
+}
+
+fn overlay_regions_at_scale(
+    frame: &PresentationFrame,
+    width: u32,
+    height: u32,
+    scale: u32,
+) -> [Option<Region>; 2] {
     let layout = frame.layout;
     let density = u128::from(layout.density);
     let scale = u128::from(scale.max(1));
@@ -2015,14 +2073,15 @@ fn overlay_regions(
     let fit_within = |anchored: &AnchoredOverlay, available_width: u128, available_height: u128| {
         let (extent_width, extent_height) = extent(anchored);
         FIT_ONE
-            .min(available_width * density * FIT_ONE / extent_width)
-            .min(available_height * density * FIT_ONE / extent_height)
+            .min(available_width * density * 120 * FIT_ONE / extent_width)
+            .min(available_height * density * 120 * FIT_ONE / extent_height)
     };
     // Lengths round to the nearest pixel and are then clamped to the surface,
     // which absorbs the half pixel rounding can add to a fit at its limit.
     let place = |anchored: &AnchoredOverlay, fit: u128, from_bottom: bool| -> Option<Region> {
         let (overlay_width, overlay_height) = anchored.overlay.dimensions();
         let round = |length: u128, denominator: u128| {
+            let denominator = denominator * 120;
             u32::try_from((length * scale * fit + denominator / 2) / denominator).ok()
         };
         let offset = round(u128::from(anchored.offset), FIT_ONE)?.min(height);
@@ -2053,8 +2112,9 @@ fn overlay_regions(
     });
     let top = frame.top.as_ref().and_then(|anchored| {
         let above_bottom = u128::from(bottom.map_or(height, |region| region.y))
-            .saturating_sub(u128::from(layout.gap) * scale);
-        let inside_margins = surface_width.saturating_sub(2 * u128::from(layout.margin) * scale);
+            .saturating_sub((u128::from(layout.gap) * scale).div_ceil(120));
+        let inside_margins =
+            surface_width.saturating_sub((2 * u128::from(layout.margin) * scale).div_ceil(120));
         let minimum = (FIT_ONE * u128::from(layout.min_top_scale_percent)).div_ceil(100);
         let fit = fit_within(anchored, inside_margins, above_bottom)
             .max(minimum)

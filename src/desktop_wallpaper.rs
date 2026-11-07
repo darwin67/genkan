@@ -673,6 +673,7 @@ struct Runtime {
     scaling: Scaling,
     layer_shell: LayerShell,
     output_state: OutputState,
+    output_names: genkan_output_selection::names::OutputNames,
     registry_state: RegistryState,
     shm: Shm,
     surfaces: Vec<Surface>,
@@ -719,6 +720,11 @@ pub fn run(config: Config) -> Result<(), Error> {
         scaling: Scaling::bind(&globals, &qh),
         layer_shell,
         output_state: OutputState::new(&globals, &qh),
+        output_names: genkan_output_selection::names::OutputNames::new(
+            &conn,
+            &globals,
+            config.skip_output.is_some(),
+        ),
         registry_state: RegistryState::new(&globals),
         shm,
         surfaces: Vec::new(),
@@ -751,6 +757,7 @@ pub fn run(config: Config) -> Result<(), Error> {
     if !runtime.shm.formats().contains(&wl_shm::Format::Argb8888) {
         return Err(Error::MissingProtocol("wl_shm ARGB8888 format".into()));
     }
+    runtime.output_names.update();
     let outputs = runtime.output_state.outputs().collect::<Vec<_>>();
     for output in outputs {
         runtime.add_surface(output, &qh);
@@ -795,7 +802,8 @@ pub fn run(config: Config) -> Result<(), Error> {
 
 impl Runtime {
     fn add_surface(&mut self, output: wl_output::WlOutput, qh: &QueueHandle<Self>) {
-        if self.skip_output.as_ref().is_some_and(|skip| {
+        let skip = self.output_names.resolve(self.skip_output.as_deref());
+        if skip.as_ref().is_some_and(|skip| {
             self.output_state
                 .info(&output)
                 .and_then(|info| info.name)
@@ -869,6 +877,11 @@ impl Runtime {
     }
 
     fn maintain(&mut self, qh: &QueueHandle<Self>) -> Result<(), Error> {
+        if self.output_names.update() {
+            for output in self.output_state.outputs().collect::<Vec<_>>() {
+                self.add_surface(output, qh);
+            }
+        }
         // In a single-output greeter the only output can be skipped. Do not
         // initialize a decoder (or keep one alive after unplug) for no surfaces.
         if self.surfaces.is_empty() {
@@ -1456,19 +1469,19 @@ impl OutputHandler for Runtime {
     fn new_output(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
     ) {
-        self.add_surface(output, qh);
+        self.output_names.invalidate();
     }
 
     fn update_output(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
     ) {
-        self.add_surface(output, qh);
+        self.output_names.invalidate();
     }
 
     fn output_destroyed(
@@ -1477,6 +1490,7 @@ impl OutputHandler for Runtime {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        self.output_names.invalidate();
         self.surfaces.retain(|surface| surface.output != output);
     }
 }

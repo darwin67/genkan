@@ -39,6 +39,7 @@ gui = [
     "dep:futures-util",
     "dep:genkan-lock-auth",
     "dep:genkan-session-lock",
+    "genkan-output-selection/wayland",
     "dep:gstreamer",
     "dep:gstreamer-app",
     "dep:gstreamer-video",

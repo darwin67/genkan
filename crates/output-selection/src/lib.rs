@@ -1,3 +1,6 @@
+#[cfg(feature = "wayland")]
+pub mod names;
+
 /// Selects the connector that presents authentication.
 ///
 /// An explicitly requested connector wins when present. Otherwise a named
@@ -15,7 +18,7 @@ where
     if let Some(requested) = requested {
         if let Some((output, _)) = outputs
             .iter()
-            .find(|(_, name)| name.is_some_and(|name| name == requested))
+            .find(|(_, name)| name.is_some_and(|name| name.eq_ignore_ascii_case(requested)))
         {
             return Some(output.clone());
         }
