@@ -81,6 +81,18 @@ impl App {
     }
 
     pub(super) fn handle_auth_response(&mut self, response: auth::Response) -> Task<Message> {
+        // Only a rejected submitted response retries automatically. A failure
+        // while creating that fresh attempt must leave the explicit fallback.
+        let retry = self.phase == Phase::Authenticating
+            && matches!(
+                response,
+                auth::Response::Error {
+                    authentication: true,
+                    ..
+                }
+            )
+            && self.selected_session.is_some()
+            && !self.username.is_empty();
         let session = self.selected_session.clone();
         let attempt = self.conversation.attempt();
         let Some(transition) = transition(
@@ -111,12 +123,27 @@ impl App {
                 };
                 exchange(client, request.into_greetd(), self.conversation.attempt())
             }
+            AuthEffect::Fail(message) if retry => {
+                self.retry_failure = Some(message.clone());
+                let task = self.retry_authentication();
+                if self.phase == Phase::CreatingSession {
+                    self.set_auth_notice(message, true);
+                }
+                task
+            }
             AuthEffect::Fail(message) => self.fail(message),
         }
     }
 
     pub(super) fn apply_auth_transition(&mut self, transition: AuthTransition) -> AuthEffect {
         self.phase = transition.phase;
+        if matches!(transition.effect, AuthEffect::Prompt { .. }) {
+            if let Some(message) = self.retry_failure.take() {
+                self.set_auth_notice(message, true);
+            }
+        } else if matches!(transition.effect, AuthEffect::StartSession(_)) {
+            self.retry_failure = None;
+        }
         if self.phase != Phase::WaitingForInput {
             self.authentication_layout = None;
         }
@@ -124,6 +151,7 @@ impl App {
     }
 
     pub(super) fn fail(&mut self, message: String) -> Task<Message> {
+        self.retry_failure = None;
         self.phase = Phase::Failed;
         self.conversation.fail(message);
         self.focus_first()
@@ -312,6 +340,53 @@ mod tests {
                 None,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn restart_notices_are_acknowledged_before_restoring_the_rejection_at_the_prompt() {
+        let mut app = super::super::tests::app();
+        app.phase = Phase::Authenticating;
+        let _ = app.handle_auth_response(auth::Response::Error {
+            authentication: true,
+            description: "rejected".into(),
+        });
+        for error in [false, true] {
+            let attempt = app.conversation.attempt();
+            let update = transition(
+                &mut app.conversation,
+                app.phase,
+                attempt,
+                auth::Response::Message {
+                    error,
+                    message: "PAM instruction".into(),
+                },
+                app.selected_session.as_ref(),
+            )
+            .unwrap();
+            assert_eq!(
+                app.apply_auth_transition(update),
+                AuthEffect::Acknowledge {
+                    error,
+                    message: "PAM instruction".into(),
+                }
+            );
+            assert!(matches!(
+                acknowledge_request(),
+                Request::PostAuthMessageResponse { response: None }
+            ));
+            assert_eq!(app.conversation.notice(), Some("PAM instruction"));
+        }
+        let _ = app.handle_auth_response(auth::Response::Prompt {
+            secret: true,
+            message: "Password:".into(),
+        });
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.conversation.notice(), Some("Authentication failed"));
+        assert!(app.conversation.notice_is_error());
+        assert_eq!(
+            app.focus_target,
+            Some(super::super::FocusTarget::AuthenticationInput)
         );
     }
 

@@ -85,6 +85,7 @@ pub(crate) struct App {
     page_scroll_id: Id,
     input_id: Id,
     conversation: Conversation,
+    retry_failure: Option<String>,
     session_message: Option<String>,
     power_message: Option<String>,
     power_message_is_error: bool,
@@ -197,6 +198,7 @@ impl App {
             page_scroll_id: Id::unique(),
             input_id: Id::new("authentication-input"),
             conversation,
+            retry_failure: None,
             session_message: selected_session
                 .is_none()
                 .then(|| "No valid Wayland sessions are installed".into()),
@@ -500,11 +502,6 @@ impl App {
                 self.conversation.clear_notice();
                 discover_accounts()
             }
-            Message::Retry if self.phase == Phase::Failed && self.preview => {
-                self.conversation
-                    .set_notice("Preview: retry was not sent".into(), false);
-                Task::none()
-            }
             Message::Retry if self.phase == Phase::Failed => self.retry_authentication(),
             Message::Retry => Task::none(),
             Message::Submit if self.conversation.status() == ConversationStatus::Waiting => {
@@ -668,6 +665,7 @@ impl App {
     }
 
     fn select_account(&mut self, account: Account) -> Task<Message> {
+        self.retry_failure = None;
         let replacing_account = !self.username.is_empty();
         self.username = account.username;
         self.display_name = account.display_name;
@@ -699,12 +697,21 @@ impl App {
 
     fn retry_authentication(&mut self) -> Task<Message> {
         self.phase = Phase::CreatingSession;
+        self.focus_target = None;
         let client = self.client.take();
         let attempt = self.conversation.begin_attempt();
-        auth_flow::restart(client, self.username.clone(), attempt)
+        if self.preview {
+            self.handle_auth_response(auth::Response::Prompt {
+                secret: true,
+                message: "Password".into(),
+            })
+        } else {
+            auth_flow::restart(client, self.username.clone(), attempt)
+        }
     }
 
     fn change_user(&mut self) -> Task<Message> {
+        self.retry_failure = None;
         let client = self.client.take();
         let attempt = self.conversation.begin_attempt();
         self.username.clear();
@@ -890,6 +897,7 @@ mod tests {
             page_scroll_id: Id::unique(),
             input_id: Id::new("test-authentication-input"),
             conversation,
+            retry_failure: None,
             session_message: None,
             power_message: None,
             power_message_is_error: false,
@@ -1636,8 +1644,9 @@ mod tests {
     }
 
     #[test]
-    fn authentication_error_waits_for_explicit_retry() {
+    fn authentication_error_restarts_and_focuses_a_fresh_prompt() {
         let mut app = app();
+        app.phase = Phase::Authenticating;
         let attempt = app.conversation.attempt();
 
         let _ = app.update(Message::AuthResult {
@@ -1651,14 +1660,68 @@ mod tests {
             )),
         });
 
-        assert_eq!(app.phase, Phase::Failed);
-        assert_eq!(app.conversation.attempt(), attempt);
-        assert_eq!(app.conversation.notice(), Some("Authentication failed"));
-        assert_eq!(app.focus_target, Some(FocusTarget::RetryAuthentication));
-
-        let _ = app.update(Message::Retry);
         assert_eq!(app.phase, Phase::CreatingSession);
         assert_ne!(app.conversation.attempt(), attempt);
+        assert_eq!(app.username, "darwin");
+        assert_eq!(app.selected_session, Some(session()));
+        assert!(app.conversation.input().is_empty());
+        assert_eq!(app.conversation.notice(), Some("Authentication failed"));
+        assert!(app.conversation.notice_is_error());
+        assert_eq!(app.focus_target, None);
+
+        // A delayed response from the rejected attempt cannot spoil the retry.
+        let _ = app.update(Message::AuthResult {
+            attempt,
+            result: Err("stale connection error".into()),
+        });
+        let _ = app.update(Message::AuthResult {
+            attempt: app.conversation.attempt(),
+            result: Ok((
+                None,
+                auth::Response::Prompt {
+                    secret: true,
+                    message: "Password:".into(),
+                },
+            )),
+        });
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert!(app.conversation.input().is_empty());
+        assert_eq!(app.conversation.notice(), Some("Authentication failed"));
+        assert_eq!(app.focus_target, Some(FocusTarget::AuthenticationInput));
+    }
+
+    #[test]
+    fn restart_failures_keep_an_explicit_retry_without_looping() {
+        for result in [
+            Err("connection failed".into()),
+            Ok((
+                None,
+                auth::Response::Error {
+                    authentication: true,
+                    description: "creation failed".into(),
+                },
+            )),
+            Ok((
+                None,
+                auth::Response::Error {
+                    authentication: false,
+                    description: "session failed".into(),
+                },
+            )),
+        ] {
+            let mut app = app();
+            app.phase = Phase::CreatingSession;
+            let attempt = app.conversation.attempt();
+            let _ = app.update(Message::AuthResult { attempt, result });
+            assert_eq!(app.phase, Phase::Failed);
+            assert_eq!(app.conversation.attempt(), attempt);
+            assert!(app.conversation.input().is_empty());
+            assert_eq!(app.focus_target, Some(FocusTarget::RetryAuthentication));
+
+            let _ = app.update(Message::Retry);
+            assert_eq!(app.phase, Phase::CreatingSession);
+            assert_ne!(app.conversation.attempt(), attempt);
+        }
     }
 
     #[test]
