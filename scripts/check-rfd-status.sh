@@ -19,6 +19,7 @@ failures=0
 row_rfds=()
 row_states=()
 row_tasks=()
+row_deferred=()
 row_titles=()
 row_labels=()
 title_width=35
@@ -146,6 +147,7 @@ for entry in "${entries[@]}"; do
   [[ -f $entry/IMPLEMENTATION.adoc ]] && implementations+=("$entry/IMPLEMENTATION.adoc")
   [[ -f $entry/IMPLEMENTATION.md ]] && implementations+=("$entry/IMPLEMENTATION.md")
   task_summary=-
+  deferred=0
   if [[ ${#implementations[@]} -eq 0 ]]; then
     problem "missing implementation checklist: ${entry_name}/IMPLEMENTATION.adoc or IMPLEMENTATION.md"
   elif [[ ${#implementations[@]} -gt 1 ]]; then
@@ -153,10 +155,11 @@ for entry in "${entries[@]}"; do
   else
     implementation=${implementations[0]}
     implementation_name=$(basename "$implementation")
-    read -r total completed < <(
-      awk '/^[[:space:]]*[-+*]+[[:space:]]+\[[ xX]\][[:space:]]/ {
+    read -r total completed deferred < <(
+      awk '/^[[:space:]]*[-+*]+[[:space:]]+\[[ xX~]\][[:space:]]/ {
              total++; if ($0 ~ /^[[:space:]]*[-+*]+[[:space:]]+\[[xX]\][[:space:]]/) completed++
-           } END { printf "%d %d\n", total, completed }' "$implementation"
+             if ($0 ~ /^[[:space:]]*[-+*]+[[:space:]]+\[~\][[:space:]]/) deferred++
+           } END { printf "%d %d %d\n", total, completed, deferred }' "$implementation"
     )
     task_summary="${completed}/${total}"
     if [[ $implementation_name == IMPLEMENTATION.adoc ]]; then
@@ -177,13 +180,14 @@ for entry in "${entries[@]}"; do
     fi
   fi
 
-  if grep -Eq '^[[:space:]]*[-+*]+[[:space:]]+\[[ xX]\][[:space:]]' "$source"; then
+  if grep -Eq '^[[:space:]]*[-+*]+[[:space:]]+\[[ xX~]\][[:space:]]' "$source"; then
     problem "implementation checkboxes belong in a separate implementation document: ${entry_name}/README.adoc"
   fi
 
   row_rfds+=("$entry_name")
   row_states+=("${state:-\(missing\)}")
   row_tasks+=("$task_summary")
+  row_deferred+=("$deferred")
   row_titles+=("$title")
   row_labels+=("${labels:-\(missing labels\)}")
   if [[ ${#title} -gt $title_width ]]; then
@@ -193,14 +197,15 @@ done
 
 printf -v title_rule '%*s' "$title_width" ''
 title_rule=${title_rule// /-}
-printf '%s%-4s  %-13s  %5s  %-*s  %s%s\n' "$color_bold" RFD State Tasks "$title_width" Title Labels "$color_reset"
-printf '%s%-4s  %-13s  %5s  %-*s  %s%s\n' "$color_dim" ---- ------------- ----- "$title_width" "$title_rule" -------------------- "$color_reset"
+printf '%s%-4s  %-13s  %5s  %8s  %-*s  %s%s\n' "$color_bold" RFD State Tasks Deferred "$title_width" Title Labels "$color_reset"
+printf '%s%-4s  %-13s  %5s  %8s  %-*s  %s%s\n' "$color_dim" ---- ------------- ----- -------- "$title_width" "$title_rule" -------------------- "$color_reset"
 for index in "${!row_rfds[@]}"; do
   state_field=$(printf '%-13s' "${row_states[$index]}")
-  printf '%-4s  %s  %5s  %-*s  %s\n' \
+  printf '%-4s  %s  %5s  %8s  %-*s  %s\n' \
     "${row_rfds[$index]}" \
     "$(colorize_state "${row_states[$index]}" "$state_field")" \
     "${row_tasks[$index]}" \
+    "${row_deferred[$index]}" \
     "$title_width" \
     "${row_titles[$index]}" \
     "${row_labels[$index]}"
