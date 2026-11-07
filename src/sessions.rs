@@ -337,6 +337,9 @@ fn is_executable(path: &Path) -> bool {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
