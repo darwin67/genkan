@@ -445,9 +445,20 @@ in
       genkan = sessionLockTestPackage;
       productionGenkan = package;
     };
+    niri-smoke = import ./tests/niri-smoke.nix {
+      inherit pkgs;
+      genkan = package;
+      lockTestGenkan = sessionLockTestPackage;
+    };
   }
   // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
     greetd-e2e = pkgs.testers.runNixOSTest (import ./tests/greetd.nix { genkanE2e = e2ePackage; });
+    niri-greeter-vm = pkgs.testers.runNixOSTest (
+      import ./tests/niri-greeter.nix {
+        inherit pkgs;
+        genkan = package;
+      }
+    );
     session-lock-vm = pkgs.testers.runNixOSTest (
       import ./tests/session-lock-vm.nix {
         genkan = sessionLockTestPackage;
