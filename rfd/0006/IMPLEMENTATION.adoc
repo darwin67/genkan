@@ -7,12 +7,14 @@ every phase.
 
 == Phase 1: Answer the open questions
 
-* [ ] Record niri's behavior when the configuration fails to parse at startup
+Evidence and decisions: link:INVESTIGATION.adoc[niri 26.04 investigation].
+
+* [x] Record niri's behavior when the configuration fails to parse at startup
   and during a live reload.
-* [ ] Confirm that `open-on-output` accepts make, model, and serial names in the
+* [x] Confirm that `open-on-output` accepts make, model, and serial names in the
   pinned niri release, and record the fallback when the output is absent.
-* [ ] Choose between the `niri-ipc` crate and a raw JSON quit request.
-* [ ] Measure greeter startup time under niri and under Cage on the same host.
+* [x] Choose between the `niri-ipc` crate and a raw JSON quit request.
+* [x] Measure greeter startup time under niri and under Cage on the same host.
 
 == Phase 2: Placement mode
 

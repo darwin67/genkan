@@ -1,0 +1,75 @@
+= niri 26.04 greeter decisions
+
+== Configuration failures are not safe at startup
+
+niri 26.04 loads its built-in default configuration when an explicit startup
+configuration fails to parse. It does not refuse startup. A bad live reload
+instead retains the previous configuration and displays an error notification.
+The greeter must therefore validate its immutable configuration before starting
+niri, not merely rely on niri's own parser to fail closed.
+
+Evidence: upstream tag `v26.04`, `src/main.rs` loads the explicit configuration
+with `config_load_result.config.unwrap_or_else(... Config::load_default())`;
+`src/niri.rs`, `State::reload_config`, returns immediately on `Err(())` before
+updating the layout or bindings. A nested run inside headless Sway, using the
+pinned nixpkgs niri 26.04 binary and Mesa software rendering, confirmed that an
+unknown configuration node at startup still exposes the IPC socket and answers
+`Version`. Replacing a valid running configuration with the same invalid node
+also leaves the IPC socket responsive and logs the parse error.
+
+== Output names and absent-output fallback
+
+`niri-config/src/output.rs`, `OutputName::matches`, accepts either the connector
+or the complete `make model serial` string, case-insensitively. Missing fields
+are represented as `Unknown`. When all three fields are unavailable, only the
+connector matches. `src/handlers/xdg_shell.rs`, `send_initial_configure`, resolves
+`open_on_output` through `output_matches_name`; when absent, an ordinary window
+with no parent and no requested fullscreen output uses the active monitor.
+
+The nested backend advertises connector `winit`, make `Smithay`, model `Winit`,
+and no serial, so its persistent name is `Smithay Winit Unknown`.
+
+Source: https://github.com/niri-wm/niri/tree/v26.04[niri v26.04].
+
+== Supervisor IPC and background selection
+
+Use the newline-delimited request
+`{"Action":{"Quit":{"skip_confirmation":true}}}` on `NIRI_SOCKET` directly.
+This is the request serialized by `niri-ipc` 26.04 (`niri-ipc/src/socket.rs` and
+`niri-ipc/src/lib.rs`). The nested run accepted this request and exited on both
+startup configurations and after a failed live reload. niri may close the
+socket before sending a reply when quitting; teardown must not wait for a reply.
+No niri library dependency or shell is needed for this one fixed request.
+
+Skip a named authentication output in the background client. This avoids
+allocating, converting and attaching hidden output-sized buffers. The source
+is shared across outputs, so skipping does not eliminate the login process's
+own decoder, but it does eliminate the background client's per-output work.
+An absent requested output is not skipped; niri's fallback fullscreen window
+can harmlessly occlude a background surface there.
+
+== Startup comparison
+
+The comparison uses the same packaged Genkan binary, deterministic selected
+account preview and reduced-motion poster under both compositors, nested in
+the same 1280x800 headless Sway. Measure from compositor process creation to
+the login client's first Wayland buffer attachment, not merely IPC readiness.
+This measures an orb's software-rendered nested startup, not DRM modesetting
+or the motivating workstation's scanout latency.
+
+Five alternating runs on 2026-11-07, after the baseline release build had
+finished, with `ICED_BACKEND=tiny-skia` and Mesa llvmpipe:
+
+[cols="1,3,1",options="header"]
+|===
+|Compositor |First attachment (ms) |Median (ms)
+|niri 26.04 |915, 918, 935, 898, 936 |918
+|Cage 0.3.1 |758, 612, 550, 570, 550 |570
+|===
+
+niri added 348 ms at the median in this environment. For niri, the harness
+waited for its IPC socket before directly spawning the preview client into
+its Wayland display; Cage spawned the identical client as its command.
+Readiness and attachment were sampled every 20 ms. The result is sufficient
+to establish a measurable nested-startup cost, not a guarantee about physical
+hardware. Both compositors showed the first buffer in under one second here.
