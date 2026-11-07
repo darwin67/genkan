@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: committed
+:state: published
 :discussion: https://github.com/darwin67/genkan/pull/5
 :labels: greeter, authentication, interaction, visual-design, accessibility
 
@@ -9,9 +9,9 @@
 
 Give Genkan a coherent login-window flow in which a person can recognize the
 selected account or choose another before responding to authentication prompts.
-The interface uses macOS Tahoe 26 as a visual and interaction reference while
-preserving the security, protocol, session, and power boundaries of a Linux
-greetd frontend.
+The interface follows the macOS Tahoe 26 login window and lock screen as
+closely as Linux licensing allows, while preserving the security, protocol,
+session, and power boundaries of a Linux greetd frontend.
 
 == Context and reference
 
@@ -20,13 +20,15 @@ session selector, status, and power controls in one large translucent panel.
 That treatment obscures the account-selection step and makes the password form
 look like a conventional application form rather than a system login window.
 
-Tahoe's Login Window provides the relevant reference, not its active-session
-Lock Screen. Its hierarchy is a full-screen wallpaper, prominent time and date,
-an identity-focused login area near the bottom center, and secondary system
-controls around the edges. Apple also supports both a list of users and
-name/password fields depending on administrator policy. Genkan adopts the
-spatial hierarchy and restrained use of translucent material rather than
-copying Apple artwork, exact geometry, hidden hover behavior, or branding.
+Tahoe's login window is the reference. After a restart it uses the same
+layout as the lock screen: an undimmed full-screen wallpaper, a short date
+above a large glass clock near the top center, a small avatar, name, and
+password pill near the bottom center, and status items at the upper right.
+Apple also supports both a list of users and name/password fields depending on
+administrator policy. Genkan follows Tahoe's layout, proportions, typography,
+and behavior, measured from real captures and recorded in
+link:../../docs/design-system/README.md[the design system]. It does not copy
+Apple artwork, fonts, symbols, hover-revealed controls, or branding.
 
 The reference material for this direction is:
 
@@ -45,12 +47,12 @@ eligible account exists; account discovery never depends on hover. Selecting a
 tile establishes a greetd authentication attempt for that username and returns
 to the selected-account state with whatever prompt greetd/PAM supplies.
 
-The layout removes the single enclosing glass panel. Time and date remain near
-the top center. Account choices or the selected account and current prompt sit
-near the bottom center. Session selection is a quiet secondary control at the
-lower left. Keyboard, accessibility, and confirmed power actions occupy a
-utility area at the upper right as those capabilities become available.
-Authentication status stays adjacent to the prompt it describes.
+The layout has no enclosing panel. The date and time sit near the top center.
+The selected account and current prompt, or a row of accounts, sit small and
+low at the bottom center. Session choice and power actions are menus in a
+status area at the upper right, beside the keyboard layout and network status.
+Authentication status stays adjacent to the prompt it describes. Exact values
+are owned by link:../0005/README.adoc[RFD 5] and the design system.
 
 The initial implementation continues to discover identities through
 AccountsService. Selection precedence is an administrative `--username`
@@ -83,17 +85,17 @@ from the invalidated attempt cannot change presentation state.
 
 === Account selection
 
-The account-selection state presents one clearly labelled avatar tile per
-eligible account and the instruction "Select a user." Eligible retains the
+The account-selection state presents one avatar and name per eligible account
+in a centered row near the bottom of the screen. Eligible retains the
 existing AccountsService policy: a listed cached user with a valid username that
 is neither locked nor a system account. Failure to load one object does not hide
 other valid accounts; when none remain, the first discovery error is reported,
 or the empty eligible-set error is reported when discovery itself succeeded.
 
-Tiles use bounded display names and generated initials; the
+Accounts use bounded display names and generated initials; the
 credential-handling process does not decode user-controlled avatar files. The
-username is visible as secondary text whenever the display name differs and may
-be visually de-emphasized, preventing duplicate or truncated names and
+username is shown as secondary text whenever display names would otherwise be
+ambiguous, preventing duplicate or truncated names and
 identical initials from becoming ambiguous. The pinned iced backend does not
 expose semantic accessible names; publishing a combined display-name and
 username label remains a framework-bound follow-up rather than a parallel tree
@@ -101,27 +103,21 @@ that could diverge from widget state. The upstream availability criteria are
 recorded in link:ACCESSIBILITY.adoc[accessibility verification]. Keyboard focus,
 pointer activation, and touch activation have equivalent results.
 
-The tiles form a wrapped, scrollable grid for large account sets. Scrolling
-keeps the instruction and utility regions stable, preserves a visible focused
-tile, and does not push the session selector off screen.
+The row wraps and scrolls for large account sets. Scrolling keeps the clock
+and status regions stable and preserves a visible focused account.
 
 [source,text]
 ----
 +--------------------------------------------------------------------------+
-|                            09:41                         [Utilities]       |
-|                      Saturday, August 29                                   |
+|                                       [Niri v] [Power] U.S.  Wi-Fi         |
+|                               Fri Nov 6                                    |
+|                                 10:38                                      |
 |                                                                            |
 |                                                                            |
 |                                                                            |
-|                         Select a user                                      |
+|                   (DW)       (AC)       (AM)       (BI)                    |
+|                 Darwin Wu  Alice Chen  Alexandria  Bob Ito                 |
 |                                                                            |
-|                    +----------+    +----------+                            |
-|                    |    DW    |    |    AE    |                            |
-|                    |  Darwin  |    |  Alice   |                            |
-|                    | darwin67 |    |  alice   |                            |
-|                    +----------+    +----------+                            |
-|                                                                            |
-|  [Session: Niri]                                                           |
 +--------------------------------------------------------------------------+
 ----
 
@@ -136,21 +132,16 @@ whenever another eligible account exists and switching is valid.
 [source,text]
 ----
 +--------------------------------------------------------------------------+
-|                            09:41                         [Utilities]       |
-|                      Saturday, August 29                                   |
+|                                       [Niri v] [Power] U.S.  Wi-Fi         |
+|                               Fri Nov 6                                    |
+|                                 10:38                                      |
 |                                                                            |
 |                                                                            |
-|                              +------+                                      |
-|                              |  DW  |                                      |
-|                              +------+                                      |
-|                            Darwin D. Wu                                    |
 |                                                                            |
-|                         Password                                           |
-|                    [________________________] [->]                         |
-|                       Authentication failed                               |
-|                          [Change User]                                     |
+|                                 (DW)                                       |
+|                               Darwin Wu                                    |
+|                           (Enter Password )                                |
 |                                                                            |
-|  [Session: Niri]                                                           |
 +--------------------------------------------------------------------------+
 ----
 
@@ -215,7 +206,7 @@ authentication status slot.
 |Retry discovery or cancellation without starting another attempt
 
 |No valid Wayland session
-|Adjacent to the session selector
+|In the session menu and under the password pill
 |Rediscover validated entries before authentication retry
 
 |PAM prompt, information, or authentication failure
@@ -227,7 +218,7 @@ authentication status slot.
 |Cancel any surviving attempt, then retry without restarting Genkan
 
 |logind power progress or failure
-|Within the power utility or its confirmation dialog
+|Within the power alert, or under the password pill after it closes
 |Dismiss or retry without replacing authentication status or input
 
 |Preview explanation
@@ -237,15 +228,14 @@ authentication status slot.
 
 == Visual and material rules
 
-The background fills the display and establishes contrast for the foreground.
-It may be generated artwork or a packaged wallpaper with explicit provenance
-and redistribution rights; Genkan does not ship Apple imagery. Rich backgrounds
-may receive a uniform darkening layer so controls remain readable.
+The background fills the display and is not dimmed. It may be generated
+artwork or a packaged wallpaper with explicit provenance and redistribution
+rights; Genkan does not ship Apple imagery. Text over the wallpaper stays
+readable through soft shadows and blurred glass behind small controls.
 
 Translucent or glass-like material belongs to small functional controls and
-focused surfaces. It must not become a large decorative content panel behind
-the entire login flow. Account tiles, inputs, menus, dialogs, and utility
-controls share one restrained radius, border, shadow, and focus language.
+focused surfaces: the password pill, menus, alerts, and status items. It must
+not become a large decorative content panel behind the entire login flow.
 Legibility and visible focus take precedence over transparency.
 
 The layout should preserve hierarchy across common laptop and external-display
@@ -284,8 +274,9 @@ states, and bright overlay underlays in both iced blend spaces. This is the
 numeric acceptance boundary for the generated background; it does not claim an
 exhaustive proof over every continuously antialiased edge.
 
-Suspend, restart, and shutdown remain explicit, labelled actions with a
-confirmation step. Preview mode continues to simulate them. Production actions
+Sleep, restart, and shutdown remain explicit, labelled actions in the power
+menu. Restart and shutdown ask for confirmation in an alert; sleep acts
+immediately, as on macOS, because it cannot lose work. Preview mode continues to simulate them. Production actions
 remain logind requests and may expose a host kernel, firmware, or display-driver
 problem; the UI must report a failed request but cannot claim to make suspend or
 resume hardware-safe.
@@ -307,14 +298,13 @@ actions non-destructive. Negative side-effect tests protect these invariants.
 == Boundaries and non-goals
 
 This RFD defines a boot greeter, not a desktop lock screen, fast-user-switching
-service, or session locker. It does not copy macOS assets, promise exact visual
-parity with Apple, hide required controls behind hover, introduce arbitrary
-shell commands, or move authentication ownership out of greetd/PAM.
+service, or session locker. It does not copy Apple assets, fonts, or symbols,
+hide required controls behind hover, introduce arbitrary shell commands, or
+move authentication ownership out of greetd/PAM.
 
 It also does not choose final wallpaper artwork or require account photographs.
-Those assets require a separate provenance and packaging review. Exact spacing,
-animation timing, and icon design remain implementation details provided they
-preserve the interaction hierarchy and accessibility rules above.
+Those assets require a separate provenance and packaging review. Exact values,
+animation timing, and icon design live in the design system and RFD 5.
 
 == Alternatives considered
 
@@ -326,10 +316,10 @@ login-window hierarchy.
 
 === Reproduce Tahoe behavior exactly
 
-Exact reproduction would import assumptions from Apple's lock-screen and
-account-policy environment, including controls revealed by hover and behavior
-not provided by greetd. It would also invite unlicensed visual imitation.
-Genkan instead adopts the hierarchy while making account selection explicit.
+Originally rejected, and adopted in part by the 2026-11 amendment. Genkan now
+follows Tahoe's layout, proportions, typography, and visible behavior. It still
+does not copy controls revealed by hover, behavior greetd does not provide, or
+Apple's artwork, fonts, and symbols.
 
 === Show username and password fields for every installation
 
@@ -343,3 +333,12 @@ interactive path.
 
 Phased work and verification are tracked in
 link:IMPLEMENTATION.adoc[RFD 1 implementation checklist].
+
+== Amendment history
+
+* *2026-11: Follow macOS.* The goal changed from using Tahoe as a reference to
+  following its login window and lock screen as closely as licensing allows.
+  The layout, sketches, material rules, power controls, and the rejected
+  "reproduce Tahoe" alternative were updated, and the state returned from
+  `committed` to `published` until the new presentation is implemented under
+  RFD 5.
