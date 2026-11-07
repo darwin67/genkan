@@ -7,34 +7,34 @@ reference images and compares them with the screens in `docs/design-system`.
 
 == Phase 1: Typeface and tokens
 
-* [ ] Bundle a pinned copy of Inter with its license, version, and hash
+* [x] Bundle a pinned copy of Inter with its license, version, and hash
   recorded, and load it by file in both renderers.
-* [ ] Add `src/design/tokens.rs` mirroring `docs/design-system/tokens.json` as
+* [x] Add `src/design/tokens.rs` mirroring `docs/design-system/tokens.json` as
   plain data with no iced dependency.
-* [ ] Add a unit test that parses `tokens.json` and fails when it disagrees
+* [x] Add a unit test that parses `tokens.json` and fails when it disagrees
   with `tokens.rs`.
-* [ ] Move `src/theme.rs` styles under `src/design/` and express them through
+* [x] Move `src/theme.rs` styles under `src/design/` and express them through
   tokens.
 
 == Phase 2: Login screen
 
 * [ ] `StatusBar` with session and power items, keyboard layout, and network
   status.
-* [ ] `Menu` for the session list and for Sleep, Restart…, and Shut Down….
-* [ ] `Alert` for Restart and Shut Down, with Cancel focused initially.
-* [ ] `Clock` with the short date and the glass time.
-* [ ] `Avatar` and `AccountRow`, with one shared `initials()` helper.
+* [x] `Menu` for the session list and for Sleep, Restart…, and Shut Down….
+* [x] `Alert` for Restart and Shut Down, with Cancel focused initially.
+* [x] `Clock` with the short date and the glass time.
+* [x] `Avatar` and `AccountRow`, with one shared `initials()` helper.
 * [ ] `PasswordField` with placeholder, secret and visible input, the submit
   circle, the Caps Lock glyph, and the rejection shake.
-* [ ] `StatusMessage` above or below the pill.
-* [ ] A visible Change User control in the identity region whenever another
+* [x] `StatusMessage` above or below the pill.
+* [x] A visible Change User control in the identity region whenever another
   eligible account exists.
 * [ ] Background blur for the pill, menus, and alert sampled from the wallpaper
   frame.
-* [ ] Place everything through the `status`, `clock`, and `identity` regions and
+* [x] Place everything through the `status`, `clock`, and `identity` regions and
   remove the old Wide and Flow layouts.
-* [ ] Stop dimming the wallpaper.
-* [ ] Update preview fixtures and regenerate reference images.
+* [x] Stop dimming the wallpaper.
+* [x] Update preview fixtures and regenerate reference images.
 
 == Phase 3: Lock screen
 

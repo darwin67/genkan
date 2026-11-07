@@ -1,13 +1,11 @@
 use iced::advanced::layout;
-use iced::advanced::renderer::{self, Renderer as _};
+use iced::advanced::renderer;
 use iced::advanced::widget::{self, operation, tree, Tree};
 use iced::advanced::{Clipboard, Layout, Shell, Widget};
-use iced::widget::button;
-use iced::{
-    mouse, touch, Background, Color, Element, Length, Padding, Point, Rectangle, Size, Task, Vector,
-};
+use iced::{mouse, touch, Element, Length, Padding, Point, Rectangle, Size, Task, Vector};
 
-use crate::theme;
+use crate::design::iced::color;
+use crate::design::tokens::color as palette;
 
 const DRAG_THRESHOLD: f32 = 6.0;
 const REVEAL_MARGIN: f32 = 16.0;
@@ -15,16 +13,14 @@ const REVEAL_MARGIN: f32 = 16.0;
 pub(super) fn tile<'a, Message: Clone + 'a>(
     content: impl Into<Element<'a, Message>>,
     on_press: Option<Message>,
-    focused: bool,
     width: f32,
     id: widget::Id,
 ) -> Element<'a, Message> {
     Element::new(AccountTile {
         content: content.into(),
         on_press,
-        focused,
         width: Length::Fixed(width),
-        padding: Padding::from([12, 10]),
+        padding: Padding::ZERO,
         id,
     })
 }
@@ -32,7 +28,6 @@ pub(super) fn tile<'a, Message: Clone + 'a>(
 struct AccountTile<'a, Message> {
     content: Element<'a, Message>,
     on_press: Option<Message>,
-    focused: bool,
     width: Length,
     padding: Padding,
     id: widget::Id,
@@ -244,37 +239,14 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let bounds = layout.bounds();
-        let state = tree.state.downcast_ref::<State>();
-        let status = if self.on_press.is_none() {
-            button::Status::Disabled
-        } else if cursor.is_over(bounds) {
-            if state.mouse_pressed {
-                button::Status::Pressed
-            } else {
-                button::Status::Hovered
-            }
-        } else {
-            button::Status::Active
-        };
-        let style = theme::account_tile(theme, status, self.focused);
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds,
-                border: style.border,
-                shadow: style.shadow,
-                snap: true,
-            },
-            style
-                .background
-                .unwrap_or(Background::Color(Color::TRANSPARENT)),
-        );
+        // An account draws no surface of its own: the avatar and name sit
+        // directly on the wallpaper, and focus is shown around the avatar.
         self.content.as_widget().draw(
             &tree.children[0],
             renderer,
             theme,
             &renderer::Style {
-                text_color: style.text_color,
+                text_color: color(palette::TEXT_PRIMARY),
             },
             layout.children().next().expect("account tile content"),
             cursor,

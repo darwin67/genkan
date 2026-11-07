@@ -21,7 +21,7 @@ synthetic accounts and sessions and never sends credentials or power requests.
 - PAM conversation handling through greetd, including multi-prompt flows.
 - AccountsService user discovery with keyboard and pointer navigation.
 - Validated Wayland desktop-session discovery without invoking a shell.
-- Confirmed sleep, restart, and shutdown actions through logind.
+- Sleep, and confirmed restart and shutdown, through logind from a power menu.
 - Original-resolution Tahoe Beach and Sequoia animated wallpapers with static
   posters, reduced-motion support, smooth loop transitions, and safe fallback.
 - Dynamic HEIC desktop wallpaper scheduling on wlr-layer-shell compositors.

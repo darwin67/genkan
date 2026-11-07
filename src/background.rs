@@ -1,6 +1,5 @@
 use iced::mouse;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path};
-use iced::widget::{container, Space};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Theme};
 
 const BASE_COLOR: Color = Color::from_rgb(5.0 / 255.0, 9.0 / 255.0, 24.0 / 255.0);
@@ -9,7 +8,6 @@ const BLOB_COLORS: [Color; 3] = [
     Color::from_rgba(142.0 / 255.0, 44.0 / 255.0, 118.0 / 255.0, 0.34),
     Color::from_rgba(23.0 / 255.0, 111.0 / 255.0, 140.0 / 255.0, 0.35),
 ];
-const DIM_COLOR: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.2);
 
 #[derive(Debug, Clone, Copy)]
 pub struct Background {
@@ -27,15 +25,6 @@ impl Background {
             .height(Length::Fill)
             .into()
     }
-}
-
-pub fn dimming<Message: 'static>() -> Element<'static, Message> {
-    container(Space::new().width(Length::Fill).height(Length::Fill))
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(DIM_COLOR)),
-            ..Default::default()
-        })
-        .into()
 }
 
 impl<Message> canvas::Program<Message> for Background {
@@ -90,6 +79,6 @@ impl<Message> canvas::Program<Message> for Background {
 }
 
 #[cfg(test)]
-pub(crate) fn contrast_palette() -> (Color, [Color; 3], Color) {
-    (BASE_COLOR, BLOB_COLORS, DIM_COLOR)
+pub(crate) fn contrast_palette() -> (Color, [Color; 3]) {
+    (BASE_COLOR, BLOB_COLORS)
 }

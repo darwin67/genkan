@@ -4,8 +4,6 @@ use iced::keyboard;
 use iced::widget::operation as widget_operation;
 use iced::{window, Task};
 
-use crate::power::Action as PowerAction;
-
 use super::auth_flow::Phase;
 use super::{App, Message, PowerState};
 
@@ -19,7 +17,7 @@ pub(super) enum Target {
     ChangeUser,
     Session,
     RetrySession,
-    Power(PowerAction),
+    Power,
     DialogCancel,
     DialogConfirm,
 }
@@ -99,7 +97,11 @@ impl App {
             }
             Phase::UserSelectionCancellationFailed => order.push(Target::RetryAccountSelection),
             Phase::WaitingForInput => {
-                order.extend([Target::AuthenticationInput, Target::Submit]);
+                order.push(Target::AuthenticationInput);
+                // The submit arrow is shown, and focusable, only with input.
+                if !self.conversation.input().is_empty() {
+                    order.push(Target::Submit);
+                }
             }
             Phase::Failed if self.selected_session.is_some() && !self.username.is_empty() => {
                 order.push(Target::RetryAuthentication);
@@ -120,11 +122,7 @@ impl App {
             order.push(Target::RetrySession);
         }
         if self.can_request_power() {
-            order.extend([
-                Target::Power(PowerAction::Suspend),
-                Target::Power(PowerAction::Reboot),
-                Target::Power(PowerAction::PowerOff),
-            ]);
+            order.push(Target::Power);
         }
         order
     }
@@ -143,7 +141,7 @@ impl App {
         match self.focus_order().first().copied() {
             Some(target) => self.set_focus(target),
             None => {
-                self.close_session_menu();
+                self.close_menus();
                 self.focus_target = None;
                 clear_widget_focus()
             }
@@ -168,7 +166,7 @@ impl App {
     fn move_focus(&mut self, delta: isize) -> Task<Message> {
         let order = self.focus_order();
         if order.is_empty() {
-            self.close_session_menu();
+            self.close_menus();
             self.focus_target = None;
             return clear_widget_focus();
         }
@@ -189,7 +187,6 @@ impl App {
                     (index as isize + delta).rem_euclid(self.accounts.len() as isize) as usize;
                 self.set_focus(Target::Account(next))
             }
-            Some(Target::Session) if self.can_select_session() => self.cycle_session(delta),
             Some(Target::DialogCancel | Target::DialogConfirm) => self.move_focus(delta),
             _ => Task::none(),
         }
@@ -214,10 +211,9 @@ impl App {
             Some(Target::Submit) => self.update(Message::Submit),
             Some(Target::RetryAuthentication) => self.update(Message::Retry),
             Some(Target::ChangeUser) => self.update(Message::ChangeUser),
-            Some(Target::Session) if self.can_select_session() => self.cycle_session(1),
-            Some(Target::Session) => Task::none(),
+            Some(Target::Session) => self.update(Message::SessionMenuOpened),
             Some(Target::RetrySession) => self.update(Message::RetrySession),
-            Some(Target::Power(action)) => self.update(Message::AskPower(action)),
+            Some(Target::Power) => self.update(Message::PowerMenuOpened),
             Some(Target::DialogCancel) => self.update(Message::CancelPower),
             Some(Target::DialogConfirm) => {
                 let PowerState::Confirming(action) = self.power_state else {
@@ -229,23 +225,12 @@ impl App {
         }
     }
 
-    fn cycle_session(&mut self, delta: isize) -> Task<Message> {
-        if self.sessions.is_empty() {
-            return Task::none();
-        }
-        let current = self
-            .selected_session
-            .as_ref()
-            .and_then(|selected| self.sessions.iter().position(|session| session == selected))
-            .unwrap_or(0);
-        let next = (current as isize + delta).rem_euclid(self.sessions.len() as isize) as usize;
-        self.selected_session = Some(self.sessions[next].clone());
-        Task::none()
-    }
-
     pub(super) fn set_focus(&mut self, target: Target) -> Task<Message> {
         if target != Target::Session {
-            self.close_session_menu();
+            self.session_menu_open = false;
+        }
+        if target != Target::Power {
+            self.power_menu_open = false;
         }
         self.focus_target = Some(target);
         match target {
@@ -271,7 +256,7 @@ impl App {
     }
 
     pub(super) fn blur_input(&mut self) -> Task<Message> {
-        self.close_session_menu();
+        self.close_menus();
         if self.focus_target == Some(Target::AuthenticationInput) {
             self.focus_target = None;
         }
@@ -293,7 +278,7 @@ impl App {
         match target {
             Some(target) => self.set_focus(target),
             None => {
-                self.close_session_menu();
+                self.close_menus();
                 self.focus_target = None;
                 clear_widget_focus()
             }
