@@ -1,5 +1,5 @@
 use clap::ValueEnum;
-use cosmic_text::{FontSystem, SwashCache};
+use cosmic_text::SwashCache;
 use genkan_session_lock::{PresentationFrame, RgbaFrame};
 use iced::widget::{container, image, Image};
 use iced::{Element, Fill, Subscription, Task, Theme};
@@ -233,7 +233,7 @@ fn presentation(settings: wallpaper::Settings, fixture: Fixture) -> Presentation
         &conversation,
         confirmed,
         0,
-        &mut FontSystem::new(),
+        &mut crate::design::font::font_system(),
         &mut SwashCache::new(),
     );
     let overlay = RgbaFrame::new(overlay_width, overlay_height, pixels.into())

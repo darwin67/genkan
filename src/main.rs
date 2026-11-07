@@ -2,6 +2,7 @@ mod accounts;
 mod app;
 mod background;
 mod conversation;
+mod design;
 mod desktop_wallpaper;
 mod geoclue;
 mod locker;
@@ -454,6 +455,8 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         .title("Genkan")
         .subscription(App::subscription)
         .theme(|_: &App| Theme::Dark)
+        .font(design::font::INTER_VARIABLE)
+        .default_font(design::font::iced_font())
         .window(window::Settings {
             size: window_size,
             decorations: windowed,

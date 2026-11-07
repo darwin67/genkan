@@ -95,6 +95,7 @@ zbus = { version = "5.2.0", default-features = false, features = ["tokio"], opti
 
 [dev-dependencies]
 tokio = { version = "1.42.0", features = ["macros", "rt"] }
+serde_json = "1.0"
 
 [profile.release]
 lto = "thin"
