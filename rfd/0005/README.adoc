@@ -1,0 +1,352 @@
+:authors: Darwin D. Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/darwin67/genkan/pull/60
+:labels: visual-design, design-system, greeter, lock, accessibility
+
+= RFD 5 Shared design system for login and lock presentation
+
+== Goal
+
+Give Genkan one named, enforced vocabulary for spacing, typography, color,
+material, shape, and control geometry, and one set of reusable presentation
+components built from it. The login greeter and the session lock must draw
+from the same vocabulary so that they look like one product, and a contributor
+adding a control should choose from existing tokens and components rather than
+inventing new values.
+
+This RFD changes how presentation is specified and constructed. It does not
+change authentication, session, power, or lock lifecycle behavior.
+
+Implementation progress is tracked in
+link:IMPLEMENTATION.adoc[the implementation checklist].
+
+[[context]]
+== Context
+
+link:../0001/README.adoc[RFD 1] established the greeter's interaction
+hierarchy and its visual and material rules: restrained translucent material on
+small controls, one shared radius, border, and focus language, and minimum
+contrast targets. It deliberately left "exact spacing, animation timing, and
+icon design" as implementation details. RFD 3 then added a session lock with
+its own presentation, and RFD 2 and RFD 4 added photographic and dynamic
+wallpapers behind both.
+
+The shared radius, outline, focus ring, and a set of material colors did land
+in `src/theme.rs`. Everything else is chosen at each call site. At the time of
+writing, `src/app/view.rs` alone uses:
+
+[cols="2,1,3",options="header"]
+|===
+|Property |Distinct values |Values
+
+|Text size |9 |13, 14, 15, 16, 18, 22, 24, 28, 80
+|Padding |10 |`[7,12]`, `[8,14]`, `[9,14]`, `[9,15]`, `[10,18]`, `[12,18]`, `[24,16]`, `[28,30]`, `[42,24]`, 30
+|Spacing |10 |0, 2, 6, 7, 8, 10, 12, 14, 22, 28
+|===
+
+`src/theme.rs` contains 26 raw RGB(A) literals with no role names beyond the
+function that uses them. The lock overlay in `src/locker/mod.rs` is drawn by a
+separate CPU text and shape renderer with its own geometry constants and ten
+further font sizes (14, 15, 16, 17, 20, 22, 27, 34, plus minimum sizes 7 and
+8), none of which are derived from the login values.
+
+The observable consequences in the current reference and preview captures are:
+
+* Buttons with the same role have different padding and text size: Retry,
+  Change User, power actions, discovery retries, and the session selector each
+  define their own.
+* The session menu uses an unrelated saturated blue for hover and selection
+  instead of a material or accent role, and its geometry is fixed in pixels
+  independently of the controls around it.
+* Login and lock present the same authentication field differently: login
+  shows a label above the field and a drawn submit arrow, while lock shows the
+  prompt as a placeholder and a `↵` glyph. Each has its own `initials()`
+  function.
+* There is no text-overflow policy. Each call site independently picks
+  word-or-glyph wrapping, a fixed height, or both, so long names grow tiles
+  without bound in one place and are clipped mid-glyph in another. The lock
+  renderer already fits single lines; login does not reuse that behavior.
+* Dialog, menu, and badge opacity were chosen by eye, so a power confirmation
+  dialog is translucent enough for the avatar beneath it to show through.
+* Status and error text has no shared component, so its alignment depends on
+  the parent column; a power error is right-aligned in the centered compact
+  layout.
+* The session-lock compositor dims the entire composed frame, including the
+  authentication overlay, so lock text renders at 80% white. There is no rule
+  that a scrim applies to the background layer only.
+
+Several other defects found in the same audit are behavioral rather than
+presentational: the login forces the compact layout whenever a prompt is
+active, any non-ASCII display name forces the compact layout, and a failed
+authentication requires an extra Retry activation before the user can respond
+again. A design system does not fix those, and this RFD does not claim to. They
+are tracked separately; where this RFD defines a rule that constrains their
+fix, it says so.
+
+== Decision
+
+Genkan adopts a three-layer design system:
+
+. *Tokens*: a renderer-independent module of named constants for spacing,
+  type, color roles, material levels, shape, control sizes, and layout
+  breakpoints. Tokens are plain Rust data with no iced dependency, so the iced
+  greeter and the lock's CPU renderer consume the same values.
+. *Components*: iced builders for every recurring control, each taking a
+  semantic variant rather than raw sizes or colors.
+. *Layout regions*: a fixed set of named screen regions per size class, so a
+  control's position is a property of the page template rather than of the
+  current authentication phase.
+
+The lock renderer does not adopt iced widgets (see
+<<alternatives-considered>>). It adopts the token layer and a small set of
+shared, renderer-independent helpers so its geometry, type, color, and text
+policy are derived from the same source.
+
+Literal sizes and colors outside the design module become a verification
+failure, so drift is caught in review rather than in screenshots.
+
+== Tokens
+
+Tokens live in `src/design/tokens.rs`. Names describe roles, not values. The
+values below are a proposal for discussion. Phase 1 of the implementation
+introduces the names with the current values so that the refactor has no
+visible effect, and Phase 2 consolidates them to these scales.
+
+The values were derived from the current interface. Genkan's visual direction
+is to follow the macOS login and lock screens, and design mocks measured
+against real Tahoe captures are in progress. Once the mocks are agreed, their
+measurements replace these values; the token names, components, and rules in
+this RFD stay.
+
+=== Spacing
+
+A single scale in logical pixels: `XXS 2`, `XS 4`, `S 8`, `M 12`, `L 16`,
+`XL 24`, `XXL 32`, `XXXL 48`.
+
+Padding and inter-element spacing use only these values. Insets for controls
+are expressed through control-size tokens rather than ad hoc padding pairs.
+
+=== Typography
+
+[cols="1,1,3",options="header"]
+|===
+|Token |Size |Use
+
+|`display` |80 |Clock time
+|`title` |28 |Selected-account name, account-selection heading
+|`subtitle` |22 |Date, dialog title, lock progress
+|`input` |18 |Authentication response
+|`body` |15 |Prompt text, control labels, tile names
+|`caption` |13 |Usernames, field labels, status and error text
+|===
+
+Weight and line height are part of each token. Text roles reference a type
+token and a color role together, so that, for example, `caption` text is always
+`text.secondary` or `text.error`, never an arbitrary alpha.
+
+=== Color roles
+
+[cols="1,3",options="header"]
+|===
+|Role |Meaning
+
+|`text.primary` |Primary foreground on any material
+|`text.secondary` |Supporting text; replaces the current 0.85 and 0.78 alphas
+|`text.muted` |De-emphasized identifiers such as `@username`
+|`text.error` |Recoverable failures adjacent to their control
+|`accent` / `accent.hover` / `accent.pressed` |The single affirmative action
+|`destructive` |Confirming a power action that may lose work
+|`focus` |Focus ring color
+|`outline` / `outline.strong` |Control boundaries at rest and emphasized
+|`selection` |Text selection and selected menu option
+|===
+
+The selected menu option uses `selection` derived from the material system, not
+a separately chosen saturated color.
+
+=== Material
+
+Material is the translucent dark surface from RFD 1, expressed as named
+opacity levels over one base color:
+
+[cols="1,3",options="header"]
+|===
+|Level |Use
+
+|`material.control` |Buttons, tiles, selectors at rest, with hover and pressed steps
+|`material.field` |The authentication field's lighter glass
+|`material.overlay` |Menus and dialogs; opaque enough that underlying content is not legible through it
+|`scrim.background` |Uniform darkening of wallpaper behind the foreground
+|`scrim.modal` |Darkening of page content behind a dialog
+|===
+
+Rule: a scrim darkens the layer beneath it and never the foreground it serves.
+In particular, the lock's authentication overlay is composited after
+`scrim.background` is applied to the wallpaper. Because
+`crates/session-lock` currently owns the dimming factor, the factor becomes a
+parameter supplied by the caller from this token rather than a crate-private
+constant.
+
+=== Shape and focus
+
+`radius.control` (currently 18), `border.width` (1), `focus.width` (3), and
+`avatar` border width (2). These are the existing values from `theme.rs`,
+given names.
+
+=== Control sizes
+
+`control.small` and `control.medium` define height, horizontal inset, and type
+token for buttons and selectors. `field.height`, `field.max_width`,
+`tile.width`, `avatar.small` (76), `avatar.large` (100), `menu.max_height`, and
+`dialog.max_width` replace call-site literals.
+
+=== Breakpoints
+
+The `Wide` and `Compact` size classes and their thresholds (currently 1280 by
+700 logical pixels) are tokens. The account-grid column limit is a token.
+
+== Components
+
+Components live in `src/design/components/` and are the only place that
+applies tokens to iced widgets. Each component takes a semantic variant.
+
+[cols="1,3",options="header"]
+|===
+|Component |Contract
+
+|`Button` |Variants `Primary`, `Secondary`, `Destructive`, `Icon`; sizes `Small`, `Medium`. Focus, hover, pressed, and disabled states come from tokens.
+|`Label` |Text with a type token, a color role, and an explicit overflow policy: `SingleLine` (truncate with an ellipsis) or `Wrap { max_lines }`. There is no unbounded default.
+|`TextField` |Label, response input, and trailing submit action. Secret and visible prompts share one geometry. The lock renderer reproduces the same geometry from tokens.
+|`Avatar` |Initials and diameter token. Initials come from one shared, renderer-independent function used by login and lock.
+|`AccountTile` |Avatar, name (`SingleLine`), and username (`SingleLine`) with a fixed height.
+|`Selector` and `Menu` |A closed control and a floating menu drawn in `material.overlay`, bounded by `menu.max_height`, that does not displace page layout.
+|`Dialog` |Title, consequence text, and actions in `material.overlay` over `scrim.modal`, centered on the page content region.
+|`StatusMessage` |Informational or error text that is always centered under, and aligned with, the control it describes.
+|`Clock` |Time and date with type tokens and a single formatting source, so login and lock can both present it.
+|===
+
+Overflow is decided by the component, not the caller. A display name or
+username in an identity position is always `SingleLine`; a PAM prompt or
+message is `Wrap` with a bound and scrolls within its region if the bound is
+exceeded. The shared single-line fitting helper is renderer-independent: it
+takes a width-measuring function, as the lock's `fit_single_line_by` already
+does, so iced and the lock renderer can share its truncation logic.
+
+== Layout regions
+
+Each size class defines named regions: `clock`, `identity`, `utilities`,
+`session`, and `notice`. In the `Wide` class they follow RFD 1: clock top
+center, identity bottom center, utilities upper right, session lower left. In
+the `Compact` class they stack in one scrollable column in a fixed order.
+
+Rule: the region a control occupies is a function of the size class only. The
+authentication phase may change what a region contains, but not where controls
+are placed. A size class may be latched while a response is being entered to
+avoid reflow during typing, but the latched class must be the class that the
+current size selects, not a different one. This rule constrains the separate
+fix for the forced compact prompt layout.
+
+Rule: the size class is chosen from available size and measured content, not
+from the character set of the content. This rule constrains the separate fix
+for the non-ASCII layout trigger.
+
+== Lock renderer adoption
+
+`src/locker/mod.rs` keeps its CPU renderer. That renderer keeps response text
+out of the glyph pipeline and draws only masked characters, and this RFD
+preserves that boundary. It changes as follows:
+
+* Font sizes, colors, field geometry, avatar size, and spacing are read from
+  tokens and scaled by the renderer's existing integer render scale.
+* `initials()` and single-line fitting come from the shared helpers.
+* The field presents its prompt in the same position and style as the login
+  `TextField`, and the submit affordance uses the same shape.
+* The background scrim is applied before the overlay, per the material rule.
+
+Rendering the lock overlay at the output's logical size instead of the current
+fixed canvas, and fractional-scale support, are separate work.
+
+== Typeface
+
+Login (iced) and lock (cosmic-text) currently each resolve the generic
+sans-serif family through the packaged fontconfig, which contains DejaVu. They
+match only by coincidence. The design system names one typeface token that both
+renderers load explicitly.
+
+That typeface is Inter. It is the closest freely licensed match for the
+system font of the macOS login and lock screens Genkan follows, which cannot be
+shipped on Linux. Inter is released under the SIL Open Font License, so Genkan
+bundles a pinned copy in the package, records its version, license, and hash
+alongside the wallpaper provenance, and loads it by file in both renderers
+instead of resolving a family name through fontconfig. A rounded face for the
+clock, closer to the macOS lock-screen clock, is a separate open question.
+
+== Verification
+
+* The existing WCAG contrast tests in `src/theme.rs` move to the design module
+  and are written against color roles and material levels, so every role is
+  covered once instead of per call site.
+* A repository check, run by `make verify`, rejects numeric literals in iced
+  text-size, padding, spacing, and color constructors outside `src/design/`,
+  and raw color or font-size literals in the lock overlay renderer outside
+  token lookups. Tests and preview fixtures are exempt.
+* Phase 1 must leave every reference image and preview-evidence capture
+  unchanged. Later phases update reference images deliberately and record the
+  visual change in the commit.
+* Component tests cover each overflow policy with the existing long-name,
+  duplicate-name, and long-prompt preview fixtures.
+
+== Boundaries and non-goals
+
+* No user-configurable themes, light appearance, or runtime theme files.
+  Tokens make these possible later but they are not proposed here.
+* No change to authentication, greetd, PAM, session selection, power, or lock
+  lifecycle behavior.
+* No semantic accessibility tree. That remains deferred under RFD 1's
+  accessibility criteria.
+* No icon set beyond what existing controls need.
+* The behavioral defects listed in <<context>> are fixed separately, subject to
+  the layout rules above.
+
+[[alternatives-considered]]
+== Alternatives considered
+
+=== Tidy constants in `theme.rs` without a component layer
+
+This is the cheapest change and would remove most duplicate values. Without
+components and a literal check, though, call sites would continue to choose
+padding, overflow, and alignment, and the drift that motivated this RFD would
+return.
+
+=== Adopt an external iced design system
+
+Libraries such as libcosmic provide complete component sets, but they bring
+their own visual language, pin iced forks, and add a large dependency to a
+credential-handling process. Genkan needs a small, auditable set of controls.
+
+=== Render the lock overlay with iced
+
+This would let login and lock share components directly. It conflicts with the
+lock renderer's constraints: it draws into compositor-owned session-lock
+buffers, keeps response text out of the text pipeline, and must fail closed
+independently of a GPU renderer. Sharing tokens and renderer-independent
+helpers achieves visual parity without moving that boundary.
+
+=== External design-token files
+
+Defining tokens in TOML or JSON and generating Rust would suit multiple
+platforms or runtime themes. Genkan has one language and no runtime theming, so
+Rust constants are simpler and are checked by the compiler.
+
+== Open questions
+
+* Are the proposed type and spacing scales right, in particular merging 14 and
+  16 into `caption` and `body`?
+* Should the clock use Inter at a heavy weight, or a separate freely licensed
+  rounded face closer to the macOS lock-screen clock?
+* Does iced 0.14 provide ellipsis truncation natively, or does `Label` measure
+  and truncate itself through the shared fitting helper?
+* Should avatars get a deterministic per-account tint as a token set, to
+  distinguish accounts with identical initials?
+* Should the photographic wallpaper posters join the generated background in
+  contrast verification, given that they are the packaged default?

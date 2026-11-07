@@ -19,6 +19,12 @@ authoritative merely because it exists; its `state` says how it should be read.
 
 |link:0004/README.adoc[4: Dynamic HEIC desktop wallpaper]
 |Time-of-day HEIC scheduling, optional GeoClue solar selection, and Wayland desktop rendering
+
+|link:0005/README.adoc[5: Shared design system for login and lock presentation]
+|Spacing, type, color, and material tokens, shared components, and layout regions for login and lock
+
+|link:0006/README.adoc[6: niri as the greeter compositor]
+|Running the login greeter under a locked-down niri with shared output configuration, compositor placement, and a supervised lifecycle
 |===
 
 == Source format

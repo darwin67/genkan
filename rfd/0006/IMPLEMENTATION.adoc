@@ -1,0 +1,74 @@
+= RFD 0006 implementation checklist
+
+Implements link:README.adoc[RFD 6: niri as the greeter compositor].
+
+The phases are ordered. Cage deployments must keep working unchanged after
+every phase.
+
+== Phase 1: Answer the open questions
+
+* [ ] Record niri's behavior when the configuration fails to parse at startup
+  and during a live reload.
+* [ ] Confirm that `open-on-output` accepts make, model, and serial names in the
+  pinned niri release, and record the fallback when the output is absent.
+* [ ] Choose between the `niri-ipc` crate and a raw JSON quit request.
+* [ ] Measure greeter startup time under niri and under Cage on the same host.
+
+== Phase 2: Placement mode
+
+* [ ] Add a `--placement` option to `genkan login` with `spanning` (default) and
+  `compositor` modes.
+* [ ] In `compositor` mode, make the whole window the authentication region and
+  skip `src/outputs.rs` region selection.
+* [ ] Set a stable application ID for the login window.
+* [ ] Test both modes in the deterministic preview harness.
+
+== Phase 3: Background client for the greeter
+
+* [ ] Extend `genkan wallpaper` to show MOV catalog entries, their posters under
+  reduced motion, and HEIC overrides, selected by the same arguments as login.
+* [ ] Add an output to skip.
+* [ ] Add `wp_fractional_scale_v1` and `wp_viewporter` support with an integer
+  fallback.
+
+== Phase 4: Supervisor
+
+* [ ] Add `genkan greeter-session`, which starts the wallpaper and login
+  children without a shell, waits for login to exit, stops the wallpaper, and
+  quits niri through its IPC socket.
+* [ ] Quit niri on every login exit path, including a crash and a signal.
+* [ ] Never start a desktop session from the supervisor.
+
+== Phase 5: Output naming and lock scaling
+
+* [ ] Accept make, model, and serial names in `--authentication-output` for
+  login and lock.
+* [ ] Add `wp_fractional_scale_v1` and `wp_viewporter` support to the session
+  lock with an integer fallback.
+
+== Phase 6: NixOS module and documentation
+
+* [ ] Add greeter options that generate the locked-down niri configuration from
+  host-provided output blocks: empty `binds`, no hotkey overlay at startup, no
+  screenshot path, no Xwayland, no includes, and only `genkan greeter-session`
+  started.
+* [ ] Validate the generated configuration with `niri validate` at build time.
+* [ ] Set `systemd.services.greetd.restartIfChanged = false` whenever the module
+  configures a greeter.
+* [ ] Keep Cage as the default greeter compositor.
+* [ ] Document the niri greeter, including an output-block example and the
+  window rule, in `docs/deployment.md`.
+
+== Phase 7: Verification
+
+* [ ] Add a NixOS VM test that boots greetd with the niri greeter and checks
+  fullscreen placement on the configured output and wallpaper on the others.
+* [ ] Check that a successful login ends niri and starts the session, and that a
+  crashed login process still ends niri and greetd restarts the greeter.
+* [ ] Send the key combinations niri's default configuration binds to spawns and
+  confirm nothing starts.
+* [ ] Switch the VM to a new system generation while a session is running and
+  confirm the session and its displays survive.
+* [ ] Check fractional-scale rendering of the background client and lock under
+  nested niri at scale 1.5.
+* [ ] Keep the existing Cage tests passing.
