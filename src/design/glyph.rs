@@ -4,17 +4,23 @@
 //! scaled to the bounds it is given. These are original drawings, not Apple
 //! symbols.
 
+use std::collections::HashMap;
 use std::f32::consts::PI;
+use std::sync::{Mutex, OnceLock};
 
-use iced::mouse;
-use iced::widget::canvas::{
-    self, path::Arc, Canvas, Frame, Geometry, LineCap, LineJoin, Path, Stroke,
-};
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
+use iced::widget::image::{FilterMethod, Handle, Image};
+use iced::{Color, Element, Length, Size};
 
 use super::tokens::component;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Glyphs are rasterized at this multiple of their logical size and scaled
+/// down by the image pipeline, which keeps strokes crisp at any output scale.
+const SUPERSAMPLE: f32 = 4.0;
+
+/// Segments used to approximate the power symbol's arc.
+const ARC_SEGMENTS: u16 = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Kind {
     /// A display on a stand: the session item.
     Monitor,
@@ -64,89 +70,164 @@ impl Kind {
         }
     }
 
-    fn path(self, scale: f32) -> Path {
-        let point = |x: f32, y: f32| Point::new(x * scale, y * scale);
-        Path::new(|builder| match self {
+    /// The glyph's strokes in view-box units.
+    fn path(self) -> Option<tiny_skia::Path> {
+        let mut builder = tiny_skia::PathBuilder::new();
+        match self {
             Self::Monitor => {
-                builder.rounded_rectangle(
-                    point(1.0, 1.0),
-                    Size::new(13.0 * scale, 7.6 * scale),
-                    (1.5 * scale).into(),
-                );
-                builder.move_to(point(5.0, 11.0));
-                builder.line_to(point(10.0, 11.0));
-                builder.move_to(point(7.5, 8.6));
-                builder.line_to(point(7.5, 11.0));
+                rounded_rectangle(&mut builder, 1.0, 1.0, 13.0, 7.6, 1.5);
+                builder.move_to(5.0, 11.0);
+                builder.line_to(10.0, 11.0);
+                builder.move_to(7.5, 8.6);
+                builder.line_to(7.5, 11.0);
             }
             Self::Power => {
-                builder.move_to(point(10.0, 3.0));
-                builder.line_to(point(10.0, 9.4));
-                // The SVG arc from (6.2, 5.7) to (13.8, 5.7) with radius 5.6,
+                builder.move_to(10.0, 3.0);
+                builder.line_to(10.0, 9.4);
+                // The SVG arc from (13.8, 5.7) to (6.2, 5.7) with radius 5.6,
                 // taking the long way around below its center.
+                let (center_y, opening) = power_arc();
                 let radius = 5.6;
-                let half_chord: f32 = 3.8;
-                let center_y = 5.7 + (radius * radius - half_chord * half_chord).sqrt();
-                let opening = (5.7 - center_y).atan2(half_chord);
-                builder.arc(Arc {
-                    center: point(10.0, center_y),
-                    radius: radius * scale,
-                    start_angle: opening.into(),
-                    end_angle: (PI - opening).into(),
-                });
+                for step in 0..=ARC_SEGMENTS {
+                    let angle =
+                        opening + (PI - 2.0 * opening) * f32::from(step) / f32::from(ARC_SEGMENTS);
+                    let (x, y) = (10.0 + radius * angle.cos(), center_y + radius * angle.sin());
+                    if step == 0 {
+                        builder.move_to(x, y);
+                    } else {
+                        builder.line_to(x, y);
+                    }
+                }
             }
             Self::Check => {
-                builder.move_to(point(1.2, 5.2));
-                builder.line_to(point(4.0, 8.0));
-                builder.line_to(point(9.8, 1.4));
+                builder.move_to(1.2, 5.2);
+                builder.line_to(4.0, 8.0);
+                builder.line_to(9.8, 1.4);
             }
             Self::ArrowRight => {
-                builder.move_to(point(2.6, 7.0));
-                builder.line_to(point(11.0, 7.0));
-                builder.move_to(point(7.6, 3.4));
-                builder.line_to(point(11.0, 7.0));
-                builder.line_to(point(7.6, 10.6));
+                builder.move_to(2.6, 7.0);
+                builder.line_to(11.0, 7.0);
+                builder.move_to(7.6, 3.4);
+                builder.line_to(11.0, 7.0);
+                builder.line_to(7.6, 10.6);
             }
             Self::ArrowLeft => {
-                builder.move_to(point(11.4, 7.0));
-                builder.line_to(point(3.0, 7.0));
-                builder.move_to(point(6.4, 3.4));
-                builder.line_to(point(3.0, 7.0));
-                builder.line_to(point(6.4, 10.6));
+                builder.move_to(11.4, 7.0);
+                builder.line_to(3.0, 7.0);
+                builder.move_to(6.4, 3.4);
+                builder.line_to(3.0, 7.0);
+                builder.line_to(6.4, 10.6);
             }
+        }
+        builder.finish()
+    }
+}
+
+/// The power arc's center height and its opening angle below the horizontal.
+fn power_arc() -> (f32, f32) {
+    let radius: f32 = 5.6;
+    let half_chord: f32 = 3.8;
+    let center_y = 5.7 + (radius * radius - half_chord * half_chord).sqrt();
+    (center_y, (5.7 - center_y).atan2(half_chord))
+}
+
+fn rounded_rectangle(
+    builder: &mut tiny_skia::PathBuilder,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+) {
+    let (right, bottom) = (x + width, y + height);
+    builder.move_to(x + radius, y);
+    builder.line_to(right - radius, y);
+    builder.quad_to(right, y, right, y + radius);
+    builder.line_to(right, bottom - radius);
+    builder.quad_to(right, bottom, right - radius, bottom);
+    builder.line_to(x + radius, bottom);
+    builder.quad_to(x, bottom, x, bottom - radius);
+    builder.line_to(x, y + radius);
+    builder.quad_to(x, y, x + radius, y);
+    builder.close();
+}
+
+/// Rasterizes a glyph to straight-alpha RGBA at `SUPERSAMPLE` times `size`.
+///
+/// Glyphs are images rather than canvas geometry because iced 0.14's
+/// tiny-skia fallback renderer draws no canvas geometry in this greeter, while
+/// both renderers draw images.
+fn rasterize(kind: Kind, color: Color, size: Size) -> Option<(u32, u32, Vec<u8>)> {
+    let width = (size.width * SUPERSAMPLE).ceil().max(1.0) as u32;
+    let height = (size.height * SUPERSAMPLE).ceil().max(1.0) as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
+    let view_box = kind.view_box();
+    let scale = (width as f32 / view_box.width).min(height as f32 / view_box.height);
+    let offset_x = (width as f32 - view_box.width * scale) / 2.0;
+    let offset_y = (height as f32 - view_box.height * scale) / 2.0;
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(tiny_skia::Color::from_rgba(
+        color.r, color.g, color.b, color.a,
+    )?);
+    paint.anti_alias = true;
+    let stroke = tiny_skia::Stroke {
+        width: kind.stroke_width(),
+        line_cap: tiny_skia::LineCap::Round,
+        line_join: tiny_skia::LineJoin::Round,
+        ..tiny_skia::Stroke::default()
+    };
+    pixmap.stroke_path(
+        &kind.path()?,
+        &paint,
+        &stroke,
+        tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, offset_x, offset_y),
+        None,
+    );
+    let pixels = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            let straight = pixel.demultiply();
+            [
+                straight.red(),
+                straight.green(),
+                straight.blue(),
+                straight.alpha(),
+            ]
         })
-    }
+        .collect();
+    Some((width, height, pixels))
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Glyph {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Key {
     kind: Kind,
-    color: Color,
+    color: [u8; 4],
+    width: u32,
+    height: u32,
 }
 
-impl<Message> canvas::Program<Message> for Glyph {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-        let view_box = self.kind.view_box();
-        let scale = (bounds.width / view_box.width).min(bounds.height / view_box.height);
-        frame.stroke(
-            &self.kind.path(scale),
-            Stroke::default()
-                .with_color(self.color)
-                .with_width(self.kind.stroke_width() * scale)
-                .with_line_cap(LineCap::Round)
-                .with_line_join(LineJoin::Round),
-        );
-        vec![frame.into_geometry()]
-    }
+/// Returns a cached image handle so the renderer keeps one texture per glyph.
+fn handle(kind: Kind, color: Color, size: Size) -> Handle {
+    static CACHE: OnceLock<Mutex<HashMap<Key, Handle>>> = OnceLock::new();
+    let key = Key {
+        kind,
+        color: color.into_rgba8(),
+        width: size.width.to_bits(),
+        height: size.height.to_bits(),
+    };
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache
+        .entry(key)
+        .or_insert_with(|| {
+            let (width, height, pixels) =
+                rasterize(kind, color, size).unwrap_or((1, 1, vec![0; 4]));
+            Handle::from_rgba(width, height, pixels)
+        })
+        .clone()
 }
 
 /// A glyph at its default size.
@@ -156,9 +237,10 @@ pub(crate) fn glyph<'a, Message: 'a>(kind: Kind, color: Color) -> Element<'a, Me
 
 /// A glyph scaled to `size`.
 pub(crate) fn sized<'a, Message: 'a>(kind: Kind, color: Color, size: Size) -> Element<'a, Message> {
-    Canvas::new(Glyph { kind, color })
+    Image::new(handle(kind, color, size))
         .width(Length::Fixed(size.width))
         .height(Length::Fixed(size.height))
+        .filter_method(FilterMethod::Linear)
         .into()
 }
 
@@ -176,8 +258,7 @@ mod tests {
     #[test]
     fn power_arc_meets_the_svg_end_points() {
         let radius: f32 = 5.6;
-        let center_y = 5.7 + (radius * radius - 3.8f32 * 3.8).sqrt();
-        let opening = (5.7 - center_y).atan2(3.8);
+        let (center_y, opening) = power_arc();
         let start = (
             10.0 + radius * opening.cos(),
             center_y + radius * opening.sin(),
@@ -190,5 +271,51 @@ mod tests {
         assert!((end.0 - 6.2).abs() < 1e-3 && (end.1 - 5.7).abs() < 1e-3);
         // The arc sweeps through the bottom (angle PI / 2) of the circle.
         assert!(opening < PI / 2.0 && PI - opening > PI / 2.0);
+    }
+
+    const KINDS: [Kind; 5] = [
+        Kind::Monitor,
+        Kind::Power,
+        Kind::Check,
+        Kind::ArrowRight,
+        Kind::ArrowLeft,
+    ];
+
+    #[test]
+    fn every_glyph_rasterizes_visible_strokes_in_its_color() {
+        for kind in KINDS {
+            let (width, height, pixels) =
+                rasterize(kind, Color::WHITE, kind.size()).expect("glyph rasterizes");
+            assert_eq!(pixels.len(), (width * height * 4) as usize);
+            let opaque = pixels
+                .chunks_exact(4)
+                .filter(|pixel| pixel[3] == u8::MAX)
+                .count();
+            assert!(opaque > 0, "{kind:?} drew no opaque pixels");
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .filter(|pixel| pixel[3] > 0)
+                    .all(|pixel| pixel[..3] == [u8::MAX; 3]),
+                "{kind:?} is not pure white after demultiplying"
+            );
+            assert_eq!(&pixels[..4], &[0, 0, 0, 0], "{kind:?} fills its corner");
+        }
+    }
+
+    #[test]
+    fn glyphs_are_supersampled_relative_to_their_logical_size() {
+        let (width, height, _) =
+            rasterize(Kind::Monitor, Color::WHITE, Kind::Monitor.size()).expect("rasterizes");
+        assert_eq!((width, height), (60, 48));
+    }
+
+    #[test]
+    fn handles_are_cached_per_kind_color_and_size() {
+        let first = handle(Kind::Power, Color::WHITE, Kind::Power.size());
+        let again = handle(Kind::Power, Color::WHITE, Kind::Power.size());
+        let other = handle(Kind::Check, Color::WHITE, Kind::Check.size());
+        assert_eq!(first.id(), again.id());
+        assert_ne!(first.id(), other.id());
     }
 }

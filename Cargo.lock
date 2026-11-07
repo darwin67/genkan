@@ -1114,6 +1114,7 @@ dependencies = [
  "serde_json",
  "smithay-client-toolkit 0.20.0",
  "thiserror 2.0.20",
+ "tiny-skia",
  "tokio",
  "unicode-general-category",
  "wayland-client",

@@ -47,6 +47,7 @@ gui = [
     "dep:iced_runtime",
     "dep:rclip-desktop-entry",
     "dep:smithay-client-toolkit",
+    "dep:tiny-skia",
     "dep:unicode-general-category",
     "dep:wayland-client",
     "dep:zeroize",
@@ -92,6 +93,7 @@ plist = { version = "1.10.1", default-features = false, optional = true }
 quick-xml = { version = "0.42.0", default-features = false, optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
 rustix = { version = "1.1.4", features = ["fs", "process", "time"], optional = true }
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std"], optional = true }
 smithay-client-toolkit = { version = "=0.20.0", default-features = false, optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "time"] }
