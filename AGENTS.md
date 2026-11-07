@@ -32,7 +32,11 @@ PAM authentication and launching the selected desktop session.
 - `src/sessions.rs`: validated Wayland desktop-entry discovery, command
   expansion, and environment setup.
 - `src/power.rs`: logind power operations over D-Bus.
-- `src/background.rs` and `src/theme.rs`: presentation and animation.
+- `src/background.rs`: generated background and animation.
+- `src/design/`: the bundled typeface, design tokens mirrored from
+  `docs/design-system/tokens.json`, and the shared styles, glyphs, and text
+  fitting used by login and lock.
+- `src/locker/`: the session lock and its CPU renderer.
 - `nix/tests/greetd.nix`: real greetd and PAM NixOS VM test.
 - `nix/tests/graphics-smoke.nix`: packaged-binary launch under nested Cage and
   headless Weston with software Vulkan rendering.

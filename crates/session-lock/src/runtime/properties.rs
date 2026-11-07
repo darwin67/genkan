@@ -50,4 +50,28 @@ proptest! {
             prop_assert!(u32::from(pixel[0]) < sw && u32::from(pixel[1]) < sh);
         }}
     }
+
+    #[test]
+    fn overlay_regions_stay_inside_the_surface(
+        width in 1u32..=2048, height in 1u32..=2048, scale in 1u32..=4, density in 1u32..=4,
+        top in (1u32..=256, 1u32..=256, 0u32..=400), bottom in (1u32..=256, 1u32..=256, 0u32..=400),
+        gap in 0u32..=64, margin in 0u32..=256, minimum in 0u32..=100,
+    ) {
+        let anchored = |(w, h, offset): (u32, u32, u32)| {
+            AnchoredOverlay::new(RgbaFrame::new(w, h, vec![0; (w * h * 4) as usize].into()).unwrap(), offset)
+        };
+        let frame = PresentationFrame::new(
+            None,
+            OverlayLayout::new(density).unwrap().with_top_fit(gap, margin, minimum),
+            anchored(top),
+            anchored(bottom),
+        );
+        let regions = overlay_regions(&frame, width, height, scale);
+        for region in regions.into_iter().flatten() {
+            prop_assert!(region.width > 0 && region.height > 0);
+            prop_assert!(region.x + region.width <= width);
+            prop_assert!(region.y + region.height <= height);
+            prop_assert_eq!(region.x, (width - region.width) / 2, "overlays are centered");
+        }
+    }
 }

@@ -123,12 +123,13 @@ LOCK_PREVIEW=failure make lock-dev
 ```
 
 The lock preview uses the production lock renderer in a normal window without
-requesting `ext-session-lock-v1` or contacting PAM. Login and lock share the
-same translucent authentication-field fill and outline. Login retains a
-stronger focused outline so keyboard focus remains unambiguous; lock has one
-active field and uses the base outline. Set `WIDTH`, `HEIGHT`, and `WALLPAPER`
-to inspect responsive layouts, for example `WIDTH=1080 HEIGHT=1920 make
-lock-dev`.
+requesting `ext-session-lock-v1` or contacting PAM. It renders the window as
+the authentication output: the clock and identity column anchored to its edges
+exactly as the session-lock runtime places them, at the login preview's fixed
+time. Login and lock share the same composition, tokens, and Inter typeface;
+login adds the session and power items and a stronger focused outline, and the
+lock masks every response. Set `WIDTH`, `HEIGHT`, and `WALLPAPER` to inspect
+responsive layouts, for example `WIDTH=1080 HEIGHT=1920 make lock-dev`.
 
 ## Animated wallpaper preview
 

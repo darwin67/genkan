@@ -9,7 +9,6 @@ mod locker;
 mod outputs;
 mod power;
 mod stable_file;
-mod theme;
 mod wallpaper;
 
 use genkan::sessions;

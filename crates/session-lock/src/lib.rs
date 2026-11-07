@@ -66,44 +66,118 @@ impl RgbaFrame {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresentationFrame {
-    width: u32,
-    height: u32,
-    background: Option<RgbaFrame>,
-    overlay: RgbaFrame,
-    overlay_x: u32,
-    overlay_y: u32,
+/// The largest overlay offset, margin or gap, in logical points.
+const MAX_LOGICAL_LENGTH: u32 = 16_384;
+
+/// How the runtime places a presentation's overlays on the authentication
+/// output.
+///
+/// Overlays are rendered at `density` pixels per logical point and scaled by
+/// the output's buffer scale divided by `density`. Lengths are logical points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayLayout {
+    density: u32,
+    gap: u32,
+    margin: u32,
+    min_top_scale_percent: u32,
 }
 
-impl PresentationFrame {
-    pub fn new(
-        width: u32,
-        height: u32,
-        background: Option<RgbaFrame>,
-        overlay: RgbaFrame,
-        overlay_x: u32,
-        overlay_y: u32,
-    ) -> Option<Self> {
-        if width == 0
-            || height == 0
-            || overlay_x.checked_add(overlay.width)? > width
-            || overlay_y.checked_add(overlay.height)? > height
-        {
-            return None;
-        }
-        Some(Self {
-            width,
-            height,
-            background,
-            overlay,
-            overlay_x,
-            overlay_y,
+impl OverlayLayout {
+    /// The largest supported overlay density.
+    pub const MAX_DENSITY: u32 = 16;
+
+    /// A layout for overlays rendered at `density` pixels per logical point.
+    pub fn new(density: u32) -> Option<Self> {
+        (1..=Self::MAX_DENSITY).contains(&density).then_some(Self {
+            density,
+            gap: 0,
+            margin: 0,
+            min_top_scale_percent: 100,
         })
     }
 
-    pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+    /// Lets the top overlay shrink, together with its offset, so that it keeps
+    /// `gap` above the bottom overlay and `margin` from the left and right
+    /// edges, down to `min_scale_percent` of its natural size.
+    ///
+    /// The bottom overlay never shrinks unless it is larger than the output.
+    pub fn with_top_fit(mut self, gap: u32, margin: u32, min_scale_percent: u32) -> Self {
+        self.gap = gap.min(MAX_LOGICAL_LENGTH);
+        self.margin = margin.min(MAX_LOGICAL_LENGTH);
+        self.min_top_scale_percent = min_scale_percent.min(100);
+        self
+    }
+}
+
+/// An overlay centered horizontally and `offset` logical points from the top
+/// or bottom edge of the authentication output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchoredOverlay {
+    overlay: RgbaFrame,
+    offset: u32,
+}
+
+impl AnchoredOverlay {
+    pub fn new(overlay: RgbaFrame, offset: u32) -> Option<Self> {
+        (offset <= MAX_LOGICAL_LENGTH).then_some(Self { overlay, offset })
+    }
+}
+
+/// A factor applied to the wallpaper behind the authentication overlays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dimming {
+    numerator: u16,
+    denominator: u16,
+}
+
+impl Dimming {
+    /// Multiplies each wallpaper channel by `numerator / denominator`.
+    pub fn new(numerator: u16, denominator: u16) -> Option<Self> {
+        (denominator > 0 && numerator <= denominator).then_some(Self {
+            numerator,
+            denominator,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationFrame {
+    background: Option<RgbaFrame>,
+    layout: OverlayLayout,
+    /// Anchored to the top edge; drawn first.
+    top: Option<AnchoredOverlay>,
+    /// Anchored to the bottom edge; drawn over the top overlay.
+    bottom: Option<AnchoredOverlay>,
+    dimming: Option<Dimming>,
+}
+
+impl PresentationFrame {
+    /// A wallpaper with up to two overlays for the authentication output.
+    /// Every other output shows the wallpaper only. The wallpaper is not
+    /// dimmed unless [`Self::with_dimming`] supplies a factor.
+    pub fn new(
+        background: Option<RgbaFrame>,
+        layout: OverlayLayout,
+        top: Option<AnchoredOverlay>,
+        bottom: Option<AnchoredOverlay>,
+    ) -> Self {
+        Self {
+            background,
+            layout,
+            top,
+            bottom,
+            dimming: None,
+        }
+    }
+
+    /// Dims the wallpaper of the authentication output by `dimming`.
+    pub fn with_dimming(mut self, dimming: Option<Dimming>) -> Self {
+        self.dimming = dimming;
+        self
+    }
+
+    fn overlays(&self) -> [Option<&AnchoredOverlay>; 2] {
+        [self.top.as_ref(), self.bottom.as_ref()]
     }
 }
 
@@ -149,7 +223,9 @@ pub trait Presentation {
     }
 }
 
-/// Render a presentation into RGBA pixels without acquiring a session lock.
+/// Render a presentation as the authentication output would show it, into
+/// `width`×`height` RGBA pixels at an integer buffer `scale`, without
+/// acquiring a session lock.
 ///
 /// This is intended for deterministic visual previews. Production lock
 /// surfaces are rendered directly into compositor-owned shared-memory buffers.
@@ -157,8 +233,9 @@ pub fn render_preview(
     frame: &PresentationFrame,
     width: u32,
     height: u32,
+    scale: u32,
 ) -> Result<RgbaFrame, PreviewError> {
-    runtime::render_preview(frame, width, height)
+    runtime::render_preview(frame, width, height, scale)
 }
 
 pub struct Config {
@@ -369,20 +446,34 @@ mod tests {
     }
 
     #[test]
-    fn presentation_frames_share_independent_backgrounds_and_bound_overlays() {
+    fn presentation_frames_share_backgrounds_and_validate_layout() {
         let background = RgbaFrame::new(2, 2, Bytes::from_static(&[0; 16])).unwrap();
         let background_pixels = background.pixels().as_ptr();
         let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
+        let layout = OverlayLayout::new(1).unwrap();
 
-        let frame =
-            PresentationFrame::new(2, 2, Some(background.clone()), overlay.clone(), 1, 1).unwrap();
+        let frame = PresentationFrame::new(
+            Some(background.clone()),
+            layout,
+            AnchoredOverlay::new(overlay.clone(), 3),
+            None,
+        );
         assert_eq!(
             frame.background.as_ref().unwrap().pixels().as_ptr(),
             background_pixels,
             "sharing a presentation must not copy the background pixels"
         );
-        assert!(PresentationFrame::new(3, 2, Some(background), overlay.clone(), 1, 1).is_some());
-        assert!(PresentationFrame::new(2, 2, None, overlay, 2, 1).is_none());
+        assert_eq!(frame.dimming, None, "wallpaper is undimmed by default");
+        assert!(OverlayLayout::new(0).is_none());
+        assert!(OverlayLayout::new(OverlayLayout::MAX_DENSITY + 1).is_none());
+        assert!(AnchoredOverlay::new(overlay, MAX_LOGICAL_LENGTH + 1).is_none());
+        assert!(Dimming::new(1, 0).is_none());
+        assert!(Dimming::new(6, 5).is_none());
+        let fit = layout.with_top_fit(u32::MAX, u32::MAX, 500);
+        assert_eq!(
+            (fit.gap, fit.margin, fit.min_top_scale_percent),
+            (MAX_LOGICAL_LENGTH, MAX_LOGICAL_LENGTH, 100)
+        );
     }
 
     #[test]

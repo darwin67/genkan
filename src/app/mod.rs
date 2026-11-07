@@ -2,7 +2,7 @@ mod account_tile;
 mod auth_flow;
 mod focus;
 mod modal;
-mod preview;
+pub(crate) mod preview;
 mod view;
 
 use std::time::{Duration, Instant};

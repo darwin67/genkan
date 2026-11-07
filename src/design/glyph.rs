@@ -1,4 +1,5 @@
-//! Stroked line icons drawn with the iced canvas.
+//! Stroked line icons, rasterized with tiny-skia for the iced login and the
+//! session lock's CPU renderer.
 //!
 //! Each glyph is described in its SVG view box from the component previews and
 //! scaled to the bounds it is given. These are original drawings, not Apple
@@ -160,6 +161,13 @@ fn rounded_rectangle(
 fn rasterize(kind: Kind, color: Color, size: Size) -> Option<(u32, u32, Vec<u8>)> {
     let width = (size.width * SUPERSAMPLE).ceil().max(1.0) as u32;
     let height = (size.height * SUPERSAMPLE).ceil().max(1.0) as u32;
+    Some((width, height, rgba(kind, color, width, height)?))
+}
+
+/// Rasterizes a glyph to straight-alpha RGBA exactly `width`×`height` pixels,
+/// fitted and centered in that box. The lock's CPU renderer blends these
+/// pixels into its overlay at its own pixel density.
+pub(crate) fn rgba(kind: Kind, color: Color, width: u32, height: u32) -> Option<Vec<u8>> {
     let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
     let view_box = kind.view_box();
     let scale = (width as f32 / view_box.width).min(height as f32 / view_box.height);
@@ -196,7 +204,7 @@ fn rasterize(kind: Kind, color: Color, size: Size) -> Option<(u32, u32, Vec<u8>)
             ]
         })
         .collect();
-    Some((width, height, pixels))
+    Some(pixels)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -301,6 +309,14 @@ mod tests {
             );
             assert_eq!(&pixels[..4], &[0, 0, 0, 0], "{kind:?} fills its corner");
         }
+    }
+
+    #[test]
+    fn pixel_sized_glyphs_fill_the_requested_box() {
+        let pixels = rgba(Kind::ArrowRight, Color::WHITE, 27, 27).expect("rasterizes");
+        assert_eq!(pixels.len(), 27 * 27 * 4);
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == u8::MAX));
+        assert!(rgba(Kind::ArrowRight, Color::WHITE, 0, 27).is_none());
     }
 
     #[test]

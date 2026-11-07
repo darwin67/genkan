@@ -27,7 +27,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
     observer=$(mktemp)
     background_capture=$(mktemp --suffix=.png)
     authentication_capture=$(mktemp --suffix=.png)
-    dimmed_background=$(mktemp --suffix=.png)
+    expected_background=$(mktemp --suffix=.png)
     wallpaper_reference=$(mktemp --suffix=.png)
     classifier_background=$(mktemp --suffix=.png)
     classifier_authentication=$(mktemp --suffix=.png)
@@ -50,12 +50,14 @@ pkgs.runCommand "genkan-session-lock-smoke"
       local inside_variation
       local background_brightness
       local authentication_brightness
-      magick "$background" -evaluate multiply 0.8 "$dimmed_background"
-      outside_difference=$(magick "$dimmed_background" "$authentication" \
+      # The lock never dims the wallpaper, so outside the overlays the
+      # authentication output must match the wallpaper-only output exactly.
+      cp "$background" "$expected_background"
+      outside_difference=$(magick "$expected_background" "$authentication" \
         -compose difference -composite -crop 800x100+0+0 -colorspace gray -format '%[fx:mean]' info:)
-      inside_difference=$(magick "$dimmed_background" "$authentication" \
+      inside_difference=$(magick "$expected_background" "$authentication" \
         -compose difference -composite -crop 313x250+244+175 -colorspace gray -format '%[fx:mean]' info:)
-      inside_variation=$(magick "$dimmed_background" "$authentication" \
+      inside_variation=$(magick "$expected_background" "$authentication" \
         -compose difference -composite -crop 313x250+244+175 -colorspace gray \
         -format '%[fx:standard_deviation]' info:)
       background_brightness=$(magick "$background" -colorspace gray -format '%[fx:mean]' info:)
@@ -89,7 +91,7 @@ pkgs.runCommand "genkan-session-lock-smoke"
         wait "$sway_pid" 2>/dev/null || true
       fi
       rm -rf "$runtime" "$config" "$log" "$lock_log" "$production_log" "$ready" "$observer" \
-        "$background_capture" "$authentication_capture" "$dimmed_background" "$wallpaper_reference" \
+        "$background_capture" "$authentication_capture" "$expected_background" "$wallpaper_reference" \
         "$classifier_background" "$classifier_authentication"
       [[ -z "$daemon_one" ]] || rm -f "$daemon_one"
       [[ -z "$daemon_two" ]] || rm -f "$daemon_two"
