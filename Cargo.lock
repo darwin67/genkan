@@ -1133,6 +1133,9 @@ dependencies = [
 [[package]]
 name = "genkan-output-selection"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "genkan-session-lock"
