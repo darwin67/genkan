@@ -18,6 +18,7 @@ use super::{App, Message, PowerState};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Fixture {
     Selected,
+    ChangeUser,
     SessionMenu,
     SecretPrompt,
     Users,
@@ -34,6 +35,7 @@ pub(crate) enum Fixture {
     DiscoveryFailure,
     SessionFailure,
     PowerFailure,
+    PowerMenu,
     PowerConfirmation,
 }
 
@@ -119,6 +121,10 @@ pub(super) fn build(
         sessions,
         selected_session,
         session_menu_open: fixture == Fixture::SessionMenu,
+        power_menu_open: false,
+        menu_highlight: 0,
+        shake: None,
+        reduced_motion: wallpaper_settings.reduced_motion,
         wallpaper: wallpaper::State::start_deferred(&wallpaper_settings),
         pending_heic: wallpaper::selects_dynamic_heic(&wallpaper_settings)
             .then(|| wallpaper_settings.clone()),
@@ -130,13 +136,13 @@ pub(super) fn build(
         preview: true,
         output_monitor,
         authentication_region,
-        window_size: None,
-        authentication_layout: None,
     };
     let base_focus = app.focus_order().first().copied();
     app.power_state = power_state;
     let task = if fixture == Fixture::SessionMenu {
-        app.set_focus(FocusTarget::Session)
+        app.update(Message::SessionMenuOpened)
+    } else if fixture == Fixture::PowerMenu {
+        app.update(Message::PowerMenuOpened)
     } else if confirming_power {
         app.focus_before_modal = base_focus;
         app.set_focus(FocusTarget::DialogCancel)
@@ -188,6 +194,13 @@ impl State {
 
         match fixture {
             Fixture::Selected | Fixture::SessionMenu | Fixture::SecretPrompt => {}
+            Fixture::ChangeUser => {
+                // Another eligible account makes Change User available.
+                state.accounts.push(Account::override_account(
+                    "alice".into(),
+                    Some("Alice".into()),
+                ));
+            }
             Fixture::Users => state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")])),
             Fixture::DuplicateNames => state.select_accounts(accounts([
                 ("alex", "Alex Morgan"),
@@ -264,6 +277,7 @@ impl State {
                 state.phase = Phase::Failed;
                 state.session_message = Some("No valid Wayland sessions are installed".into());
             }
+            Fixture::PowerMenu => {}
             Fixture::PowerFailure => {
                 state.power_message = Some("Power action was not authorized".into());
                 state.power_message_is_error = true;
@@ -450,7 +464,6 @@ mod tests {
         assert_ne!(long.accounts[0].username, long.accounts[1].username);
         assert!(long.accounts[0].display_name.chars().count() >= 70);
         assert!(long.accounts[0].username.chars().count() >= 240);
-        assert!(long.requires_flow_layout());
 
         let (empty, _) = build_fixture(Fixture::DiscoveryFailure);
         assert!(empty.accounts.is_empty());
@@ -466,16 +479,9 @@ mod tests {
         assert!(long.conversation.prompt().chars().count() >= 500);
         assert!(long.conversation.notice().unwrap().chars().count() >= 500);
         assert!(long.username.chars().count() >= 240);
-        assert!(long.requires_flow_layout());
 
-        let (mut secret, _) = build_fixture(Fixture::SecretPrompt);
+        let (secret, _) = build_fixture(Fixture::SecretPrompt);
         assert!(secret.conversation.is_secret());
-        let _ = secret.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
-        assert_eq!(
-            secret.authentication_layout,
-            Some(crate::app::view::ScreenLayout::Wide),
-            "preview prompts must exercise the production layout latch"
-        );
 
         let (consecutive, _) = build_fixture(Fixture::ConsecutiveMessages);
         assert_eq!(
@@ -550,10 +556,13 @@ mod tests {
     }
 
     #[test]
-    fn session_menu_fixture_uses_an_inline_multi_session_list() {
+    fn session_menu_fixture_opens_a_floating_multi_session_menu() {
         let (app, _) = build_fixture(Fixture::SessionMenu);
 
         assert!(app.session_menu_open);
+        assert_eq!(app.open_menu(), Some(super::super::Menu::Session));
+        assert_eq!(app.focus_target, Some(FocusTarget::Session));
+        assert_eq!(app.menu_highlight, 0);
         assert_eq!(app.sessions.len(), 2);
         assert!(app.sessions.iter().all(|session| session.name.len() > 256));
         assert_eq!(
@@ -562,5 +571,26 @@ mod tests {
         );
         assert_ne!(app.sessions[0].session_id, app.sessions[1].session_id);
         assert!(app.can_select_session());
+    }
+
+    #[test]
+    fn power_menu_fixture_opens_the_power_menu_without_services() {
+        let (app, _) = build_fixture(Fixture::PowerMenu);
+
+        assert!(app.power_menu_open);
+        assert_eq!(app.open_menu(), Some(super::super::Menu::Power));
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
+        assert_eq!(app.power_state, PowerState::Idle);
+        assert!(app.client.is_none());
+    }
+
+    #[test]
+    fn change_user_fixture_offers_the_back_button_in_focus_order() {
+        let (app, _) = build_fixture(Fixture::ChangeUser);
+
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.accounts.len(), 2);
+        assert!(app.can_change_user());
+        assert!(app.focus_order().contains(&FocusTarget::ChangeUser));
     }
 }

@@ -105,10 +105,7 @@ impl App {
             return Task::none();
         };
         match self.apply_auth_transition(transition) {
-            AuthEffect::Prompt { .. } => {
-                self.authentication_layout = self.prompt_screen_layout();
-                self.focus_input()
-            }
+            AuthEffect::Prompt { .. } => self.focus_input(),
             AuthEffect::Acknowledge { error, message } => {
                 self.set_auth_notice(message, error);
                 let Some(client) = self.client.clone() else {
@@ -124,6 +121,7 @@ impl App {
                 exchange(client, request.into_greetd(), self.conversation.attempt())
             }
             AuthEffect::Fail(message) if retry => {
+                self.start_shake();
                 self.retry_failure = Some(message.clone());
                 let task = self.retry_authentication();
                 if self.phase == Phase::CreatingSession {
@@ -143,9 +141,6 @@ impl App {
             }
         } else if matches!(transition.effect, AuthEffect::StartSession(_)) {
             self.retry_failure = None;
-        }
-        if self.phase != Phase::WaitingForInput {
-            self.authentication_layout = None;
         }
         transition.effect
     }

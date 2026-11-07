@@ -12,7 +12,7 @@ use chrono::Local;
 use focus::{Navigation as FocusNavigation, Target as FocusTarget};
 use greetd_ipc::Request;
 use iced::widget::{operation, scrollable, Id};
-use iced::{event, keyboard, time, window, Size, Subscription, Task};
+use iced::{event, keyboard, time, window, Subscription, Task};
 
 use crate::accounts::{self, Account};
 use crate::conversation::{self, Attempt, Conversation, Status as ConversationStatus};
@@ -36,6 +36,27 @@ enum PowerState {
     Idle,
     Confirming(PowerAction),
     Executing(PowerAction),
+}
+
+/// A status-bar menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Menu {
+    Session,
+    Power,
+}
+
+/// The power menu, in order. Sleep runs at once; the others open an alert.
+const POWER_MENU: [PowerAction; 3] = [
+    PowerAction::Suspend,
+    PowerAction::Reboot,
+    PowerAction::PowerOff,
+];
+
+/// A running rejection shake of the password pill.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Shake {
+    started: Instant,
+    elapsed: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +116,11 @@ pub(crate) struct App {
     sessions: Vec<Session>,
     selected_session: Option<Session>,
     session_menu_open: bool,
+    power_menu_open: bool,
+    /// The keyboard or pointer highlight in whichever menu is open.
+    menu_highlight: usize,
+    shake: Option<Shake>,
+    reduced_motion: bool,
     wallpaper: wallpaper::State,
     /// A dynamic HEIC source that waits for the iced renderer backend.
     ///
@@ -110,8 +136,6 @@ pub(crate) struct App {
     preview: bool,
     output_monitor: Option<crate::outputs::Monitor>,
     authentication_region: Option<crate::outputs::Region>,
-    window_size: Option<Size>,
-    authentication_layout: Option<view::ScreenLayout>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,9 +172,12 @@ pub(crate) enum Message {
     NavigatePage(PageNavigation),
     SelectSession(Session),
     SessionMenuOpened,
-    SessionMenuClosed,
+    PowerMenuOpened,
+    MenuClosed,
+    MenuHighlighted(usize),
+    ShakeFrame(Instant),
     OutputLayoutChanged,
-    WindowResized(Size),
+    WindowResized,
     AskPower(PowerAction),
     CancelPower,
     ConfirmPower(PowerAction),
@@ -214,6 +241,10 @@ impl App {
             sessions,
             selected_session,
             session_menu_open: false,
+            power_menu_open: false,
+            menu_highlight: 0,
+            shake: None,
+            reduced_motion: config.wallpaper.reduced_motion,
             wallpaper: wallpaper::State::start_deferred(&config.wallpaper),
             pending_heic: wallpaper::selects_dynamic_heic(&config.wallpaper)
                 .then(|| config.wallpaper.clone()),
@@ -228,8 +259,6 @@ impl App {
                 .as_ref()
                 .and_then(|monitor| monitor.region()),
             output_monitor: config.output_monitor,
-            window_size: None,
-            authentication_layout: None,
         };
         let task = match startup {
             StartupMode::ConfiguredIdentity => {
@@ -262,12 +291,18 @@ impl App {
                 .as_ref()
                 .map_or_else(Subscription::none, crate::outputs::Monitor::subscription)
                 .map(|()| Message::OutputLayoutChanged),
-            window::resize_events().map(|(_, size)| Message::WindowResized(size)),
+            window::resize_events().map(|_| Message::WindowResized),
             window::close_requests().map(Message::CloseRequested),
             event::listen_with(focus::keyboard_navigation),
             event::listen_with(focus::pointer_focus_sync),
             event::listen_with(page_navigation),
             event::listen_with(cancel_shortcut),
+            // Frame-paced updates only while the pill is shaking.
+            if self.shake.is_some() {
+                window::frames().map(Message::ShakeFrame)
+            } else {
+                Subscription::none()
+            },
         ])
     }
 
@@ -305,6 +340,7 @@ impl App {
                     | Message::WallpaperFrameReady
                     | Message::WallpaperAllocated(_)
                     | Message::RendererInformation(_)
+                    | Message::ShakeFrame(_)
                     | Message::OutputLayoutChanged
                     | Message::AuthResult { .. }
                     | Message::AccountsResult(_)
@@ -426,7 +462,21 @@ impl App {
             }
             Message::SelectAccount(_) => Task::none(),
             Message::NavigateFocus(navigation) => {
-                self.close_session_menu();
+                if let Some(menu) = self.open_menu() {
+                    match navigation {
+                        FocusNavigation::DirectionNext => {
+                            self.move_menu_highlight(menu, 1);
+                            return Task::none();
+                        }
+                        FocusNavigation::DirectionPrevious => {
+                            self.move_menu_highlight(menu, -1);
+                            return Task::none();
+                        }
+                        FocusNavigation::Activate => return self.choose_menu_item(menu),
+                        FocusNavigation::Next | FocusNavigation::Previous => {}
+                    }
+                }
+                self.close_menus();
                 self.navigate_focus(navigation)
             }
             Message::NavigateModal(navigation)
@@ -439,18 +489,46 @@ impl App {
             Message::WidgetFocused(focused) => self.apply_widget_focus(focused),
             Message::NavigatePage(navigation) => self.navigate_page(navigation),
             Message::SelectSession(session) if self.can_select_session() => {
-                self.close_session_menu();
+                self.close_menus();
                 self.selected_session = Some(session);
                 self.set_focus(FocusTarget::Session)
             }
             Message::SelectSession(_) => Task::none(),
             Message::SessionMenuOpened if self.can_select_session() => {
+                self.power_menu_open = false;
                 self.session_menu_open = true;
+                self.menu_highlight = self
+                    .selected_session
+                    .as_ref()
+                    .and_then(|selected| {
+                        self.sessions.iter().position(|session| session == selected)
+                    })
+                    .unwrap_or(0);
                 self.set_focus(FocusTarget::Session)
             }
             Message::SessionMenuOpened => Task::none(),
-            Message::SessionMenuClosed => {
+            Message::PowerMenuOpened if self.can_request_power() => {
                 self.session_menu_open = false;
+                self.power_menu_open = true;
+                self.menu_highlight = 0;
+                self.set_focus(FocusTarget::Power)
+            }
+            Message::PowerMenuOpened => Task::none(),
+            Message::MenuClosed => {
+                self.close_menus();
+                Task::none()
+            }
+            Message::MenuHighlighted(index) => {
+                if self
+                    .open_menu()
+                    .is_some_and(|menu| index < self.menu_len(menu))
+                {
+                    self.menu_highlight = index;
+                }
+                Task::none()
+            }
+            Message::ShakeFrame(now) => {
+                self.advance_shake(now);
                 Task::none()
             }
             Message::OutputLayoutChanged => {
@@ -458,16 +536,10 @@ impl App {
                     .output_monitor
                     .as_ref()
                     .and_then(crate::outputs::Monitor::region);
-                self.close_session_menu();
+                self.close_menus();
                 self.reveal_focused_input()
             }
-            Message::WindowResized(size) => {
-                self.window_size = Some(size);
-                if self.phase == Phase::WaitingForInput && self.authentication_layout.is_none() {
-                    self.authentication_layout = self.prompt_screen_layout();
-                }
-                self.reveal_focused_input()
-            }
+            Message::WindowResized => self.reveal_focused_input(),
             Message::RetrySession
                 if self.phase == Phase::Failed && self.selected_session.is_none() =>
             {
@@ -528,9 +600,16 @@ impl App {
             Message::Submit => Task::none(),
             Message::AuthResult { attempt, result } => self.handle_auth_result(attempt, result),
             Message::AskPower(action) if self.can_request_power() => {
-                self.focus_target = Some(FocusTarget::Power(action));
-                self.power_state = PowerState::Confirming(action);
+                self.close_menus();
+                self.focus_target = Some(FocusTarget::Power);
                 self.power_message = None;
+                if action == PowerAction::Suspend {
+                    // Sleep loses no work, so it runs without confirmation and
+                    // returns focus to the power item afterwards.
+                    self.focus_before_modal = Some(FocusTarget::Power);
+                    return self.execute_power(action);
+                }
+                self.power_state = PowerState::Confirming(action);
                 self.enter_power_dialog()
             }
             Message::AskPower(_) => Task::none(),
@@ -540,20 +619,7 @@ impl App {
             }
             Message::CancelPower => Task::none(),
             Message::ConfirmPower(action) if self.power_state == PowerState::Confirming(action) => {
-                if self.preview {
-                    self.power_state = PowerState::Idle;
-                    self.power_message = Some(format!(
-                        "Preview: {} was not requested",
-                        action.label().to_lowercase()
-                    ));
-                    self.power_message_is_error = false;
-                    return self.leave_power_dialog();
-                }
-                self.power_state = PowerState::Executing(action);
-                self.focus_target = None;
-                Task::perform(power::execute(action), |result| {
-                    Message::PowerResult(result.map_err(|error| error.to_string()))
-                })
+                self.execute_power(action)
             }
             Message::ConfirmPower(_) => Task::none(),
             Message::PowerResult(Ok(()))
@@ -573,9 +639,18 @@ impl App {
             Message::Escape if matches!(self.power_state, PowerState::Confirming(_)) => {
                 self.update(Message::CancelPower)
             }
-            Message::Escape if self.session_menu_open => {
-                self.close_session_menu();
-                Task::none()
+            Message::Escape if self.session_menu_open || self.power_menu_open => {
+                let item = if self.session_menu_open {
+                    FocusTarget::Session
+                } else {
+                    FocusTarget::Power
+                };
+                self.close_menus();
+                if self.focus_order().contains(&item) {
+                    self.set_focus(item)
+                } else {
+                    Task::none()
+                }
             }
             Message::Escape if self.phase == Phase::WaitingForInput => self.blur_input(),
             Message::Escape => Task::none(),
@@ -669,7 +744,7 @@ impl App {
         let replacing_account = !self.username.is_empty();
         self.username = account.username;
         self.display_name = account.display_name;
-        self.close_session_menu();
+        self.close_menus();
         self.focus_target = None;
         self.phase = Phase::CreatingSession;
         let attempt = self.conversation.begin_attempt();
@@ -684,7 +759,6 @@ impl App {
                 },
             );
             self.phase = Phase::WaitingForInput;
-            self.authentication_layout = self.prompt_screen_layout();
             self.preview_message =
                 Some("Preview mode: credentials and power actions are simulated".into());
             self.focus_input()
@@ -733,8 +807,89 @@ impl App {
         self.set_focus(FocusTarget::Account(0))
     }
 
-    fn close_session_menu(&mut self) {
+    fn close_menus(&mut self) {
         self.session_menu_open = false;
+        self.power_menu_open = false;
+    }
+
+    /// The menu that is open and still allowed to act.
+    fn open_menu(&self) -> Option<Menu> {
+        if self.session_menu_open && self.can_select_session() {
+            Some(Menu::Session)
+        } else if self.power_menu_open && self.can_request_power() {
+            Some(Menu::Power)
+        } else {
+            None
+        }
+    }
+
+    fn menu_len(&self, menu: Menu) -> usize {
+        match menu {
+            Menu::Session => self.sessions.len(),
+            Menu::Power => POWER_MENU.len(),
+        }
+    }
+
+    fn move_menu_highlight(&mut self, menu: Menu, delta: isize) {
+        let len = self.menu_len(menu);
+        if len == 0 {
+            return;
+        }
+        self.menu_highlight =
+            (self.menu_highlight.min(len - 1) as isize + delta).rem_euclid(len as isize) as usize;
+    }
+
+    fn choose_menu_item(&mut self, menu: Menu) -> Task<Message> {
+        match menu {
+            Menu::Session => match self.sessions.get(self.menu_highlight).cloned() {
+                Some(session) => self.update(Message::SelectSession(session)),
+                None => Task::none(),
+            },
+            Menu::Power => match POWER_MENU.get(self.menu_highlight).copied() {
+                Some(action) => self.update(Message::AskPower(action)),
+                None => Task::none(),
+            },
+        }
+    }
+
+    fn execute_power(&mut self, action: PowerAction) -> Task<Message> {
+        if self.preview {
+            self.power_state = PowerState::Idle;
+            self.power_message = Some(format!(
+                "Preview: {} was not requested",
+                action.label().to_lowercase()
+            ));
+            self.power_message_is_error = false;
+            return self.leave_power_dialog();
+        }
+        self.power_state = PowerState::Executing(action);
+        self.focus_target = None;
+        Task::perform(power::execute(action), |result| {
+            Message::PowerResult(result.map_err(|error| error.to_string()))
+        })
+    }
+
+    /// Shakes the pill after a rejected response, unless motion is reduced.
+    pub(super) fn start_shake(&mut self) {
+        self.shake = (!self.reduced_motion).then(|| Shake {
+            started: Instant::now(),
+            elapsed: Duration::ZERO,
+        });
+    }
+
+    fn advance_shake(&mut self, now: Instant) {
+        if let Some(shake) = &mut self.shake {
+            shake.elapsed = now.saturating_duration_since(shake.started);
+            if shake.elapsed >= crate::design::tokens::motion::SHAKE_DURATION {
+                self.shake = None;
+            }
+        }
+    }
+
+    /// The pill's current horizontal displacement.
+    fn shake_offset(&self) -> f32 {
+        self.shake
+            .map_or(0.0, |shake| view::shake_offset(shake.elapsed))
     }
 
     fn navigate_page(&self, navigation: PageNavigation) -> Task<Message> {
@@ -907,6 +1062,10 @@ mod tests {
             sessions: vec![session()],
             selected_session: Some(session()),
             session_menu_open: false,
+            power_menu_open: false,
+            menu_highlight: 0,
+            shake: None,
+            reduced_motion: false,
             wallpaper: wallpaper::State::disabled(),
             pending_heic: None,
             started_at: Instant::now(),
@@ -917,8 +1076,6 @@ mod tests {
             preview: false,
             output_monitor: None,
             authentication_region: None,
-            window_size: None,
-            authentication_layout: None,
         }
     }
 
@@ -1046,9 +1203,13 @@ mod tests {
             app.preview = true;
 
             let _ = app.update(Message::AskPower(action));
-            assert_eq!(app.power_state, PowerState::Confirming(action));
-
-            let _ = app.update(Message::ConfirmPower(action));
+            if action == PowerAction::Suspend {
+                // Sleep loses no work and runs without confirmation.
+                assert_eq!(app.power_state, PowerState::Idle);
+            } else {
+                assert_eq!(app.power_state, PowerState::Confirming(action));
+                let _ = app.update(Message::ConfirmPower(action));
+            }
             assert_eq!(app.power_state, PowerState::Idle);
             assert_eq!(
                 app.power_message.as_deref(),
@@ -1320,9 +1481,7 @@ mod tests {
                 FocusTarget::Submit,
                 FocusTarget::ChangeUser,
                 FocusTarget::Session,
-                FocusTarget::Power(PowerAction::Suspend),
-                FocusTarget::Power(PowerAction::Reboot),
-                FocusTarget::Power(PowerAction::PowerOff),
+                FocusTarget::Power,
             ]
         );
 
@@ -1358,21 +1517,16 @@ mod tests {
                 FocusTarget::Account(0),
                 FocusTarget::Account(1),
                 FocusTarget::Session,
-                FocusTarget::Power(PowerAction::Suspend),
-                FocusTarget::Power(PowerAction::Reboot),
-                FocusTarget::Power(PowerAction::PowerOff),
+                FocusTarget::Power,
             ]
         );
 
         let _ = app.update(Message::NavigateFocus(FocusNavigation::Previous));
-        assert_eq!(
-            app.focus_target,
-            Some(FocusTarget::Power(PowerAction::PowerOff))
-        );
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
     }
 
     #[test]
-    fn session_focus_supports_keyboard_selection() {
+    fn session_focus_supports_keyboard_selection_through_the_menu() {
         let mut app = app();
         let mut river = session();
         river.name = "River".into();
@@ -1380,10 +1534,178 @@ mod tests {
         app.sessions.push(river.clone());
         app.focus_target = Some(FocusTarget::Session);
 
+        // Enter or Space opens the menu with the selected session highlighted.
         let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        assert!(app.session_menu_open);
+        assert_eq!(app.menu_highlight, 0);
+        assert_eq!(app.selected_session, Some(session()));
 
+        // Arrows move the highlight and wrap; they do not change the selection.
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::DirectionNext));
+        assert_eq!(app.menu_highlight, 1);
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::DirectionNext));
+        assert_eq!(app.menu_highlight, 0);
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::DirectionPrevious));
+        assert_eq!(app.menu_highlight, 1);
+        assert_eq!(app.selected_session, Some(session()));
+
+        // Enter chooses the highlighted session and returns focus to the item.
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
         assert_eq!(app.selected_session, Some(river));
+        assert!(!app.session_menu_open);
         assert_eq!(app.focus_target, Some(FocusTarget::Session));
+    }
+
+    #[test]
+    fn pointer_highlight_follows_the_menu_and_ignores_stale_indices() {
+        let mut app = app();
+        let _ = app.update(Message::MenuHighlighted(0));
+        assert_eq!(app.menu_highlight, 0);
+
+        let _ = app.update(Message::PowerMenuOpened);
+        let _ = app.update(Message::MenuHighlighted(2));
+        assert_eq!(app.menu_highlight, 2);
+        let _ = app.update(Message::MenuHighlighted(3));
+        assert_eq!(app.menu_highlight, 2);
+
+        let _ = app.update(Message::MenuClosed);
+        assert!(!app.power_menu_open);
+    }
+
+    #[test]
+    fn power_menu_sleeps_at_once_and_confirms_restart_and_shut_down() {
+        let mut app = app();
+        app.preview = true;
+        app.focus_target = Some(FocusTarget::Power);
+
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        assert!(app.power_menu_open);
+        assert!(!app.session_menu_open);
+        assert_eq!(app.menu_highlight, 0);
+
+        // Sleep: no alert, simulated in preview, focus stays on the item.
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        assert!(!app.power_menu_open);
+        assert_eq!(app.power_state, PowerState::Idle);
+        assert_eq!(
+            app.power_message.as_deref(),
+            Some("Preview: sleep was not requested")
+        );
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
+
+        // Restart opens the alert with Cancel focused.
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::DirectionNext));
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        assert_eq!(app.power_state, PowerState::Confirming(PowerAction::Reboot));
+        assert_eq!(app.focus_target, Some(FocusTarget::DialogCancel));
+        assert_eq!(app.power_message, None);
+
+        // Escape cancels and restores focus to the power item.
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.power_state, PowerState::Idle);
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
+
+        // Shut Down is the last item; arrows wrap backwards to it.
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::DirectionPrevious));
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        assert_eq!(
+            app.power_state,
+            PowerState::Confirming(PowerAction::PowerOff)
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_power_menu_and_restores_focus() {
+        let mut app = app();
+        let _ = app.update(Message::PowerMenuOpened);
+        assert!(app.power_menu_open);
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
+
+        let _ = app.update(Message::Escape);
+        assert!(!app.power_menu_open);
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
+
+        // Opening one menu closes the other.
+        let _ = app.update(Message::PowerMenuOpened);
+        let _ = app.update(Message::SessionMenuOpened);
+        assert!(app.session_menu_open);
+        assert!(!app.power_menu_open);
+    }
+
+    #[test]
+    fn power_menu_follows_power_request_rules() {
+        for phase in [
+            Phase::DiscoveringUsers,
+            Phase::CreatingSession,
+            Phase::Authenticating,
+            Phase::StartingSession,
+        ] {
+            let mut app = app();
+            app.phase = phase;
+            let _ = app.update(Message::PowerMenuOpened);
+            assert!(!app.power_menu_open, "phase {phase:?}");
+        }
+
+        let mut app = app();
+        let _ = app.update(Message::PowerMenuOpened);
+        app.phase = Phase::Authenticating;
+        assert_eq!(app.open_menu(), None, "a stale menu cannot act");
+        let _ = app.update(Message::NavigateFocus(FocusNavigation::Activate));
+        assert_eq!(app.power_state, PowerState::Idle);
+    }
+
+    #[test]
+    fn submit_is_focusable_only_while_its_arrow_is_shown() {
+        let mut app = app();
+        assert!(app.focus_order().contains(&FocusTarget::Submit));
+
+        app.conversation.clear_response();
+        assert!(!app.focus_order().contains(&FocusTarget::Submit));
+    }
+
+    #[test]
+    fn rejected_responses_shake_the_pill_unless_motion_is_reduced() {
+        for reduced_motion in [false, true] {
+            let mut app = app();
+            app.reduced_motion = reduced_motion;
+            app.phase = Phase::Authenticating;
+
+            let _ = app.handle_auth_response(auth::Response::Error {
+                authentication: true,
+                description: "rejected".into(),
+            });
+
+            assert!(app.conversation.input().is_empty());
+            assert_eq!(app.shake.is_some(), !reduced_motion);
+            assert_eq!(app.shake_offset(), 0.0, "the shake starts at rest");
+        }
+
+        let mut app = app();
+        app.start_shake();
+        let started = app.shake.unwrap().started;
+        let _ = app.update(Message::ShakeFrame(
+            started + crate::design::tokens::motion::SHAKE_DURATION / 8,
+        ));
+        assert!(app.shake.is_some());
+        assert_ne!(app.shake_offset(), 0.0);
+        let _ = app.update(Message::ShakeFrame(
+            started + crate::design::tokens::motion::SHAKE_DURATION,
+        ));
+        assert!(app.shake.is_none());
+    }
+
+    #[test]
+    fn failures_that_are_not_rejections_do_not_shake() {
+        let mut app = app();
+        app.phase = Phase::CreatingSession;
+        let _ = app.handle_auth_response(auth::Response::Error {
+            authentication: true,
+            description: "creation failed".into(),
+        });
+        assert_eq!(app.phase, Phase::Failed);
+        assert!(app.shake.is_none());
     }
 
     #[test]
@@ -1396,10 +1718,7 @@ mod tests {
 
         let _ = app.update(Message::NavigateFocus(FocusNavigation::Next));
         assert!(!app.session_menu_open);
-        assert_eq!(
-            app.focus_target,
-            Some(FocusTarget::Power(PowerAction::Suspend))
-        );
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
 
         let _ = app.update(Message::SessionMenuOpened);
         let _ = app.update(Message::Escape);
@@ -1944,10 +2263,7 @@ mod tests {
 
         let _ = app.update(Message::NavigateModal(FocusNavigation::Activate));
         assert_eq!(app.power_state, PowerState::Idle);
-        assert_eq!(
-            app.focus_target,
-            Some(FocusTarget::Power(PowerAction::PowerOff))
-        );
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
 
         let _ = app.update(Message::AskPower(PowerAction::PowerOff));
         let _ = app.update(Message::NavigateModal(FocusNavigation::Next));
@@ -1959,10 +2275,7 @@ mod tests {
             app.power_message.as_deref(),
             Some("Preview: shut down was not requested")
         );
-        assert_eq!(
-            app.focus_target,
-            Some(FocusTarget::Power(PowerAction::PowerOff))
-        );
+        assert_eq!(app.focus_target, Some(FocusTarget::Power));
     }
 
     #[test]

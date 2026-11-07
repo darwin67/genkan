@@ -35,6 +35,8 @@ PREVIEW=users make dev
 PREVIEW=visible-prompt make dev
 PREVIEW=authentication-failure make dev
 PREVIEW=power-confirmation make dev
+PREVIEW=power-menu make dev
+PREVIEW=change-user make dev
 ```
 
 Run `cargo run --bin genkan -- login --help` to list every fixture and login

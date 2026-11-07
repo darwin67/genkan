@@ -277,8 +277,9 @@ this is also the greetd version in the repository's pinned nixpkgs revision
 
 ## Power policy
 
-Sleep, restart, and shutdown call logind over the system D-Bus and always
-require confirmation. Calls do not request interactive polkit authentication,
+Sleep, restart, and shutdown are in the power menu at the upper right and call
+logind over the system D-Bus. Restart and shutdown ask for confirmation first;
+sleep acts immediately because it cannot lose work. Calls do not request interactive polkit authentication,
 so the greeter user must already be authorized by system policy. A denial or
 unavailable system bus leaves the authentication attempt intact and displays
 the logind error.

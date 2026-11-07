@@ -922,7 +922,8 @@ mod tests {
                     .to_owned()
             })
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 18);
+        assert_eq!(names.len(), 20);
+        assert!(names.contains(&"power-menu".to_owned()));
         assert!(names.contains(&"selected".to_owned()));
         assert!(names.contains(&"session-menu".to_owned()));
         assert!(names.contains(&"power-confirmation".to_owned()));

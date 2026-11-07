@@ -2,8 +2,8 @@
 //!
 //! The JSON file is the reference; a unit test fails when the two disagree.
 //! Values are logical points measured from the macOS Tahoe login window and
-//! lock screen. The components that consume them arrive in RFD 5 phase 2, so
-//! constants unused outside tests are allowed until then.
+//! lock screen. The lock renderer adopts them in RFD 5 phase 3, so constants
+//! the login greeter does not use yet are allowed until then.
 #![cfg_attr(not(test), allow(dead_code))]
 
 /// An sRGB color with straight alpha.
@@ -195,6 +195,91 @@ pub(crate) mod size {
         ("alert-width", ALERT_WIDTH),
         ("message-width", MESSAGE_WIDTH),
     ];
+}
+
+/// Measurements internal to one component, taken from
+/// `docs/design-system/components/bundle.css` and the component previews.
+///
+/// They are not design tokens: each belongs to a single component's anatomy
+/// and is not shared across components, so `tokens.json` does not carry them.
+/// They live here so that view code never introduces literal sizes or colors.
+pub(crate) mod component {
+    use super::{rgba, Rgba};
+
+    /// Width of a hairline border (`.5px` in the CSS).
+    pub(crate) const HAIRLINE: f32 = 0.5;
+    /// Width of the keyboard focus ring drawn with `color::FOCUS_RING`.
+    pub(crate) const FOCUS_RING_WIDTH: f32 = 2.5;
+
+    /// Horizontal inset of a status-bar item with a label.
+    pub(crate) const ITEM_PADDING_X: f32 = 6.0;
+    /// Horizontal inset of a glyph-only status-bar item.
+    pub(crate) const ICON_ITEM_PADDING_X: f32 = 5.0;
+    /// Gap between a status-bar item's glyph and its label.
+    pub(crate) const ITEM_CONTENT_GAP: f32 = 5.0;
+    /// Gap between the status bar and a menu dropped from it.
+    pub(crate) const MENU_OFFSET: f32 = 4.0;
+
+    /// Leading inset of a menu item, which holds the check mark.
+    pub(crate) const MENU_ITEM_LEADING: f32 = 24.0;
+    /// Trailing inset of a menu item.
+    pub(crate) const MENU_ITEM_TRAILING: f32 = 10.0;
+    /// Inset of the check mark inside the leading area.
+    pub(crate) const MENU_CHECK_INSET: f32 = 8.0;
+    /// Vertical inset of a menu heading.
+    pub(crate) const MENU_HEADING_PADDING_Y: f32 = 3.0;
+
+    /// Leading inset of text in the password pill.
+    pub(crate) const FIELD_PADDING_LEADING: f32 = 10.0;
+    /// Trailing inset of text in the password pill, clearing the submit arrow.
+    pub(crate) const FIELD_PADDING_TRAILING: f32 = 24.0;
+    /// Inset of the submit circle from the pill's trailing edge.
+    pub(crate) const SUBMIT_INSET: f32 = 3.0;
+    /// Outline width of the submit and back circles.
+    pub(crate) const CIRCLE_OUTLINE_WIDTH: f32 = 1.2;
+    /// Outline color of the submit and back circles.
+    pub(crate) const CIRCLE_OUTLINE: Rgba = rgba(255, 255, 255, 0.85);
+
+    /// Width of the avatar's ring.
+    pub(crate) const AVATAR_RING_WIDTH: f32 = 1.5;
+
+    /// Top inset of an alert; its sides and bottom use `ALERT_PADDING`.
+    pub(crate) const ALERT_PADDING_TOP: f32 = 20.0;
+    /// Gap between an alert's icon, title, body and actions.
+    pub(crate) const ALERT_GAP: f32 = 10.0;
+    /// Extra space above an alert's buttons.
+    pub(crate) const ALERT_ACTIONS_MARGIN: f32 = 6.0;
+    /// Gap between an alert's two buttons.
+    pub(crate) const ALERT_ACTIONS_GAP: f32 = 8.0;
+    /// Diameter of the disc behind an alert's icon.
+    pub(crate) const ALERT_ICON: f32 = 48.0;
+    /// Size of the glyph inside the alert's icon disc.
+    pub(crate) const ALERT_GLYPH: f32 = 24.0;
+
+    /// Horizontal inset of small pill buttons and the preview badge.
+    pub(crate) const PILL_PADDING_X: f32 = 14.0;
+
+    /// Glyph sizes, from the SVGs in the component previews.
+    pub(crate) const GLYPH_MONITOR_WIDTH: f32 = 15.0;
+    pub(crate) const GLYPH_MONITOR_HEIGHT: f32 = 12.0;
+    pub(crate) const GLYPH_POWER: f32 = 14.0;
+    pub(crate) const GLYPH_CHECK_WIDTH: f32 = 10.0;
+    pub(crate) const GLYPH_CHECK_HEIGHT: f32 = 9.0;
+    pub(crate) const GLYPH_ARROW: f32 = 9.0;
+
+    /// The smallest the clock may scale to make room for the identity column.
+    pub(crate) const CLOCK_MIN_SCALE: f32 = 0.2;
+}
+
+/// Motion. The rejection shake follows macOS: a short damped oscillation.
+pub(crate) mod motion {
+    use std::time::Duration;
+
+    pub(crate) const SHAKE_DURATION: Duration = Duration::from_millis(400);
+    /// Peak horizontal displacement in logical points.
+    pub(crate) const SHAKE_AMPLITUDE: f32 = 10.0;
+    /// Full oscillations over the shake's duration.
+    pub(crate) const SHAKE_CYCLES: f32 = 3.0;
 }
 
 #[cfg(test)]
