@@ -94,6 +94,7 @@ zeroize = { version = "=1.9.0", optional = true }
 zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }
 
 [dev-dependencies]
+proptest = "1.6"
 tokio = { version = "1.42.0", features = ["macros", "rt"] }
 serde_json = "1.0"
 

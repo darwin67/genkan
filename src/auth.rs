@@ -169,6 +169,9 @@ impl From<greetd_ipc::Response> for Response {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use greetd_ipc::codec::TokioCodec;
