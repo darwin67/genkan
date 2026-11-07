@@ -29,7 +29,7 @@ proptest! {
         let pixels = (0..sh).flat_map(|y| (0..sw).flat_map(move |x| [x as u8, y as u8, 73, 255])).collect();
         let frame = RgbaFrame { width: sw, height: sh, pixels };
         let mut target = vec![0; (width * height * 4) as usize];
-        render_cover_argb(&mut target, width, height, Some(&frame));
+        render_cover_argb(&mut target, width, height, Some((frame.width, frame.height, &frame.pixels)));
         for pixel in target.chunks_exact(4) {
             prop_assert_eq!(pixel[0], 73);
             prop_assert_eq!(pixel[3], 255);

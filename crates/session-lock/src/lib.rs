@@ -1,4 +1,5 @@
 mod runtime;
+pub mod scaling;
 
 use std::collections::TryReserveError;
 use std::os::fd::OwnedFd;

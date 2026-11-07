@@ -27,10 +27,10 @@ Evidence and decisions: link:INVESTIGATION.adoc[niri 26.04 investigation].
 
 == Phase 3: Background client for the greeter
 
-* [ ] Extend `genkan wallpaper` to show MOV catalog entries, their posters under
+* [x] Extend `genkan wallpaper` to show MOV catalog entries, their posters under
   reduced motion, and HEIC overrides, selected by the same arguments as login.
-* [ ] Add an output to skip.
-* [ ] Add `wp_fractional_scale_v1` and `wp_viewporter` support with an integer
+* [x] Add an output to skip.
+* [x] Add `wp_fractional_scale_v1` and `wp_viewporter` support with an integer
   fallback.
 
 == Phase 4: Supervisor
