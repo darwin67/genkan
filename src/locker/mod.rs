@@ -15,7 +15,7 @@ use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
 
 use bytes::Bytes;
-use cosmic_text::{Align, Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
+use cosmic_text::{Align, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
 use genkan_session_lock::{Input, Presentation, PresentationFrame, Refresh, RgbaFrame};
 use thiserror::Error;
 
@@ -137,7 +137,7 @@ impl LockerPresentation {
             background: None,
             overlay: None,
             frame: None,
-            fonts: FontSystem::new(),
+            fonts: crate::design::font::font_system(),
             glyphs: SwashCache::new(),
             instruction_page: 0,
             #[cfg(feature = "lock-test")]
@@ -168,7 +168,7 @@ impl LockerPresentation {
             background: None,
             overlay: None,
             frame: None,
-            fonts: FontSystem::new(),
+            fonts: crate::design::font::font_system(),
             glyphs: SwashCache::new(),
             instruction_page: 0,
             #[cfg(feature = "lock-test")]
@@ -795,7 +795,7 @@ fn fit_single_line(fonts: &mut FontSystem, text: &str, size: f32, width: f32) ->
         buffer.set_text(
             fonts,
             candidate,
-            &Attrs::new(),
+            &crate::design::font::attrs(),
             Shaping::Advanced,
             Some(Align::Left),
         );
@@ -1007,7 +1007,7 @@ fn draw_wrapped_text_in(
         candidate.set_text(
             fonts,
             &text,
-            &Attrs::new(),
+            &crate::design::font::attrs(),
             Shaping::Advanced,
             Some(Align::Center),
         );
@@ -1179,7 +1179,7 @@ fn draw_text_in(
     buffer.set_text(
         fonts,
         text,
-        &Attrs::new(),
+        &crate::design::font::attrs(),
         Shaping::Advanced,
         Some(Align::Center),
     );
