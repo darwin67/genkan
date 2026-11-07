@@ -813,7 +813,7 @@ fn account_tile<'a>(
 }
 
 fn dynamic_text_requires_flow(value: &str) -> bool {
-    value.contains(['\n', '\r']) || !value.is_ascii() || value.chars().count() > 80
+    value.contains(['\n', '\r']) || value.chars().count() > 80
 }
 
 fn authentication_region_or_full(
@@ -1075,10 +1075,20 @@ mod tests {
     }
 
     #[test]
-    fn wide_glyphs_and_explicit_lines_require_flow_layout() {
-        assert!(dynamic_text_requires_flow("密碼を入力してください"));
+    fn unicode_labels_use_the_same_length_and_line_bounds() {
+        for label in [
+            "Password",
+            "José",
+            "Zoë",
+            "Preparing authentication…",
+            "密碼を入力してください",
+        ] {
+            assert!(!dynamic_text_requires_flow(label), "{label}");
+        }
         assert!(dynamic_text_requires_flow("first line\nsecond line"));
-        assert!(!dynamic_text_requires_flow("Password"));
+        assert!(dynamic_text_requires_flow("first line\rsecond line"));
+        assert!(!dynamic_text_requires_flow(&"é".repeat(80)));
+        assert!(dynamic_text_requires_flow(&"é".repeat(81)));
     }
 
     #[test]
