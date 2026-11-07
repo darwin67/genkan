@@ -461,6 +461,9 @@ impl App {
             }
             Message::WindowResized(size) => {
                 self.window_size = Some(size);
+                if self.phase == Phase::WaitingForInput && self.authentication_layout.is_none() {
+                    self.authentication_layout = self.prompt_screen_layout();
+                }
                 self.reveal_focused_input()
             }
             Message::RetrySession
@@ -683,7 +686,7 @@ impl App {
                 },
             );
             self.phase = Phase::WaitingForInput;
-            self.authentication_layout = Some(view::ScreenLayout::Flow);
+            self.authentication_layout = self.prompt_screen_layout();
             self.preview_message =
                 Some("Preview mode: credentials and power actions are simulated".into());
             self.focus_input()
@@ -865,7 +868,7 @@ mod tests {
         }
     }
 
-    fn app() -> App {
+    pub(super) fn app() -> App {
         let mut conversation = Conversation::new();
         let attempt = conversation.begin_attempt();
         let _ = conversation.receive(

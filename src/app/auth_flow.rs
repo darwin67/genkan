@@ -94,7 +94,7 @@ impl App {
         };
         match self.apply_auth_transition(transition) {
             AuthEffect::Prompt { .. } => {
-                self.authentication_layout = Some(super::view::ScreenLayout::Flow);
+                self.authentication_layout = self.prompt_screen_layout();
                 self.focus_input()
             }
             AuthEffect::Acknowledge { error, message } => {

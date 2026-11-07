@@ -130,8 +130,7 @@ pub(super) fn build(
         output_monitor,
         authentication_region,
         window_size: None,
-        authentication_layout: (state.phase == Phase::WaitingForInput)
-            .then_some(super::view::ScreenLayout::Flow),
+        authentication_layout: None,
     };
     let base_focus = app.focus_order().first().copied();
     app.power_state = power_state;
@@ -469,11 +468,12 @@ mod tests {
         assert!(long.username.chars().count() >= 240);
         assert!(long.requires_flow_layout());
 
-        let (secret, _) = build_fixture(Fixture::SecretPrompt);
+        let (mut secret, _) = build_fixture(Fixture::SecretPrompt);
         assert!(secret.conversation.is_secret());
+        let _ = secret.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
         assert_eq!(
             secret.authentication_layout,
-            Some(crate::app::view::ScreenLayout::Flow),
+            Some(crate::app::view::ScreenLayout::Wide),
             "preview prompts must exercise the production layout latch"
         );
 
