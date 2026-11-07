@@ -36,3 +36,8 @@ __pycache__/
 # Hugo build output
 /website/public/
 /website/.hugo_build.lock
+
+# Mutable fuzzing output; small, deterministic inputs live in fuzz/seeds.
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/

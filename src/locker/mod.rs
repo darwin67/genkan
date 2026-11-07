@@ -1294,6 +1294,9 @@ fn adopt_ready_fd(fd: RawFd) -> Result<OwnedFd, Error> {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;

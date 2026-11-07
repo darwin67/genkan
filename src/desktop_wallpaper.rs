@@ -1528,6 +1528,9 @@ fn render_cover_argb(target: &mut [u8], width: u32, height: u32, frame: Option<&
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use genkan::dynamic_wallpaper::{

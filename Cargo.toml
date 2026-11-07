@@ -8,6 +8,7 @@ license = "MIT"
 [workspace]
 members = ["crates/lock-auth", "crates/output-selection", "crates/session-lock"]
 default-members = [".", "crates/lock-auth", "crates/output-selection", "crates/session-lock"]
+exclude = ["fuzz"]
 resolver = "2"
 
 [features]
@@ -16,8 +17,20 @@ e2e = ["tokio/macros", "tokio/rt"]
 # Enables the deterministic authorization source used by session-lock tests.
 # The production Nix package never enables this feature.
 lock-test = ["genkan-session-lock/lock-test"]
-gui = [
+# Parser/decoder support shared with the GUI, without iced, GStreamer, D-Bus,
+# or the session-lock runtime. Fuzz targets never open/decode native images.
+heic = [
     "dep:base64",
+    "dep:libc",
+    "dep:libheif-rs",
+    "dep:moxcms",
+    "dep:plist",
+    "dep:quick-xml",
+    "dep:rustix",
+]
+fuzzing = ["heic", "dep:rclip-desktop-entry"]
+gui = [
+    "heic",
     "dep:bytes",
     "dep:calloop",
     "dep:calloop-wayland-source",
@@ -32,13 +45,7 @@ gui = [
     "dep:image",
     "dep:iced",
     "dep:iced_runtime",
-    "dep:libc",
-    "dep:libheif-rs",
-    "dep:moxcms",
-    "dep:plist",
-    "dep:quick-xml",
     "dep:rclip-desktop-entry",
-    "dep:rustix",
     "dep:smithay-client-toolkit",
     "dep:unicode-general-category",
     "dep:wayland-client",
@@ -94,6 +101,8 @@ zeroize = { version = "=1.9.0", optional = true }
 zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }
 
 [dev-dependencies]
+proptest = "1.6"
+proptest-state-machine = "0.8"
 tokio = { version = "1.42.0", features = ["macros", "rt"] }
 serde_json = "1.0"
 

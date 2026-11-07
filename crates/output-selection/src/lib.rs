@@ -41,6 +41,9 @@ fn connector_order(name: &str) -> (bool, &str, usize, &str, &str) {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

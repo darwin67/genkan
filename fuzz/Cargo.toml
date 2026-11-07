@@ -1,0 +1,33 @@
+[package]
+name = "genkan-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+genkan = { path = "..", default-features = false, features = ["fuzzing"] }
+
+[[bin]]
+name = "heic_container"
+path = "fuzz_targets/heic_container.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "heic_metadata"
+path = "fuzz_targets/heic_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "desktop_entry"
+path = "fuzz_targets/desktop_entry.rs"
+test = false
+doc = false
+bench = false

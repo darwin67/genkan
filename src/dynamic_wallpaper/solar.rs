@@ -259,6 +259,9 @@ fn signed_hour_angle(true_solar_minutes: f64) -> f64 {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::dynamic_wallpaper::{
