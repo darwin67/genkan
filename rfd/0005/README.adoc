@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: discussion
+:state: published
 :discussion: https://github.com/darwin67/genkan/pull/60
 :labels: visual-design, design-system, greeter, lock, accessibility
 
@@ -80,22 +80,28 @@ presentational: the login forces the compact layout whenever a prompt is
 active, any non-ASCII display name forces the compact layout, and a failed
 authentication requires an extra Retry activation before the user can respond
 again. A design system does not fix those, and this RFD does not claim to. They
-are tracked separately; where this RFD defines a rule that constrains their
-fix, it says so.
+were fixed separately in pull request 58; the screen-region rules below keep
+them fixed.
 
 == Decision
 
-Genkan adopts a three-layer design system:
+Genkan adopts a three-layer design system whose values come from
+link:../../docs/design-system/README.md[`docs/design-system`]:
 
-. *Tokens*: a renderer-independent module of named constants for spacing,
-  type, color roles, material levels, shape, control sizes, and layout
-  breakpoints. Tokens are plain Rust data with no iced dependency, so the iced
-  greeter and the lock's CPU renderer consume the same values.
-. *Components*: iced builders for every recurring control, each taking a
-  semantic variant rather than raw sizes or colors.
-. *Layout regions*: a fixed set of named screen regions per size class, so a
-  control's position is a property of the page template rather than of the
-  current authentication phase.
+. *Tokens*: a renderer-independent module of named constants for colors,
+  type styles, spacing, radii, and sizes. Tokens are plain Rust data with no
+  iced dependency, so the iced greeter and the lock's CPU renderer consume the
+  same values.
+. *Components*: iced builders for every recurring piece of the login and lock
+  screens, each taking a semantic variant rather than raw sizes or colors.
+. *Screen regions*: a fixed set of named regions anchored to the screen edges,
+  so a control's position is a property of the screen template rather than of
+  the current authentication phase.
+
+The visual direction is the macOS Tahoe login window and lock screen, as
+amended in link:../0001/README.adoc[RFD 1]. After a restart, Tahoe's login
+window uses the same layout as its lock screen, so login and lock share one
+composition and differ only in what lock omits.
 
 The lock renderer does not adopt iced widgets (see
 <<alternatives-considered>>). It adopts the token layer and a small set of
@@ -107,148 +113,79 @@ failure, so drift is caught in review rather than in screenshots.
 
 == Tokens
 
-Tokens live in `src/design/tokens.rs`. Names describe roles, not values. The
-values below are a proposal for discussion. Phase 1 of the implementation
-introduces the names with the current values so that the refactor has no
-visible effect, and Phase 2 consolidates them to these scales.
+`docs/design-system/tokens.json` is the reference for every value. It was
+measured from photos and a video of a real Tahoe login window and lock screen
+on a display scaled to 3008×1692, so values are logical points, accurate to
+about ten percent. `src/design/tokens.rs` mirrors it as Rust constants, and a
+unit test parses the JSON and fails when the two disagree.
 
-The values were derived from the current interface. Genkan's visual direction
-is to follow the macOS login and lock screens, and design mocks measured
-against real Tahoe captures are in progress. Once the mocks are agreed, their
-measurements replace these values; the token names, components, and rules in
-this RFD stay.
-
-=== Spacing
-
-A single scale in logical pixels: `XXS 2`, `XS 4`, `S 8`, `M 12`, `L 16`,
-`XL 24`, `XXL 32`, `XXXL 48`.
-
-Padding and inter-element spacing use only these values. Insets for controls
-are expressed through control-size tokens rather than ad hoc padding pairs.
-
-=== Typography
-
-[cols="1,1,3",options="header"]
-|===
-|Token |Size |Use
-
-|`display` |80 |Clock time
-|`title` |28 |Selected-account name, account-selection heading
-|`subtitle` |22 |Date, dialog title, lock progress
-|`input` |18 |Authentication response
-|`body` |15 |Prompt text, control labels, tile names
-|`caption` |13 |Usernames, field labels, status and error text
-|===
-
-Weight and line height are part of each token. Text roles reference a type
-token and a color role together, so that, for example, `caption` text is always
-`text.secondary` or `text.error`, never an arbitrary alpha.
-
-=== Color roles
+Token names describe roles, not values. The families are:
 
 [cols="1,3",options="header"]
 |===
-|Role |Meaning
+|Family |Contents
 
-|`text.primary` |Primary foreground on any material
-|`text.secondary` |Supporting text; replaces the current 0.85 and 0.78 alphas
-|`text.muted` |De-emphasized identifiers such as `@username`
-|`text.error` |Recoverable failures adjacent to their control
-|`accent` / `accent.hover` / `accent.pressed` |The single affirmative action
-|`destructive` |Confirming a power action that may lose work
-|`focus` |Focus ring color
-|`outline` / `outline.strong` |Control boundaries at rest and emphasized
-|`selection` |Text selection and selected menu option
+|Color |Text roles (`text-primary`, `text-date`, `text-secondary`, `text-placeholder`, `text-menu-heading`), the glass clock, the password pill's glass and border, the avatar gradient and ring, status-bar highlight, menu and alert materials, `accent`, `pill-secondary`, `focus-ring`, and `scrim-modal`
+|Type |Inter styles for the clock, date, initials, account name, pill, status bar, menus, PAM messages, and alerts, each with size, line height, and weight
+|Spacing |Status-bar insets and gap, identity gap and bottom inset, clock top inset, account gap, menu and alert padding
+|Radius |Status-bar item, menu item, pill, menu, alert button, alert, and round
+|Size |Pill, submit circle, status-bar item, menu item, alert button, avatar, account width, menu, alert, and message width
 |===
 
-The selected menu option uses `selection` derived from the material system, not
-a separately chosen saturated color.
+Rule: the wallpaper is never dimmed. Legibility comes from soft text shadows
+and blurred glass behind small controls. Only an alert darkens what is behind
+it, with `scrim-modal`. The session-lock crate's wallpaper dimming therefore
+becomes a caller-supplied factor, set to none by default.
 
-=== Material
-
-Material is the translucent dark surface from RFD 1, expressed as named
-opacity levels over one base color:
-
-[cols="1,3",options="header"]
-|===
-|Level |Use
-
-|`material.control` |Buttons, tiles, selectors at rest, with hover and pressed steps
-|`material.field` |The authentication field's lighter glass
-|`material.overlay` |Menus and dialogs; opaque enough that underlying content is not legible through it
-|`scrim.background` |Uniform darkening of wallpaper behind the foreground
-|`scrim.modal` |Darkening of page content behind a dialog
-|===
-
-Rule: a scrim darkens the layer beneath it and never the foreground it serves.
-In particular, the lock's authentication overlay is composited after
-`scrim.background` is applied to the wallpaper. Because
-`crates/session-lock` currently owns the dimming factor, the factor becomes a
-parameter supplied by the caller from this token rather than a crate-private
-constant.
-
-=== Shape and focus
-
-`radius.control` (currently 18), `border.width` (1), `focus.width` (3), and
-`avatar` border width (2). These are the existing values from `theme.rs`,
-given names.
-
-=== Control sizes
-
-`control.small` and `control.medium` define height, horizontal inset, and type
-token for buttons and selectors. `field.height`, `field.max_width`,
-`tile.width`, `avatar.small` (76), `avatar.large` (100), `menu.max_height`, and
-`dialog.max_width` replace call-site literals.
-
-=== Breakpoints
-
-The `Wide` and `Compact` size classes and their thresholds (currently 1280 by
-700 logical pixels) are tokens. The account-grid column limit is a token.
+Rule: blurred glass samples the wallpaper. Genkan owns the wallpaper pixels on
+both screens, so the pill, menus, and alerts blur a copy of the frame behind
+them instead of relying on compositor support.
 
 == Components
 
 Components live in `src/design/components/` and are the only place that
-applies tokens to iced widgets. Each component takes a semantic variant.
+applies tokens to iced widgets. Each has guidelines and a preview in
+`docs/design-system/components/`.
 
 [cols="1,3",options="header"]
 |===
 |Component |Contract
 
-|`Button` |Variants `Primary`, `Secondary`, `Destructive`, `Icon`; sizes `Small`, `Medium`. Focus, hover, pressed, and disabled states come from tokens.
-|`Label` |Text with a type token, a color role, and an explicit overflow policy: `SingleLine` (truncate with an ellipsis) or `Wrap { max_lines }`. There is no unbounded default.
-|`TextField` |Label, response input, and trailing submit action. Secret and visible prompts share one geometry. The lock renderer reproduces the same geometry from tokens.
-|`Avatar` |Initials and diameter token. Initials come from one shared, renderer-independent function used by login and lock.
-|`AccountTile` |Avatar, name (`SingleLine`), and username (`SingleLine`) with a fixed height.
-|`Selector` and `Menu` |A closed control and a floating menu drawn in `material.overlay`, bounded by `menu.max_height`, that does not displace page layout.
-|`Dialog` |Title, consequence text, and actions in `material.overlay` over `scrim.modal`, centered on the page content region.
-|`StatusMessage` |Informational or error text that is always centered under, and aligned with, the control it describes.
-|`Clock` |Time and date with type tokens and a single formatting source, so login and lock can both present it.
+|`StatusBar` |The top-right row: session item and power item (login only), keyboard layout, and network status. An item whose menu is open is highlighted.
+|`Clock` |Short date above the large glass time, from one formatting source shared by login and lock.
+|`Avatar` |Initials over the avatar gradient with a ring; the focus ring when focused in an account row. Initials come from one shared, renderer-independent function.
+|`PasswordField` |The grey glass pill that collects every PAM response. Placeholder when empty, dots for secret input, text for visible input, an outlined submit circle once there is input, a Caps Lock glyph while Caps Lock is on, and a horizontal shake that clears it on rejection.
+|`StatusMessage` |PAM text centered on the line under the pill, or above it for a prompt. Absent unless PAM sends text.
+|`AccountRow` |Avatars with names in a centered row for choosing an account; names truncate with an ellipsis.
+|`Menu` |The session and power dropdowns from status-bar items, with a heading, a highlighted item, and a check mark on the selected item.
+|`Alert` |The Restart and Shut Down confirmation over `scrim-modal`, with Cancel focused initially.
 |===
 
-Overflow is decided by the component, not the caller. A display name or
-username in an identity position is always `SingleLine`; a PAM prompt or
-message is `Wrap` with a bound and scrolls within its region if the bound is
-exceeded. The shared single-line fitting helper is renderer-independent: it
+Overflow is decided by the component, not the caller. Names and identifiers
+truncate on one line; PAM text wraps up to `message-width` and a bounded number
+of lines. The shared single-line fitting helper is renderer-independent: it
 takes a width-measuring function, as the lock's `fit_single_line_by` already
-does, so iced and the lock renderer can share its truncation logic.
+does, so iced and the lock renderer share its truncation logic.
 
-== Layout regions
+== Screen regions
 
-Each size class defines named regions: `clock`, `identity`, `utilities`,
-`session`, and `notice`. In the `Wide` class they follow RFD 1: clock top
-center, identity bottom center, utilities upper right, session lower left. In
-the `Compact` class they stack in one scrollable column in a fixed order.
+Every output that shows authentication uses the same regions, anchored to its
+edges in logical points:
 
-Rule: the region a control occupies is a function of the size class only. The
-authentication phase may change what a region contains, but not where controls
-are placed. A size class may be latched while a response is being entered to
-avoid reflow during typing, but the latched class must be the class that the
-current size selects, not a different one. This rule constrains the separate
-fix for the forced compact prompt layout.
+* `status`: `bar-inset-top` from the top and `bar-inset-right` from the right;
+* `clock`: centered, `clock-top` from the top;
+* `identity`: centered, with the pill `identity-bottom` above the bottom edge.
 
-Rule: the size class is chosen from available size and measured content, not
-from the character set of the content. This rule constrains the separate fix
-for the non-ASCII layout trigger.
+Rule: the region a control occupies never depends on the authentication phase.
+The phase changes what the identity region shows (one account, an account row,
+a prompt, a message), not where the status bar, clock, or identity sit.
+
+Rule: layout is chosen from available size and measured content, never from the
+character set of the content.
+
+Outputs too short for the clock and identity regions without overlap scale the
+clock down; everything else keeps its point size, as macOS does. Outputs that
+do not show authentication show the wallpaper only.
 
 == Lock renderer adoption
 
@@ -256,15 +193,16 @@ for the non-ASCII layout trigger.
 out of the glyph pipeline and draws only masked characters, and this RFD
 preserves that boundary. It changes as follows:
 
-* Font sizes, colors, field geometry, avatar size, and spacing are read from
-  tokens and scaled by the renderer's existing integer render scale.
+* Font sizes, colors, pill geometry, avatar size, and spacing are read from
+  tokens and scaled by the renderer's render scale.
 * `initials()` and single-line fitting come from the shared helpers.
-* The field presents its prompt in the same position and style as the login
-  `TextField`, and the submit affordance uses the same shape.
-* The background scrim is applied before the overlay, per the material rule.
+* The overlay draws the status bar (without session and power items), the
+  clock, and the identity region exactly as login does.
+* The wallpaper is no longer dimmed.
 
 Rendering the lock overlay at the output's logical size instead of the current
-fixed canvas, and fractional-scale support, are separate work.
+fixed canvas, and fractional-scale support, are tracked with
+link:../0006/README.adoc[RFD 6].
 
 == Typeface
 
@@ -284,29 +222,31 @@ clock, closer to the macOS lock-screen clock, is a separate open question.
 == Verification
 
 * The existing WCAG contrast tests in `src/theme.rs` move to the design module
-  and are written against color roles and material levels, so every role is
-  covered once instead of per call site.
+  and are written against color roles. Text over the undimmed wallpaper is
+  checked with its text shadow against samples of the packaged posters, not
+  only the generated background.
+* A unit test fails when `src/design/tokens.rs` and
+  `docs/design-system/tokens.json` disagree.
 * A repository check, run by `make verify`, rejects numeric literals in iced
   text-size, padding, spacing, and color constructors outside `src/design/`,
   and raw color or font-size literals in the lock overlay renderer outside
   token lookups. Tests and preview fixtures are exempt.
-* Phase 1 must leave every reference image and preview-evidence capture
-  unchanged. Later phases update reference images deliberately and record the
-  visual change in the commit.
+* Reference images and preview-evidence captures are regenerated deliberately
+  for each visual change and compared against the design-system screens.
 * Component tests cover each overflow policy with the existing long-name,
   duplicate-name, and long-prompt preview fixtures.
 
 == Boundaries and non-goals
 
 * No user-configurable themes, light appearance, or runtime theme files.
-  Tokens make these possible later but they are not proposed here.
-* No change to authentication, greetd, PAM, session selection, power, or lock
-  lifecycle behavior.
+* No change to greetd, PAM, session validation, power, or lock lifecycle
+  behavior. Moving the session and power controls into status-bar menus changes
+  where they appear, not what they do.
 * No semantic accessibility tree. That remains deferred under RFD 1's
   accessibility criteria.
-* No icon set beyond what existing controls need.
-* The behavioral defects listed in <<context>> are fixed separately, subject to
-  the layout rules above.
+* No Apple assets: no SF Pro, SF Symbols, Apple wallpapers, icons, or logo.
+* Account photos are out of scope here; the avatar shows initials until a
+  separate change adds sandboxed photo decoding.
 
 [[alternatives-considered]]
 == Alternatives considered
@@ -314,9 +254,8 @@ clock, closer to the macOS lock-screen clock, is a separate open question.
 === Tidy constants in `theme.rs` without a component layer
 
 This is the cheapest change and would remove most duplicate values. Without
-components and a literal check, though, call sites would continue to choose
-padding, overflow, and alignment, and the drift that motivated this RFD would
-return.
+components and a literal check, call sites would continue to choose padding,
+overflow, and alignment, and drift would return.
 
 === Adopt an external iced design system
 
@@ -332,21 +271,17 @@ buffers, keeps response text out of the text pipeline, and must fail closed
 independently of a GPU renderer. Sharing tokens and renderer-independent
 helpers achieves visual parity without moving that boundary.
 
-=== External design-token files
+=== Generate Rust from `tokens.json`
 
-Defining tokens in TOML or JSON and generating Rust would suit multiple
-platforms or runtime themes. Genkan has one language and no runtime theming, so
-Rust constants are simpler and are checked by the compiler.
+A build step could generate `tokens.rs` from the JSON reference. A hand-written
+mirror plus an equality test keeps the build simple, keeps every value visible
+in review, and still catches drift.
 
 == Open questions
 
-* Are the proposed type and spacing scales right, in particular merging 14 and
-  16 into `caption` and `body`?
-* Should the clock use Inter at a heavy weight, or a separate freely licensed
-  rounded face closer to the macOS lock-screen clock?
-* Does iced 0.14 provide ellipsis truncation natively, or does `Label` measure
-  and truncate itself through the shared fitting helper?
-* Should avatars get a deterministic per-account tint as a token set, to
-  distinguish accounts with identical initials?
-* Should the photographic wallpaper posters join the generated background in
-  contrast verification, given that they are the packaged default?
+* Does iced 0.14 provide ellipsis truncation natively, or does the shared
+  fitting helper measure and truncate?
+* How strong should the background blur be to match Tahoe's glass, and is it
+  cheap enough on the software renderer?
+* Does the shake animation need a reduced-motion alternative beyond clearing
+  the pill?

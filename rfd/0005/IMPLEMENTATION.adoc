@@ -2,69 +2,54 @@
 
 Implements link:README.adoc[RFD 5: Shared design system for login and lock presentation].
 
-The phases are ordered. Phase 1 is a pure refactor with no visible change;
-every later phase updates reference images deliberately.
+The phases are ordered. Each phase that changes pixels regenerates the
+reference images and compares them with the screens in `docs/design-system`.
 
-== Phase 1: Introduce tokens without visual change
-
-* [ ] Add `src/design/tokens.rs` with spacing, type, color-role, material,
-  shape, control-size, and breakpoint tokens as plain data with no iced
-  dependency, initially set to the current values.
-* [ ] Move `src/theme.rs` styles under `src/design/` and express them through
-  tokens.
-* [ ] Replace text-size, padding, spacing, and color literals in
-  `src/app/view.rs` and `src/app/account_tile.rs` with tokens.
-* [ ] Replace font-size, color, and geometry literals in the lock overlay
-  renderer with tokens.
-* [ ] Confirm reference images and preview-evidence captures are unchanged.
-
-== Phase 2: Consolidate scales
-
-* [ ] Reduce spacing and type usage to the agreed scales.
-* [ ] Merge the secondary text alphas into `text.secondary`.
-* [ ] Replace the session menu's selection color with the `selection` role.
-* [ ] Raise `material.overlay` so dialog and menu content is not legible
-  through it, and verify contrast.
-* [ ] Rewrite the contrast tests against color roles and material levels.
-* [ ] Update reference images and record the visual change.
-
-== Phase 3: Components
-
-* [ ] `Button` with `Primary`, `Secondary`, `Destructive`, and `Icon` variants
-  in `Small` and `Medium` sizes; migrate every button.
-* [ ] Shared renderer-independent `initials` and single-line fitting helpers
-  used by login and lock.
-* [ ] `Label` with `SingleLine` and bounded `Wrap` overflow policies; migrate
-  every text call site.
-* [ ] `Avatar` and fixed-height `AccountTile`.
-* [ ] `TextField` with label, response, and submit action.
-* [ ] Floating `Selector` and `Menu` that do not displace layout.
-* [ ] `Dialog` centered on the content region.
-* [ ] `StatusMessage` aligned with its control.
-* [ ] `Clock` with a single formatting source.
-* [ ] Cover overflow policies with the long-name, duplicate-name, and
-  long-prompt fixtures.
-
-== Phase 4: Layout regions
-
-* [ ] Define `Wide` and `Compact` region templates.
-* [ ] Place every control through a region and remove phase-dependent
-  placement.
-* [ ] Update reference images.
-
-== Phase 5: Lock adoption
-
-* [ ] Make the session-lock dimming factor a caller-supplied parameter set
-  from `scrim.background`.
-* [ ] Composite the authentication overlay after the background scrim.
-* [ ] Match the lock field's prompt and submit presentation to `TextField`.
-* [ ] Update lock reference captures.
-
-== Phase 6: Typeface and enforcement
+== Phase 1: Typeface and tokens
 
 * [ ] Bundle a pinned copy of Inter with its license, version, and hash
   recorded, and load it by file in both renderers.
+* [ ] Add `src/design/tokens.rs` mirroring `docs/design-system/tokens.json` as
+  plain data with no iced dependency.
+* [ ] Add a unit test that parses `tokens.json` and fails when it disagrees
+  with `tokens.rs`.
+* [ ] Move `src/theme.rs` styles under `src/design/` and express them through
+  tokens.
+
+== Phase 2: Login screen
+
+* [ ] `StatusBar` with session and power items, keyboard layout, and network
+  status.
+* [ ] `Menu` for the session list and for Sleep, Restart…, and Shut Down….
+* [ ] `Alert` for Restart and Shut Down, with Cancel focused initially.
+* [ ] `Clock` with the short date and the glass time.
+* [ ] `Avatar` and `AccountRow`, with one shared `initials()` helper.
+* [ ] `PasswordField` with placeholder, secret and visible input, the submit
+  circle, the Caps Lock glyph, and the rejection shake.
+* [ ] `StatusMessage` above or below the pill.
+* [ ] A visible Change User control in the identity region whenever another
+  eligible account exists.
+* [ ] Background blur for the pill, menus, and alert sampled from the wallpaper
+  frame.
+* [ ] Place everything through the `status`, `clock`, and `identity` regions and
+  remove the old Wide and Flow layouts.
+* [ ] Stop dimming the wallpaper.
+* [ ] Update preview fixtures and regenerate reference images.
+
+== Phase 3: Lock screen
+
+* [ ] Make the session-lock wallpaper dimming a caller-supplied factor and set
+  it to none.
+* [ ] Draw the lock overlay from tokens with Inter: status bar without session
+  and power items, clock, avatar, name, pill, and message.
+* [ ] Share `initials()` and single-line fitting with login.
+* [ ] Regenerate lock reference captures.
+
+== Phase 4: Enforcement and documentation
+
+* [ ] Move the contrast tests to color roles, including text with its shadow
+  over samples of the packaged posters.
 * [ ] Add the literal check to `make verify`, with regression fixtures in
   `scripts/regression-tests.sh`.
-* [ ] Document the design module and the literal check in
-  `docs/development.md`.
+* [ ] Document the design module, the token mirror test, and the literal check
+  in `docs/development.md`.
