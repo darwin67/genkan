@@ -24,6 +24,10 @@ use super::{
 
 const APPLE_DESKTOP_NAMESPACE: &str = "http://ns.apple.com/namespace/1.0/";
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
+
 /// Resource ceilings applied before metadata or pixel allocations.
 #[derive(Clone, Copy, Debug)]
 struct Limits {

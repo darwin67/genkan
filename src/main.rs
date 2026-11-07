@@ -8,11 +8,11 @@ mod geoclue;
 mod locker;
 mod outputs;
 mod power;
-mod sessions;
 mod stable_file;
 mod theme;
 mod wallpaper;
 
+use genkan::sessions;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;

@@ -2,9 +2,9 @@
 
 use std::fmt;
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "heic")]
 mod container;
-#[cfg(feature = "gui")]
+#[cfg(feature = "heic")]
 pub mod heic;
 #[cfg(feature = "gui")]
 pub mod playback;

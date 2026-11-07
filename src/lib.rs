@@ -1,4 +1,6 @@
 pub mod auth;
 pub mod dynamic_wallpaper;
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "fuzzing"))]
+pub mod sessions;
+#[cfg(feature = "heic")]
 mod stable_file;

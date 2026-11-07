@@ -318,6 +318,20 @@ fn is_unquoted_reserved(character: char) -> bool {
     )
 }
 
+/// Exercises the production in-memory Desktop Entry checks, without filesystem
+/// discovery, executable lookup, environment access, or launching commands.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_parse(contents: &[u8]) {
+    if contents.len() > 64 * 1024 {
+        return;
+    }
+    let _ = strict_desktop_file(contents);
+    if let Ok(file) = parse(contents) {
+        let _ = expand_exec(&file, Path::new("/synthetic/session.desktop"), "Synthetic");
+    }
+}
+
 fn executable_available(program: &str) -> bool {
     if program.contains('/') {
         let path = Path::new(program);

@@ -89,3 +89,8 @@ next-version:
 
 clean:
 	cargo clean
+
+# Opt-in: deliberately not a prerequisite of verify or CI. Needs nightly.
+.PHONY: fuzz
+fuzz:
+	bash scripts/fuzz-smoke.sh

@@ -12,7 +12,75 @@ The Makefile provides `dev`, `animated-dev`, `check`, `fmt`, `fmt-fix`, `lint`,
 `test`, `scripts-test`, `check-rfds`, `smoke`, `wallpaper-smoke`, `lock-smoke`,
 `lock-vm`, `heic-assets`, `heic-decode`, `evidence`, `update-reference-images`,
 `hardware-smoke`, `e2e`, `build`, `package`, `verify`, `changelog`,
-`next-version`, and `clean` targets.
+`next-version`, and `clean` targets. `fuzz` is an opt-in nightly target.
+
+## Property testing and fuzzing
+
+`make test` runs the property tests alongside the ordinary unit tests. The
+default counts are 128 cases or fewer (32 shell executions, 64 login sequences
+of up to 79 actions, 64 solar mappings). Keep `proptest-regressions/` files:
+they replay shrunk failures before new random cases. All generated login data
+is synthetic; never feed credentials or captured PAM conversations into test
+strategies, Debug output, fuzz corpora, or failure reports.
+
+The properties test the existing contracts, not stronger substitutes:
+
+- Shell arguments exclude NUL. A zero-argument vector has no encoded arguments;
+  it is checked separately because POSIX `printf '%s\\0'` otherwise emits one
+  empty field even without operands.
+- Exec quoting has two escaping layers. Literal `%%` becomes `%`, and literal
+  reserved characters are valid inside quoted argv. Session validity is stricter
+  than syntax validity (for example `%U` is syntactically valid but unsupported).
+- Missing/nonpositive login history on **any** peer prevents automatic account
+  selection; a single usable account is selected regardless of history.
+- `bounded_text` is idempotent. `clean_prompt` is only a single cleanup pass:
+  `x: :` becomes `x:` and then `x` on a second call. Appending is accumulation,
+  not idempotent except for empty appends or a saturated buffer.
+- Connector-name selection is permutation-invariant. Duplicate names may select
+  different handles, and all-unnamed outputs deliberately use discovery order.
+- Fitting returns empty when even an ellipsis cannot fit. Monotonicity concerns
+  retained source characters, not the extra ellipsis character.
+- Cover sampling allows integer crop/scale and nearest-neighbor rounding;
+  generated pixel allocations stay below 4 KiB. Large dimensions exercise only
+  geometry/checked arithmetic, without allocating large buffers.
+
+The separate `fuzz/` crate is excluded from the workspace/default members and
+`make verify`; CI is unchanged. Its `fuzzing` feature exposes only in-memory
+entrypoints and does not enable iced, GStreamer, D-Bus, or session-lock. The
+targets cover aggregate HEIC container preflight (not native image decoding),
+XMP/XML and binary plist/Base64 parsing, and Desktop Entry validation/expansion.
+
+The default flake shell pins stable Rust. To run a short campaign with nightly
+and cargo-fuzz from the **same pinned Nix inputs**, use this at the repository root:
+
+```sh
+nix develop --command nix shell --impure --expr '
+  let
+    flake = builtins.getFlake ("git+file://" + toString ./.);
+    pkgs = import flake.inputs.nixpkgs {
+      system = builtins.currentSystem;
+      overlays = [ flake.inputs.rust-overlay.overlays.default ];
+    };
+  in [ pkgs.rust-bin.nightly.latest.default pkgs.cargo-fuzz ]
+' --command make fuzz
+```
+
+`make fuzz` seeds each target from the existing small HEIC fixtures and synthetic
+parser examples. It runs each target for 10 seconds, caps input at 64 KiB, RSS at
+512 MiB, individual allocations at 128 MiB and each input at five seconds. Set
+`FUZZ_SECONDS=60` for a longer campaign. Mutable corpora, crash artifacts, and
+build output are ignored; deterministic seeds and `fuzz/Cargo.lock` are tracked.
+Preserve real crash artifacts, minimize them with `cargo fuzz tmin TARGET PATH`,
+and add a regular unit regression before fixing production code.
+
+These bounds contain the experiment; passing fuzz runs do **not** prove an
+allocator bound. The production preflights enforce aggregate box/item/extent,
+XML depth/event, plist object/depth/expanded-byte and metadata-byte budgets.
+Existing adversarial unit tests plus the feature-gated one-over-budget tests
+check enforcement directly; the container target also checks that acceptance
+is monotone when budgets increase. The 64 KiB input cap does not explore the
+full production source-size limit, and the targets never fuzz live PAM, greetd,
+native libheif decode, graphics drivers, or arbitrary unlimited schedules.
 
 ## Safe UI preview
 

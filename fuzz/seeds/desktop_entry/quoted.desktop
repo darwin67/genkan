@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Synthetic
+Exec=program "two words" "" 100%% %c %k
