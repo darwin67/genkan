@@ -102,6 +102,13 @@ enum WallpaperAppearance {
     Dark,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum Placement {
+    #[default]
+    Spanning,
+    Compositor,
+}
+
 #[derive(Debug, Args)]
 #[command(
     after_help = "Before the first video frame, wallpaper playback failures keep the selected static poster or generated background. After playback begins, Genkan retains the last displayed frame."
@@ -115,6 +122,9 @@ struct LoginArguments {
     display_name: Option<String>,
     #[arg(long)]
     windowed: bool,
+    /// Let the compositor select the output and use the whole window for authentication.
+    #[arg(long, value_enum, default_value = "spanning")]
+    placement: Placement,
     #[arg(
         long,
         value_enum,
@@ -412,7 +422,7 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         return Ok(());
     }
     let windowed = arguments.windowed;
-    let output_monitor = if windowed {
+    let output_monitor = if windowed || arguments.placement == Placement::Compositor {
         None
     } else {
         outputs::Monitor::connect(arguments.authentication_output)
@@ -459,6 +469,10 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         .window(window::Settings {
             size: window_size,
             decorations: windowed,
+            platform_specific: window::settings::PlatformSpecific {
+                application_id: "genkan".into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .exit_on_close_request(false)
@@ -846,6 +860,7 @@ mod tests {
     #[test]
     fn identity_overrides_are_optional() {
         let arguments = try_parse_login(["genkan"]).unwrap();
+        assert_eq!(arguments.placement, Placement::Spanning);
         assert!(!arguments.list_preview_fixtures);
         assert_eq!(arguments.username, None);
         assert_eq!(arguments.display_name, None);
@@ -856,6 +871,22 @@ mod tests {
         assert_eq!(arguments.wallpaper_file, None);
         assert!(!arguments.reduce_motion);
         assert!(!arguments.animated_preview);
+    }
+
+    #[test]
+    fn compositor_placement_is_available_in_deterministic_previews() {
+        let arguments = try_parse_login([
+            "genkan",
+            "--windowed",
+            "--preview",
+            "selected",
+            "--placement",
+            "compositor",
+        ])
+        .unwrap();
+        assert_eq!(arguments.placement, Placement::Compositor);
+        assert!(try_parse_login(["genkan", "--placement", "unknown"]).is_err());
+        assert!(try_parse_lock(["genkan", "--placement", "compositor"]).is_err());
     }
 
     #[test]

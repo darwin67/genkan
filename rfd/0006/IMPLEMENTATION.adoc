@@ -18,12 +18,12 @@ Evidence and decisions: link:INVESTIGATION.adoc[niri 26.04 investigation].
 
 == Phase 2: Placement mode
 
-* [ ] Add a `--placement` option to `genkan login` with `spanning` (default) and
+* [x] Add a `--placement` option to `genkan login` with `spanning` (default) and
   `compositor` modes.
-* [ ] In `compositor` mode, make the whole window the authentication region and
+* [x] In `compositor` mode, make the whole window the authentication region and
   skip `src/outputs.rs` region selection.
-* [ ] Set a stable application ID for the login window.
-* [ ] Test both modes in the deterministic preview harness.
+* [x] Set a stable application ID for the login window.
+* [x] Test both modes in the deterministic preview harness.
 
 == Phase 3: Background client for the greeter
 
