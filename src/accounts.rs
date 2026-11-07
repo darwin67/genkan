@@ -175,6 +175,9 @@ pub async fn discover() -> Result<Vec<Account>, AccountError> {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
