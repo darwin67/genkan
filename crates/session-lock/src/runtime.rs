@@ -1720,15 +1720,10 @@ fn draw_opaque_region_cached(
                 if overlay[3] == 0 {
                     continue;
                 }
-                let background = background.pixel(source_row, x);
+                let background = background.pixel(source_row, x).map(dim);
                 let [red, green, blue] = blend_rgb(background, overlay);
                 let offset = ((y as usize * width as usize) + x as usize) * 4;
-                target[offset..offset + 4].copy_from_slice(&[
-                    dim(blue),
-                    dim(green),
-                    dim(red),
-                    u8::MAX,
-                ]);
+                target[offset..offset + 4].copy_from_slice(&[blue, green, red, u8::MAX]);
             }
         }
         return;
@@ -1744,10 +1739,10 @@ fn draw_opaque_region_cached(
             if overlay[3] == 0 {
                 continue;
             }
-            let background = background.pixel(source_row, x);
+            let background = background.pixel(source_row, x).map(dim);
             let [red, green, blue] = blend_rgb(background, overlay);
             let offset = ((y as usize * width as usize) + x as usize) * 4;
-            target[offset..offset + 4].copy_from_slice(&[dim(blue), dim(green), dim(red), u8::MAX]);
+            target[offset..offset + 4].copy_from_slice(&[blue, green, red, u8::MAX]);
         }
     }
 }
@@ -2617,6 +2612,22 @@ mod tests {
     }
 
     #[test]
+    fn overlay_is_blended_at_full_strength_over_dimmed_wallpaper() {
+        for (alpha, expected) in [(255, [255; 4]), (128, [207, 187, 167, 255])] {
+            let background =
+                RgbaFrame::new(1, 1, Bytes::from_static(&[100, 150, 200, 255])).unwrap();
+            let overlay = RgbaFrame::new(1, 1, Bytes::from(vec![255, 255, 255, alpha])).unwrap();
+            let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
+            let scaled = scale_overlay(&frame.overlay, 1, 1);
+            for cached in [None, Some(&scaled)] {
+                let mut target = [0; 4];
+                draw_opaque_cached(&mut target, 1, 1, Some(&frame), cached, true);
+                assert_eq!(target, expected);
+            }
+        }
+    }
+
+    #[test]
     fn rendering_scales_wallpaper_independently_from_the_overlay_canvas() {
         let background =
             RgbaFrame::new(2, 1, Bytes::from_static(&[100, 0, 0, 255, 0, 0, 200, 255])).unwrap();
@@ -2651,10 +2662,10 @@ mod tests {
 
         draw_opaque(&mut target, 4, 2, Some(&frame));
 
-        assert_eq!(target[0..4], [0, 0, 204, 255]);
-        assert_eq!(target[4..8], [50, 0, 152, 255]);
-        assert_eq!(target[8..12], [152, 0, 50, 255]);
-        assert_eq!(target[12..16], [204, 0, 0, 255]);
+        assert_eq!(target[0..4], [0, 0, 255, 255]);
+        assert_eq!(target[4..8], [63, 0, 191, 255]);
+        assert_eq!(target[8..12], [191, 0, 63, 255]);
+        assert_eq!(target[12..16], [255, 0, 0, 255]);
     }
 
     #[test]
@@ -2819,7 +2830,7 @@ mod tests {
 
         assert_eq!(
             target,
-            [160, 120, 80, 255, 99, 99, 120, 255, 160, 120, 80, 255,]
+            [160, 120, 80, 255, 104, 109, 140, 255, 160, 120, 80, 255,]
         );
     }
 
