@@ -29,7 +29,7 @@
               (void)f; (void)n; (void)a;
               const struct pam_conv *c = NULL;
               if (pam_get_item(p, PAM_CONV, (const void **)&c) != PAM_SUCCESS || !c) return PAM_SYSTEM_ERR;
-              const struct pam_message m = { PAM_PROMPT_ECHO_OFF, "Test confirmation" };
+              const struct pam_message m = { PAM_PROMPT_ECHO_OFF, "Confirm" };
               const struct pam_message *mp = &m;
               struct pam_response *r = NULL;
               int result = c->conv(1, &mp, &r, c->appdata_ptr);
@@ -84,7 +84,7 @@
                             connection.sendall(b"ok")
       '';
       desktopConfig = pkgs.writeText "genkan-test-desktop.conf" ''
-        output * mode 1280x800
+        output * mode 1280x960
       '';
       desktop = pkgs.writeShellScript "genkan-test-desktop" ''
         echo $$ > /tmp/genkan-desktop.pid
@@ -114,7 +114,8 @@
           reduceMotion = true;
           niri.outputs = {
             "Virtual-1" = {
-              mode = "1280x800";
+              # Use a mode advertised by virtio-gpu; 1280x800 is absent.
+              mode = "1280x960";
               scale = 1.5;
               position = {
                 x = 0;
@@ -122,7 +123,7 @@
               };
             };
             "Virtual-2" = {
-              mode = "1280x800";
+              mode = "1280x960";
               scale = 1;
               position = {
                 x = 854;
@@ -212,6 +213,15 @@
             machine.wait_until_succeeds(greeter("niri msg -j windows | jq -e 'any(.[]; .app_id == \"genkan\")'"), timeout=timedelta(seconds=90))
             return next(window for window in msg("windows") if window["app_id"] == "genkan")
 
+        def greeter_screenshot(name):
+            # QEMU's generic screendump cannot read back virgl scanouts.
+            path = f"/tmp/{name}.png"
+            machine.succeed(f"rm -f {path}")
+            machine.succeed(greeter(f"niri msg action screenshot-screen --path {path}"))
+            machine.wait_until_succeeds(f"test -s {path}")
+            machine.copy_from_machine(path)
+            return machine.out_dir / f"{name}.png"
+
         # Linux evdev codes for every spawn binding in niri 26.04's defaults.
         shortcuts = {
             "Mod+T": [125, 20], "Mod+D": [125, 32],
@@ -248,7 +258,10 @@
         outputs = msg("outputs")
         assert set(outputs) == {"Virtual-1", "Virtual-2"}, outputs
         assert outputs["Virtual-1"]["logical"]["scale"] == 1.5
-        assert login["layout"]["window_size"] == [853, 533], login
+        for output in outputs.values():
+            mode = output["modes"][output["current_mode"]]
+            assert (mode["width"], mode["height"]) == (1280, 960), output
+        assert login["layout"]["window_size"] == [853, 640], login
         assert login["layout"]["window_offset_in_tile"] == [0.0, 0.0], login
         workspace = next(w for w in msg("workspaces") if w["id"] == login["workspace_id"])
         assert workspace["output"] == "Virtual-1", workspace
@@ -256,10 +269,9 @@
         layers = [layer for layer in msg("layers") if layer["namespace"] == "genkan-wallpaper"]
         assert [layer["output"] for layer in layers] == ["Virtual-2"], layers
         assert all(layer["keyboard_interactivity"].lower() == "none" for layer in layers)
-        machine.screenshot("niri-login")
+        greeter_screenshot("niri-login")
         machine.succeed(greeter("niri msg action focus-monitor Virtual-2"))
-        machine.succeed(greeter("niri msg action screenshot-screen --path /tmp/genkan-wallpaper.png"))
-        machine.wait_until_succeeds("test -f /tmp/genkan-wallpaper.png")
+        greeter_screenshot("genkan-wallpaper")
         assert int(machine.succeed("magick /tmp/genkan-wallpaper.png -format '%k' info:")) > 256
         machine.succeed(greeter("niri msg action focus-monitor Virtual-1"))
 
@@ -279,7 +291,24 @@
 
         # Mapping a window does not establish PAM readiness. Wait for the
         # rendered prompt before sending Return; no response is logged.
-        machine.wait_for_text("Test confirmation", timeout=timedelta(seconds=90))
+        def prompt_visible(_last_try):
+            image = greeter_screenshot("pam-prompt")
+            # The mode and scale asserted above put the input here. Bound OCR
+            # to that line, not the busy wallpaper; discard screenshot alpha
+            # before inversion so OCR never receives a transparent image.
+            line = image.with_name("pam-input.png")
+            subprocess.run([
+                "${pkgs.imagemagick}/bin/magick", str(image), "-alpha", "off",
+                "-crop", "220x48+530+735", "+repage", "-resize", "400%",
+                "-colorspace", "Gray", "-negate", str(line),
+            ], check=True, timeout=10)
+            ocr = subprocess.run([
+                "tesseract", str(line), "stdout", "--oem", "1", "--psm", "7",
+                "-c", "debug_file=/dev/null",
+            ], check=True, capture_output=True, text=True, timeout=10)
+            return "confirm" in ocr.stdout.casefold().split()
+
+        retry(prompt_visible, timedelta(seconds=90))
         assert msg("focused-window")["app_id"] == "genkan"
         machine.send_key("ret")
         machine.wait_until_succeeds("test -S /tmp/genkan-desktop.sock", timeout=timedelta(seconds=90))
@@ -294,9 +323,15 @@
         assert machine.succeed("cat /tmp/genkan-desktop.pid").strip() == desktop_pid
         machine.succeed(f"kill -0 {desktop_pid}")
         assert json.loads(machine.succeed("swaymsg -s /tmp/genkan-desktop.sock -t get_outputs")) == json.loads(desktop_outputs)
-        machine.screenshot("desktop-survived-generation-switch")
+        machine.succeed("runuser -u alice -- env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=$(find /run/user/1000 -maxdepth 1 -type s -name 'wayland-*' -print -quit) ${pkgs.grim}/bin/grim -o Virtual-1 /tmp/desktop-survived-generation-switch.png")
+        machine.copy_from_machine("/tmp/desktop-survived-generation-switch.png")
     finally:
-        display.terminate()
-        display.wait(timeout=10)
+        # QEMU's GTK display exits with Xvfb. Finish the guest before removing
+        # its display, including on failure, so the driver can cleanly sync.
+        try:
+            machine.shutdown()
+        finally:
+            display.terminate()
+            display.wait(timeout=10)
   '';
 }
