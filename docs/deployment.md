@@ -242,6 +242,103 @@ authorize the `genkan-wallpaper` application identity. The option does not start
 a compositor or select a user session; `--solar` remains an explicit runtime
 choice, and login and lock never request location.
 
+## niri
+
+These notes were checked against niri 26.04. The greeter itself still runs
+under Cage; running it under niri is planned in
+[RFD 6](../rfd/0006/README.adoc).
+
+### Session
+
+Enable niri with `programs.niri.enable = true`, which installs its session
+entry and portals. Genkan discovers `niri.desktop` like any other
+`wayland-sessions` entry, starts `niri-session`, and passes
+`XDG_SESSION_DESKTOP=niri` and `XDG_CURRENT_DESKTOP=niri`.
+
+The greeter does not read niri's `input` configuration, so set the greeter's
+keyboard layout and cursor on greetd when they differ from the defaults, for
+example:
+
+```nix
+systemd.services.greetd.environment = {
+  XKB_DEFAULT_LAYOUT = "us";
+  XCURSOR_THEME = "Adwaita";
+  XCURSOR_SIZE = "24";
+};
+```
+
+### Desktop wallpaper
+
+Start the wallpaper from niri and match its layer namespace,
+`genkan-wallpaper`, to keep it still behind the overview and workspace
+switches:
+
+```kdl
+spawn-at-startup "genkan" "wallpaper" "--file" "/home/alice/Pictures/dynamic.heic"
+
+layer-rule {
+    match namespace="^genkan-wallpaper$"
+    place-within-backdrop true
+}
+
+layout {
+    background-color "transparent"
+}
+```
+
+`place-within-backdrop` moves the wallpaper behind the workspaces, so the
+workspace background must be transparent or the wallpaper is hidden everywhere
+except the overview. Without the layer rule the wallpaper still shows on
+workspaces but not in the overview. Disable `swaybg` or any other wallpaper
+client.
+
+### Locking
+
+niri provides `ext-session-lock-v1` and does not lock before sleep on its own.
+Bind a key to lock immediately:
+
+```kdl
+binds {
+    Mod+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "genkan" "lock" "--daemonize"; }
+}
+```
+
+Use swayidle for idle and suspend locking. Starting it from niri keeps it tied
+to the session:
+
+```kdl
+spawn-at-startup "swayidle" "-w" "timeout" "600" "genkan lock --daemonize" "before-sleep" "genkan lock --daemonize"
+```
+
+If swayidle instead runs as a systemd user service, as in niri's example
+systemd setup, set `KillMode=process` on that service.
+`genkan lock --daemonize` starts the lock owner in the caller's control group,
+so the default `KillMode=control-group` would end the confirmed lock whenever
+the service stops or restarts, leaving the session locked with nothing drawn.
+The suspend caveats in [Session locking and suspend](#session-locking-and-suspend)
+apply unchanged.
+
+niri's `allow-when-locked=true` applies only to `spawn` binds such as media
+keys. If closing the lid does not suspend the machine, lock on lid close
+instead:
+
+```kdl
+switch-events {
+    lid-close { spawn "genkan" "lock" "--daemonize"; }
+}
+```
+
+### Outputs
+
+`niri msg outputs` lists each connector with its make, model, and serial.
+niri's `output` blocks accept either form, but `--authentication-output`
+currently takes the connector name, such as `DP-3`. Connector numbers can
+change with docks and cable order, so recheck them after changing hardware.
+
+Fractional output scales work. The lock and wallpaper currently render at the
+next whole scale and niri scales them down, which uses more memory than
+rendering at the exact size; fractional-scale support is planned in RFD 6.
+
 ## Accounts and sessions
 
 Genkan discovers cached, unlocked, non-system users through AccountsService.
