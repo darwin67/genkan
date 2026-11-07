@@ -57,10 +57,12 @@ systemd.services.greetd.restartIfChanged = false;
 
 On a multi-monitor layout, the Cage window continues to render wallpaper over
 the full desktop while Genkan places authentication on one output. By default
-it deterministically chooses the first connector name other than `eDP-1`, then
-falls back to `eDP-1` when no other named output is available. To prefer a
+it deterministically chooses an external connector by type and numeric suffix
+(`DP-2` before `DP-10`), then falls back to an internal `eDP-`, `LVDS-`, or
+`DSI-` panel when no external named output is available. To prefer a
 particular connector, add `--authentication-output DP-2` after `genkan login`;
-if that connector is absent, the same default fallback still applies. Genkan
+internal panels can also be selected explicitly. If that connector is absent,
+the same default fallback still applies. Genkan
 re-evaluates this placement when outputs are connected, removed, rearranged, or
 rescaled while the greeter is running.
 
@@ -100,7 +102,7 @@ interacts with the lock screen.
 
 The lock covers every output but presents the dimmed authentication interface
 on only one; all remaining outputs show unobstructed wallpaper. It uses the
-same external-output-first, `eDP-1` fallback policy as login. Pass
+same external-output-first, internal-panel fallback policy as login. Pass
 `--authentication-output DP-2` to select a preferred connector. The preference
 is preserved by `--daemonize`, and the lock moves authentication to the normal
 fallback if the chosen output disappears.
