@@ -142,6 +142,7 @@ supported compositors, swayidle setup, and fail-closed recovery.
 - [Deployment and greetd configuration](docs/deployment.md)
 - [Development and verification](docs/development.md)
 - [Requests for Discussion](rfd/README.adoc)
+- [Design system](docs/design-system/README.md)
 - [Deferred work](docs/deferred.md)
 
 ## Validation
