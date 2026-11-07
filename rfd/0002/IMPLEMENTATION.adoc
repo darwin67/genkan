@@ -216,11 +216,17 @@ inside the package output.
 
 == Phase 4: Accessibility and verification
 
-* [ ] Select representative brightest, darkest, and high-local-contrast frames
+The remaining follow-ups are tracked in Deferred Work, not claimed complete.
+The link:../0005/README.adoc[RFD 5] shared design supersedes Phase 3's global
+20% darkening layer with undimmed wallpaper; contrast must be checked against
+that current presentation rather than the historical Phase 3 treatment.
+
+* [~] Select representative brightest, darkest, and high-local-contrast frames
   from every catalog entry and extend renderer-aware contrast checks to those
-  underlays.
-* [ ] Verify all existing text, focus, control-boundary, menu, and dialog
-  contrast targets with the video darkening treatment.
+  underlays. Deferred: link:../../docs/deferred.md#wallpaper-contrast-frame-corpus[frame corpus].
+* [~] Verify all existing text, focus, control-boundary, menu, and dialog
+  contrast targets against the current undimmed wallpaper treatment.
+  Deferred: link:../../docs/deferred.md#wallpaper-control-and-text-contrast[contrast audit].
 * [x] Add deterministic tests for pipeline state transitions, first-frame
   fallback, latest-frame replacement, looping, failure, and bounded retry.
   The state transitions are covered by
@@ -237,13 +243,22 @@ inside the package output.
   `receiving_failure_preserves_the_last_displayed_frame` and
   `terminal_failure_during_allocation_preserves_the_displayed_frame`, and the
   bounded software-decoder retry by `software_retry_only_precedes_the_first_frame`.
-* [ ] Add animated evidence that observes distinct valid frames without
+* [~] Add animated evidence that observes distinct valid frames without
   weakening the stable deterministic screenshot checks.
-* [ ] Measure startup latency, steady-state CPU/GPU use, frame delivery, and
+  The packaged smoke already checks distinct nonblank frames; retaining and
+  reviewing evidence is deferred:
+  link:../../docs/deferred.md#retained-animated-wallpaper-evidence[animated evidence].
+* [~] Measure startup latency, steady-state CPU/GPU use, frame delivery, and
   memory across repeated loops under software Vulkan and available hardware
   decoding; prefer frame drops over input latency.
-* [ ] Verify keyboard, pointer, touch, prompt transitions, and modal interaction
+  Deferred: link:../../docs/deferred.md#repeated-loop-wallpaper-performance[performance profile].
+* [~] Verify keyboard, pointer, touch, prompt transitions, and modal interaction
   remain responsive during playback.
-* [ ] Run `make verify`, `make e2e`, and packaged graphics smoke tests.
-* [ ] Run `make hardware-smoke` with animation on available connected AMD and
-  NVIDIA outputs and record output mode, decoder path, and result.
+  Deferred: link:../../docs/deferred.md#interaction-responsiveness-during-wallpaper-playback[input matrix].
+* [~] Run `make verify`, `make e2e`, and packaged graphics smoke tests.
+  These suites exist; the integrated Phase 4 acceptance record is deferred:
+  link:../../docs/deferred.md#integrated-animated-greeter-verification-record[verification record].
+* [~] Run `make hardware-smoke` and a separate animated playback check on
+  available connected AMD and NVIDIA outputs and record output mode, decoder
+  path, and result. The script itself uses `--reduce-motion`.
+  Deferred: link:../../docs/deferred.md#physical-animated-wallpaper-validation[physical animation checks].

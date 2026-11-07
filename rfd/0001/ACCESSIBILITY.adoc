@@ -2,40 +2,36 @@
 
 == Supported checks
 
-Genkan enforces the WCAG contrast requirements that can be verified from its
-current presentation model:
+The shared design introduced by link:../0005/README.adoc[RFD 5] supersedes
+RFD 1's original dimmed presentation. As checked on 2026-11-07, the tests in
+`src/design/style.rs` verify:
 
-* normal text and placeholders: at least 4.5:1;
-* focus indicators, control boundaries, avatars, and selector handles: at least
-  3:1;
-* 125 combinations of the base background and three animated color fields,
-  including absent, partial, and full coverage after global dimming;
-* every active, hovered, pressed, and disabled control style, plus dialogs,
-  menus, selected menu rows, selected input text, and scrollbar thumb states;
-* menus over both dark and white page content, and modal dialogs over the same
-  extremes after applying the production scrim.
+* at least 4.5:1 for primary, date, clock, and placeholder text over 125
+  combinations of the generated base background and three color fields, plus
+  the active field placeholder over those same combinations;
+* at least 4.5:1 for menu text, highlighted menu text, alert title/body, and the
+  active default alert button over black and mid-tone blue-gray underlays;
+* at least 3:1 for the active Cancel alert button label over those underlays;
+* focus-ring width changes, not a numeric contrast proof for all focus rings.
 
-The tests alpha-composite each foreground and material token over the sampled
-background combinations using both iced rendering paths: linear-light blending
-for the default wgpu renderer and encoded-sRGB blending for tiny-skia. They
-model nested dialog and menu surfaces and each renderer's border layer order,
-convert sRGB channels to relative luminance, and apply the WCAG contrast-ratio
-formula. The generated preview evidence still provides a visual check, but
-screenshots are not the numerical source of truth.
+The numeric tests alpha-composite foreground and material tokens in both
+linear-light and encoded-sRGB blend spaces, convert channels to relative
+luminance, and apply the WCAG contrast-ratio formula. They include nested menu
+and alert surfaces and the modal scrim. They do not model text shadows or prove
+every interactive state, control boundary, bright photographic underlay, or
+continuously antialiased edge. Screenshots remain visual checks, not the
+numerical source of truth.
 
-Contrast-critical quads intentionally avoid iced shadows because the pinned
-wgpu shader combines shadow and quad alpha before framebuffer blending. Material
-opacity, borders, focus rings, and the modal scrim provide hierarchy without
-entering that renderer-specific alpha path.
-
-The quarter-step field coverage is representative rather than an exhaustive
-proof over continuously antialiased edges. RFD 0001 records this as its numeric
-acceptance boundary without claiming a stronger continuous proof. A future
-renderer-level verification can strengthen that boundary independently.
+The wallpaper is now undimmed except beneath the modal scrim. Text over actual
+photographic wallpaper therefore depends on the selected media, and a pure
+white underlay is not covered by the current translucent-material tests. The
+historical RFD 1 acceptance record is not a claim that the current design meets
+all of its original numeric targets. Photographic contrast and stronger
+continuous coverage remain in link:../../docs/deferred.md[Deferred Work].
 
 == Framework boundary
 
-The pinned iced 0.13 widget and window backends do not expose an accessibility
+The pinned iced 0.14.0 widget and window backends do not expose an accessibility
 tree, roles, accessible names, descriptions, or live-region/status announcement
 API. Genkan therefore cannot yet publish a semantic account-tile name combining
 the display name and username, nor can it mark status updates for assistive
@@ -50,28 +46,38 @@ widget state and is intentionally out of scope.
 
 == Upstream roadmap and deferral criteria
 
-This status was checked against upstream iced on 2026-08-31. Iced's open
+This status was rechecked against upstream iced on 2026-11-07. Iced's open
 https://github.com/iced-rs/iced/issues/552[Implement accessibility support issue]
 tracks native platform integration, widget hierarchy and metadata, actions, and
 relationships. Its implementation checklist remains open. The repository's
-textual https://github.com/iced-rs/iced/blob/master/ROADMAP.md[ROADMAP.md]
-does not assign accessibility to a release or date.
+textual https://github.com/iced-rs/iced/blob/8ff48c42b0d5188223501ea1ccc506fd5beaf36a/ROADMAP.md[ROADMAP.md]
+only links to a graphical roadmap; it is not evidence of a release commitment.
 
-Released iced 0.13 and 0.14 do not expose semantic widget roles, accessible
+Iced https://github.com/iced-rs/iced/releases/tag/0.14.0[0.14.0] remains the
+latest upstream release. It does not expose semantic widget roles, accessible
 names or descriptions, a platform screen-reader bridge, or live-region/status
-announcements. The current 0.15 development branch's
-https://github.com/iced-rs/iced/blob/master/core/src/widget.rs[Widget trait]
-also has no merged public API for them. Upstream direction favors AccessKit, but the
-https://github.com/iced-rs/rfcs/pull/21[AccessKit integration RFC], the older
+announcements. Its https://github.com/iced-rs/iced/blob/0.14.0/core/src/widget.rs[Widget trait],
+https://github.com/iced-rs/iced/blob/0.14.0/core/src/widget/operation.rs[Operation trait],
+and https://github.com/iced-rs/iced/blob/0.14.0/winit/src/lib.rs[winit backend]
+have no such integration. The same interfaces at
+https://github.com/iced-rs/iced/tree/8ff48c42b0d5188223501ea1ccc506fd5beaf36a[0.15.0-dev revision 8ff48c4]
+also lack it; neither revision's workspace/winit manifests include AccessKit.
+This is an iced integration limit, not a lack of Linux support in AccessKit itself.
+The https://github.com/iced-rs/rfcs/pull/21[AccessKit integration RFC], the older
 https://github.com/iced-rs/iced/pull/1849[WIP: Iced accessibility implementation],
 and the newer https://github.com/iced-rs/iced/pull/3111[Accesskit integration proof of concept]
 remain unmerged experimental work. The newer proof of concept explicitly
 supports only Button and Text and describes itself as intentionally unfinished.
+Another https://github.com/iced-rs/iced/pull/3281[accessibility implementation]
+was closed unmerged in March 2026; the
+https://github.com/iced-rs/iced/pull/3281#issuecomment-4061202061[maintainer response]
+said “I'll work on this myself” without committing to a release or date.
 
 A https://github.com/iced-rs/iced/issues/552#issuecomment-2181112406[2024 maintainer comment]
 anticipated accessibility in “the release after the next one,” but 0.14 shipped
-without it and no replacement target has been committed. Genkan therefore does
-not depend on that historical estimate or on a fork-specific implementation.
+without it and the checked issue/PR records provide no replacement target.
+Genkan therefore does not depend on that historical estimate or on a
+fork-specific implementation.
 
 The deferred work becomes actionable only when a released upstream iced API
 provides the relevant capability on Genkan's supported Linux runtime:

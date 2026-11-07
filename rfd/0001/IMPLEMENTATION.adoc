@@ -102,6 +102,10 @@ Implements link:README.adoc[RFD 1: Tahoe-inspired greeter interaction and visual
 * [x] Verify those contrast targets over 125 representative generated background
   combinations, both iced blend spaces, and bright overlay underlays; see
   link:ACCESSIBILITY.adoc[accessibility verification].
+  These two contrast entries record the original RFD 1 acceptance boundary,
+  superseded by RFD 5's undimmed shared design. For current, narrower test
+  coverage, see link:ACCESSIBILITY.adoc#supported-checks[supported checks];
+  they do not establish contrast for every current state or bright underlay.
 
 == Session and power controls
 
