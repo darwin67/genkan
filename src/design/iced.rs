@@ -50,6 +50,108 @@ pub(crate) fn scaled_label<'a>(
         .wrapping(Wrapping::None)
 }
 
+/// Wallpaper text has a small dark outline; it never dims the wallpaper.
+/// Both layers shape and wrap identically, including long PAM notices.
+pub(crate) fn wallpaper_label<'a, M: 'a>(
+    content: impl Into<String>,
+    style: TextStyle,
+    color: Rgba,
+    scale: f32,
+    wrapping: Wrapping,
+) -> iced::Element<'a, M> {
+    let content = content.into();
+    iced::Element::new(OutlinedLabel {
+        shadow: scaled_label(
+            content.clone(),
+            style,
+            super::tokens::color::TEXT_SHADOW,
+            scale,
+        )
+        .wrapping(wrapping)
+        .align_x(iced::Alignment::Center)
+        .into(),
+        foreground: scaled_label(content, style, color, scale)
+            .wrapping(wrapping)
+            .align_x(iced::Alignment::Center)
+            .into(),
+    })
+}
+
+struct OutlinedLabel<'a, M> {
+    foreground: iced::Element<'a, M>,
+    shadow: iced::Element<'a, M>,
+}
+
+impl<M> iced::advanced::Widget<M, iced::Theme, iced::Renderer> for OutlinedLabel<'_, M> {
+    fn children(&self) -> Vec<iced::advanced::widget::Tree> {
+        vec![
+            iced::advanced::widget::Tree::new(&self.foreground),
+            iced::advanced::widget::Tree::new(&self.shadow),
+        ]
+    }
+    fn diff(&self, tree: &mut iced::advanced::widget::Tree) {
+        tree.diff_children(&[&self.foreground, &self.shadow]);
+    }
+    fn size(&self) -> iced::Size<iced::Length> {
+        self.foreground.as_widget().size()
+    }
+    fn layout(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &iced::advanced::layout::Limits,
+    ) -> iced::advanced::layout::Node {
+        let foreground =
+            self.foreground
+                .as_widget_mut()
+                .layout(&mut tree.children[0], renderer, limits);
+        let shadow = self
+            .shadow
+            .as_widget_mut()
+            .layout(&mut tree.children[1], renderer, limits);
+        iced::advanced::layout::Node::with_children(foreground.size(), vec![foreground, shadow])
+    }
+    fn draw(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &iced::advanced::renderer::Style,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        viewport: &iced::Rectangle,
+    ) {
+        use iced::advanced::Renderer as _;
+        let mut children = layout.children();
+        let foreground = children.next().expect("foreground layout");
+        let shadow = children.next().expect("shadow layout");
+        // These are ordinary renderer translations, not Float overlays:
+        // shadow first, foreground last, and all below menus and alerts.
+        for (x, y) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+            renderer.with_translation(iced::Vector::new(x, y), |renderer| {
+                self.shadow.as_widget().draw(
+                    &tree.children[1],
+                    renderer,
+                    theme,
+                    style,
+                    shadow,
+                    cursor,
+                    viewport,
+                );
+            });
+        }
+        self.foreground.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            foreground,
+            cursor,
+            viewport,
+        );
+    }
+}
+
 fn weight(weight: u16) -> Weight {
     match weight {
         0..=150 => Weight::Thin,

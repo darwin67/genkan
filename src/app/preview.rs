@@ -21,6 +21,8 @@ pub(crate) enum Fixture {
     ChangeUser,
     SessionMenu,
     SecretPrompt,
+    CapsLock,
+    StatusBar,
     Users,
     DuplicateNames,
     LargeAccountSet,
@@ -124,6 +126,13 @@ pub(super) fn build(
         power_menu_open: false,
         menu_highlight: 0,
         shake: None,
+        keyboard: matches!(fixture, Fixture::CapsLock | Fixture::StatusBar).then(|| {
+            genkan_session_lock::keyboard::KeyboardStatus {
+                caps_lock: fixture == Fixture::CapsLock,
+                layout: Some("English (US)".into()),
+            }
+        }),
+        network: (fixture == Fixture::StatusBar).then_some("Network link up"),
         reduced_motion: wallpaper_settings.reduced_motion,
         wallpaper: wallpaper::State::start_deferred(&wallpaper_settings),
         pending_heic: wallpaper::selects_dynamic_heic(&wallpaper_settings)
@@ -193,7 +202,11 @@ impl State {
         };
 
         match fixture {
-            Fixture::Selected | Fixture::SessionMenu | Fixture::SecretPrompt => {}
+            Fixture::Selected
+            | Fixture::SessionMenu
+            | Fixture::SecretPrompt
+            | Fixture::CapsLock
+            | Fixture::StatusBar => {}
             Fixture::ChangeUser => {
                 // Another eligible account makes Change User available.
                 state.accounts.push(Account::override_account(

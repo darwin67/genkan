@@ -9,6 +9,7 @@ mod locker;
 mod outputs;
 mod power;
 mod stable_file;
+mod status;
 mod wallpaper;
 
 use genkan::sessions;
@@ -921,7 +922,9 @@ mod tests {
                     .to_owned()
             })
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 20);
+        assert_eq!(names.len(), 22);
+        assert!(names.contains(&"caps-lock".to_owned()));
+        assert!(names.contains(&"status-bar".to_owned()));
         assert!(names.contains(&"power-menu".to_owned()));
         assert!(names.contains(&"selected".to_owned()));
         assert!(names.contains(&"session-menu".to_owned()));

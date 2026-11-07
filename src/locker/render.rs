@@ -59,12 +59,23 @@ pub(super) fn frame(
     background: Option<RgbaFrame>,
     clock: Option<RgbaFrame>,
     identity: Option<RgbaFrame>,
+    shake: f32,
 ) -> PresentationFrame {
     PresentationFrame::new(
         background,
         layout(),
         clock.and_then(|clock| AnchoredOverlay::new(clock, points(spacing::CLOCK_TOP))),
-        identity.and_then(|identity| AnchoredOverlay::new(identity, 0)),
+        identity.and_then(|identity| {
+            let (width, height) = identity.dimensions();
+            let backdrop = genkan_session_lock::material::Backdrop {
+                x: ((width as f32 - px(size::FIELD_WIDTH)) / 2.0 + px(shake)).max(0.0) as u32,
+                y: height.saturating_sub(px(spacing::IDENTITY_BOTTOM + size::FIELD_HEIGHT) as u32),
+                width: px(size::FIELD_WIDTH) as u32,
+                height: px(size::FIELD_HEIGHT) as u32,
+                radius: px(radius::FIELD) as u32,
+            };
+            AnchoredOverlay::new(identity, 0).map(|overlay| overlay.with_backdrop(backdrop))
+        }),
     )
     .with_dimming(None)
 }
@@ -93,6 +104,8 @@ struct IdentityContent<'a> {
 pub(super) struct Renderer {
     fonts: FontSystem,
     glyphs: SwashCache,
+    pub(super) keyboard: genkan_session_lock::keyboard::KeyboardStatus,
+    pub(super) shake: f32,
 }
 
 impl Renderer {
@@ -100,6 +113,8 @@ impl Renderer {
         Self {
             fonts: font::font_system(),
             glyphs: SwashCache::new(),
+            keyboard: Default::default(),
+            shake: 0.0,
         }
     }
 
@@ -228,7 +243,7 @@ impl Renderer {
             diameter: px(size::AVATAR),
         };
         let pill = TextBox {
-            x: (canvas.width as f32 - px(size::FIELD_WIDTH)) / 2.0,
+            x: (canvas.width as f32 - px(size::FIELD_WIDTH)) / 2.0 + px(self.shake),
             y: pill_top,
             width: px(size::FIELD_WIDTH),
             height: px(size::FIELD_HEIGHT),
@@ -274,7 +289,12 @@ impl Renderer {
         let text = TextBox {
             x: pill.x + px(component::FIELD_PADDING_LEADING),
             y: pill.y,
-            width: px(placeholder_width()),
+            width: px(placeholder_width()
+                - if self.keyboard.caps_lock {
+                    component::GLYPH_ARROW + component::ITEM_CONTENT_GAP
+                } else {
+                    0.0
+                }),
             height: pill.height,
         };
         if content.masked > 0 {
@@ -296,6 +316,16 @@ impl Renderer {
                 palette::TEXT_PLACEHOLDER,
                 text,
                 Align::Left,
+            );
+        }
+        if self.keyboard.caps_lock {
+            let side = px(component::GLYPH_ARROW).round() as u32;
+            canvas.draw_glyph(
+                Glyph::CapsLock,
+                palette::TEXT_PRIMARY,
+                (pill.x + pill.width - px(component::FIELD_PADDING_TRAILING) - side as f32) as i32,
+                (pill.y + (pill.height - side as f32) / 2.0) as i32,
+                side,
             );
         }
         if let Some(submit) = submit {
@@ -350,6 +380,35 @@ impl Renderer {
             single(self, &mut canvas, RETRY_HINT, &mut y);
         }
         canvas.into_frame()
+    }
+
+    pub(super) fn status(&mut self, network: Option<&str>) -> Option<RgbaFrame> {
+        let text = [self.keyboard.layout.as_deref(), network]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("   ");
+        if text.is_empty() {
+            return None;
+        }
+        let text = self.fit(&text, text_style::BAR, px(size::MESSAGE_WIDTH));
+        let width = self.measure(&text, text_style::BAR).ceil();
+        let height = px(size::BAR_HEIGHT);
+        let mut canvas = Canvas::new(width, height);
+        self.draw_line(
+            &mut canvas,
+            &text,
+            text_style::BAR,
+            palette::TEXT_PRIMARY,
+            TextBox {
+                x: 0.0,
+                y: 0.0,
+                width,
+                height,
+            },
+            Align::Right,
+        );
+        Some(canvas.into_frame())
     }
 
     /// Shapes `text` in `style`, aligned within `width` pixels when given.
@@ -509,28 +568,45 @@ impl Renderer {
             (clip.x + clip.width).ceil() as i32,
             (clip.y + clip.height).ceil() as i32,
         );
-        for run in runs {
-            for glyph in run.glyphs {
-                let physical = glyph.physical((x, y), 1.0);
-                let baseline = run.line_y.round() as i32;
-                self.glyphs.with_pixels(
-                    &mut self.fonts,
-                    physical.cache_key,
-                    glyph.color_opt.unwrap_or(base),
-                    |offset_x, offset_y, glyph_color| {
-                        let pixel_x = physical.x + offset_x;
-                        let pixel_y = baseline + physical.y + offset_y;
-                        if pixel_x < left || pixel_y < top || pixel_x >= right || pixel_y >= bottom
-                        {
-                            return;
-                        }
-                        canvas.blend(
-                            pixel_x,
-                            pixel_y,
-                            glyph_pixel(glyph_color.as_rgba(), requested),
-                        );
-                    },
-                );
+        for shadow in [true, false] {
+            for run in runs {
+                for glyph in run.glyphs {
+                    let physical = glyph.physical((x, y), 1.0);
+                    let baseline = run.line_y.round() as i32;
+                    self.glyphs.with_pixels(
+                        &mut self.fonts,
+                        physical.cache_key,
+                        glyph.color_opt.unwrap_or(base),
+                        |offset_x, offset_y, glyph_color| {
+                            let pixel_x = physical.x + offset_x;
+                            let pixel_y = baseline + physical.y + offset_y;
+                            if pixel_x < left
+                                || pixel_y < top
+                                || pixel_x >= right
+                                || pixel_y >= bottom
+                            {
+                                return;
+                            }
+                            if shadow {
+                                let alpha =
+                                    glyph_pixel(glyph_color.as_rgba(), rgba8(palette::TEXT_SHADOW))
+                                        [3];
+                                let offset = DENSITY as i32;
+                                for (dx, dy) in
+                                    [(-offset, 0), (offset, 0), (0, -offset), (0, offset)]
+                                {
+                                    canvas.blend(pixel_x + dx, pixel_y + dy, [0, 0, 0, alpha]);
+                                }
+                            } else {
+                                canvas.blend(
+                                    pixel_x,
+                                    pixel_y,
+                                    glyph_pixel(glyph_color.as_rgba(), requested),
+                                );
+                            }
+                        },
+                    );
+                }
             }
         }
     }
@@ -1099,8 +1175,12 @@ mod tests {
         assert!(
             frame.pixels()[time_top..]
                 .chunks_exact(4)
-                .any(|pixel| pixel[..3] == glass[..3] && pixel[3] == glass[3]),
-            "the time is drawn in clock glass"
+                .any(|pixel| pixel[0] > 0
+                    && pixel[0] < glass[0]
+                    && pixel[0] <= pixel[1]
+                    && pixel[1] <= pixel[2]
+                    && pixel[3] > glass[3]),
+            "the translucent clock glass is composited over its dark outline"
         );
         let date_rows = &frame.pixels()[..time_top];
         assert!(
@@ -1113,14 +1193,22 @@ mod tests {
     fn the_frame_is_undimmed_and_anchored_to_the_output_edges() {
         let identity = RgbaFrame::new(1, 1, vec![0; 4].into()).unwrap();
         let clock = RgbaFrame::new(1, 1, vec![0; 4].into()).unwrap();
-        let frame = frame(None, Some(clock.clone()), Some(identity.clone()));
+        let frame = frame(None, Some(clock.clone()), Some(identity.clone()), 0.0);
         let expected = PresentationFrame::new(
             None,
             OverlayLayout::new(DENSITY)
                 .unwrap()
                 .with_top_fit(12, 48, 20),
             AnchoredOverlay::new(clock, 183),
-            AnchoredOverlay::new(identity, 0),
+            AnchoredOverlay::new(identity, 0).map(|overlay| {
+                overlay.with_backdrop(genkan_session_lock::material::Backdrop {
+                    x: 0,
+                    y: 0,
+                    width: px(size::FIELD_WIDTH) as u32,
+                    height: px(size::FIELD_HEIGHT) as u32,
+                    radius: px(radius::FIELD) as u32,
+                })
+            }),
         );
         assert_eq!(frame, expected);
     }

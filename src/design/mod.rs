@@ -7,6 +7,7 @@
 pub(crate) mod font;
 pub(crate) mod glyph;
 pub(crate) mod iced;
+pub(crate) mod material;
 pub(crate) mod style;
 pub(crate) mod text;
 pub(crate) mod tokens;
