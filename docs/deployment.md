@@ -259,7 +259,19 @@ Wayland sessions come exclusively from validated
 `wayland-sessions/*.desktop` entries in `XDG_DATA_DIRS`. Genkan honors directory
 precedence and hidden-entry masking; validates type, visibility, `TryExec`, and
 executable availability; applies Desktop Entry quoting and field-code rules;
-and never invokes a shell.
+and retains the resulting validated argument vector. Genkan does not invoke a
+shell itself. Before sending `StartSession`, it POSIX-single-quotes every
+argument (including empty arguments and embedded single quotes), because
+greetd joins the vector with spaces and passes it to `/bin/sh -c`. This keeps
+spaces, dollar signs, and other shell syntax literal in session arguments.
+
+This boundary was verified against greetd **0.10.3**, commit
+[`08efe60feceea8c81f9571c666880ff1e1c2e3ff`](https://git.sr.ht/~kennylevinsen/greetd/tree/08efe60feceea8c81f9571c666880ff1e1c2e3ff/item/greetd/src/session/worker.rs):
+`greetd/src/session/worker.rs` lines 228–235 construct `exec {cmd.join(" ")}`
+(with optional profile sourcing), and lines 267–274 execute `/bin/sh -c`.
+The source archive is `https://git.sr.ht/~kennylevinsen/greetd/archive/0.10.3.tar.gz`;
+this is also the greetd version in the repository's pinned nixpkgs revision
+`44a91898084f46797b5fac650c7e8c9ac38c43d4`.
 
 ## Power policy
 

@@ -64,6 +64,18 @@ impl Client {
     }
 }
 
+/// Encodes validated argv for greetd, which joins `cmd` and executes it with
+/// `/bin/sh -c`. Each argument must survive that shell as a single literal.
+pub fn start_session_request(command: &[String], env: Vec<String>) -> Request {
+    Request::StartSession {
+        cmd: command
+            .iter()
+            .map(|argument| format!("'{}'", argument.replace('\'', "'\\''")))
+            .collect(),
+        env,
+    }
+}
+
 pub async fn begin(username: String) -> Result<(Client, Response), AuthError> {
     let socket = env::var_os("GREETD_SOCK").ok_or(AuthError::MissingSocket)?;
     begin_at(Path::new(&socket), username).await
@@ -161,6 +173,40 @@ mod tests {
     use super::*;
     use greetd_ipc::codec::TokioCodec;
     use tokio::net::UnixListener;
+
+    #[test]
+    fn session_argv_survives_greetds_shell_literally() {
+        let arguments = [
+            "space value",
+            "single'quote",
+            "$HOME",
+            "$(exit 9); *",
+            "",
+            "a\nb",
+        ];
+        let command = ["printf", "%s\\0"]
+            .into_iter()
+            .chain(arguments)
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let Request::StartSession { cmd, env } =
+            start_session_request(&command, vec!["GENKAN_TEST=literal".into()])
+        else {
+            panic!("expected StartSession");
+        };
+        assert_eq!(cmd[3], "'single'\\''quote'");
+        assert_eq!(env, ["GENKAN_TEST=literal"]);
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("exec {}", cmd.join(" "))])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let expected = arguments
+            .iter()
+            .flat_map(|argument| argument.as_bytes().iter().copied().chain([0]))
+            .collect::<Vec<_>>();
+        assert_eq!(output.stdout, expected);
+    }
 
     #[test]
     fn normalizes_visible_and_secret_prompts() {

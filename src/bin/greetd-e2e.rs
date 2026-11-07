@@ -39,10 +39,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let response = client
-        .exchange(Request::StartSession {
-            cmd: vec![arguments.session_command],
-            env: vec!["GENKAN_E2E=passed".into()],
-        })
+        .exchange(auth::start_session_request(
+            &[
+                arguments.session_command,
+                "space value".into(),
+                "single'quote".into(),
+                "$HOME".into(),
+                "$(touch /tmp/genkan-e2e-injected)".into(),
+                String::new(),
+            ],
+            vec!["GENKAN_E2E=passed".into()],
+        ))
         .await?;
     if response != Response::Success {
         return Err(format!("StartSession returned unexpected response: {response:?}").into());

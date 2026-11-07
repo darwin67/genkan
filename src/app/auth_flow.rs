@@ -46,7 +46,7 @@ pub(super) enum AuthRequest {
 impl AuthRequest {
     fn into_greetd(self) -> Request {
         match self {
-            Self::StartSession { cmd, env } => Request::StartSession { cmd, env },
+            Self::StartSession { cmd, env } => auth::start_session_request(&cmd, env),
         }
     }
 }
@@ -524,7 +524,7 @@ mod tests {
         let Request::StartSession { cmd, env } = request.into_greetd() else {
             panic!("successful authentication emitted the wrong greetd request");
         };
-        assert_eq!(cmd, session.command);
+        assert_eq!(cmd, ["'/run/current-system/sw/bin/river'", "'-c'"]);
         assert_eq!(
             env,
             [
