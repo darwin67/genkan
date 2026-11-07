@@ -42,6 +42,15 @@ nix develop
 make dev
 ```
 
+Amp orbs run `.agents/setup` to prepare the pinned Nix development shell
+(including jj) and prefetch locked Cargo dependencies. Login shells in this
+checkout activate the complete environment automatically, including native
+libraries and wallpaper paths. `.agents/resume` initializes a colocated jj
+repository when needed; it does not install dependencies or start services.
+Setup deliberately skips compilation and VM tests to keep snapshot preparation
+short. Real greetd/PAM and session-lock VM tests need KVM, which hosted orbs do
+not expose; run those checks in CI or on a KVM-capable runner.
+
 Select another UI state with `PREVIEW`:
 
 ```sh

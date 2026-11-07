@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
+# Initialize after snapshot activation, not as shared setup state. The login
+# shell activates the already-prepared Nix environment; no installation here.
+if [[ ! -d .jj ]]; then
+  /bin/bash -lc 'jj git init --colocate'
+fi
+echo "[genkan resume] Ready; real greetd/session-lock VM tests require KVM"
