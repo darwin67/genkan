@@ -312,6 +312,9 @@ pub(super) fn close_timeout(window: window::Id) -> Task<Message> {
 }
 
 #[cfg(test)]
+mod properties;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
