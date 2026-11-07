@@ -14,6 +14,51 @@ The Makefile provides `dev`, `animated-dev`, `lock-dev`, `check`, `fmt`, `fmt-fi
 `hardware-smoke`, `e2e`, `build`, `package`, `verify`, `changelog`,
 `next-version`, and `clean` targets. `fuzz` is an opt-in nightly target.
 
+## Shared presentation
+
+`src/design/` owns the bundled Inter typeface, glyphs, styles, text fitting,
+and plain-data tokens used by iced login and the CPU lock renderer.
+`tokens.rs` mirrors `docs/design-system/tokens.json`; the token mirror test
+fails if either changes without the other. `make check-design`, also part of
+`make verify`, rejects new numeric control styling outside `src/design/`.
+Its regression fixtures cover color, font, spacing, comments, and structural
+zeroes. It is a lexical guard, not a Rust parser or a ban on geometry arithmetic.
+
+Controls sample a shared blurred copy of the owned wallpaper frame. The copy
+is at most 192 pixels on its longest edge, uses bounded stratified downsampling
+and three separable box passes, and is cached until the wallpaper allocation
+changes. Both renderers crop it with the original wallpaper's cover geometry
+and clip it to the control. A dark backing bounds its brightest channel even
+over white artwork; the wallpaper outside controls stays undimmed. The fallback
+generated background keeps its existing contrast-tested control treatment.
+
+Contrast tests use the actual control color roles and filtered material over
+RGB cube vertices and packaged poster samples, in encoded and linear sRGB.
+Wallpaper text is tested with its dark outline; this does not claim exhaustive
+antialias-edge coverage. The lock rejection shake uses the login motion curve,
+requests overlay-only frames at the runtime's 16ms cadence, ends at rest, and
+is disabled by reduced motion. It does not change authentication or unlocking.
+
+Caps Lock and the active layout name come from the focused Wayland keyboard's
+XKB keymap and `modifiers` event, never from observing Caps Lock key presses.
+Lock reuses its SCTK seat keyboard. Login briefly observes iced's own borrowed
+Wayland connection every 500ms; a second connection would not own keyboard
+focus and cannot reliably supply this state. The observer does not interpret
+key events, change focus, or retain response text. Unavailable keymaps, absent
+focus, and non-Wayland backends omit the items rather than guess. Deterministic
+previews use explicitly synthetic metadata and never contact system services.
+
+Network presentation reads only `/sys/class/net/*/operstate` (excluding loopback).
+“Network link up” means an interface reports `up`, not that Internet access was
+tested. “Network link down” requires all observed interfaces to have known down
+states; unknown or unreadable states without an up interface omit the item.
+There are no network requests, NetworkManager dependency, or new daemons. Lock
+checks every five seconds; login shares its metadata timer.
+
+After presentation changes, describe the jj change and run `jj new` before
+`make update-reference-images` or any Nix build: flake sources include only
+Git-tracked files, not newly added jj working-copy files.
+
 ## Property testing and fuzzing
 
 `make test` runs the property tests alongside the ordinary unit tests. The

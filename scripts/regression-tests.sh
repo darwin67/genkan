@@ -1128,4 +1128,24 @@ test_reference_image_refresh_preserves_failed_rollback
 test_reference_image_refresh_retries_committed_cleanup
 test_reference_image_refresh_rejects_concurrent_update
 
+mkdir -p "$tmp_dir/design/src/design"
+cat > "$tmp_dir/design/src/view.rs" <<'EOF'
+fn view() {
+    text(".size(99)").size(text_style::FIELD.size).padding([0, spacing::MENU_PADDING]);
+    // .spacing(34) is not code.
+}
+#[cfg(test)]
+mod tests { fn fixture() { text("Fixture").size(17); } }
+EOF
+python3 "$repo_root/scripts/check-design-literals.py" "$tmp_dir/design/src/view.rs"
+for literal in '.size(17)' '.padding([0, 8])' '.spacing(4)' \
+  '.padding(Padding { top: 3.0, ..Default::default() })' \
+  'Color::from_rgb(0.1, 0.2, 0.3)' 'Metrics::new(12.0, 18.0)'; do
+  printf 'fn view() { control%s; }\n' "$literal" > "$tmp_dir/design/src/view.rs"
+  expect_failure "design literal outside src/design" \
+    python3 "$repo_root/scripts/check-design-literals.py" "$tmp_dir/design/src/view.rs"
+done
+cp "$tmp_dir/design/src/view.rs" "$tmp_dir/design/src/design/fixture.rs"
+python3 "$repo_root/scripts/check-design-literals.py" "$tmp_dir/design/src/design/fixture.rs"
+
 echo "Shell regression tests passed"

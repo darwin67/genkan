@@ -81,6 +81,12 @@ package:
 
 verify: fmt lint test check-rfds package heic-assets heic-decode smoke wallpaper-smoke lock-smoke evidence
 
+verify: check-design
+
+.PHONY: check-design
+check-design:
+	python3 scripts/check-design-literals.py
+
 changelog:
 	git cliff --output CHANGELOG.md
 
