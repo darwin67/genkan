@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+SECONDS=0
+
+if ! command -v nix >/dev/null 2>&1; then
+  if [[ -r $HOME/.nix-profile/etc/profile.d/nix.sh ]]; then
+    # shellcheck disable=SC1091
+    source "$HOME/.nix-profile/etc/profile.d/nix.sh"
+  elif [[ -r /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+    # shellcheck disable=SC1091
+    source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+  else
+    echo "[genkan setup] Installing Nix 2.35.3"
+    curl --fail --silent --show-error --location \
+      https://releases.nixos.org/nix/nix-2.35.3/install |
+      sh -s -- --no-daemon --yes --no-channel-add --no-modify-profile
+    # shellcheck disable=SC1091
+    source "$HOME/.nix-profile/etc/profile.d/nix.sh"
+  fi
+fi
+nix_bin=$(command -v nix)
+mkdir -p "$HOME/.config/nix"
+features='extra-experimental-features = nix-command flakes'
+if ! grep -Fqx "$features" "$HOME/.config/nix/nix.conf" 2>/dev/null; then
+  printf '\n%s\n' "$features" >> "$HOME/.config/nix/nix.conf"
+fi
+printf '[genkan setup] Nix ready (%ss)\n' "$SECONDS"
+
+# Keep the development closure rooted in the snapshot; fetch, but do not compile,
+# Cargo dependencies. Release/graphics builds can exceed the setup time limit.
+mkdir -p "$HOME/.cache/genkan-orb"
+echo "[genkan setup] Preparing the pinned development shell and Cargo cache"
+"$nix_bin" --extra-experimental-features 'nix-command flakes' develop \
+  --profile "$HOME/.cache/genkan-orb/dev-shell" "$repo_root" \
+  --command cargo fetch --locked
+printf '[genkan setup] Dependencies ready (%ss)\n' "$SECONDS"
+
+# Amp and supervised services use separate login shells. Export the entire Nix
+# environment there, including native-library and wallpaper paths, not just PATH.
+marker='# Genkan orb development shell'
+if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+  {
+    printf '\n%s\n' "$marker"
+    printf 'if [[ -z "${IN_NIX_SHELL:-}" && ( "$PWD" == %q || "$PWD" == %q/* ) ]]; then\n' \
+      "$repo_root" "$repo_root"
+    printf '  eval "$(%q --extra-experimental-features '\''nix-command flakes'\'' print-dev-env %q)"\n' \
+      "$nix_bin" "$repo_root"
+    printf 'fi\n'
+  } >> "$HOME/.bash_profile"
+fi
+printf '[genkan setup] Login-shell activation ready (%ss total)\n' "$SECONDS"

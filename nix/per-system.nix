@@ -215,6 +215,7 @@ let
       pkgs.awscli2
       pkgs.git-cliff
       pkgs.jq
+      pkgs.jujutsu
       pkgs.libheif
       pkgs.libxkbcommon
       pkgs.pam

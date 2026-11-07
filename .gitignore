@@ -27,6 +27,7 @@ rust-project.json
 /.direnv/
 /result
 /result-*
+/.amp/portals/*
 
 # Python script test artifacts
 __pycache__/
