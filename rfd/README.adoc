@@ -57,6 +57,13 @@ Implementation progress lives separately in `rfd/NNNN/IMPLEMENTATION.adoc` or
 checklist link to each other, keeping the design and decision record stable
 while implementation tasks are checked off.
 
+Use `[ ]` for open tasks, `[x]` for completed tasks, and `[~]` for explicitly
+deferred tasks. A deferred task must link to its entry in
+link:../docs/deferred.md[Deferred Work], which records scope, context, rationale,
+and a resume condition. The status table's `Tasks` column counts completed tasks
+over all tasks, including deferred ones; `Deferred` reports the deferred subset
+separately. Deferral is not completion.
+
 Run `make check-rfds` to validate source layout, metadata, state, title, and the
 checker regression fixtures.
 
@@ -66,7 +73,8 @@ checker regression fixtures.
 * `ideation`: a narrowly scoped topic or scratchpad without active revision.
 * `discussion`: under active review in the linked pull request.
 * `published`: discussion has converged and the RFD expresses project direction.
-* `committed`: the proposal is fully implemented and describes current behavior.
+* `committed`: the accepted implementation describes current behavior; any
+  remaining follow-ups are explicitly deferred and linked, not claimed complete.
 * `abandoned`: deliberately not proceeding or otherwise retained only for history.
 
 The usual path is `prediscussion` or `ideation` to `discussion`, then
@@ -83,7 +91,8 @@ a pull request, set the state to `discussion`, and add that pull request as the
 discussion URL.
 
 Before merging a proposal that represents project direction, move it to
-`published`. Once the described work is entirely implemented, update it to
-`committed`. Material changes to a published or committed RFD go through a new
+`published`. Once the accepted scope is implemented and any remaining follow-ups
+are explicitly recorded in Deferred Work, update it to `committed`.
+Material changes to a published or committed RFD go through a new
 pull request and retain the original discussion link unless the RFD explicitly
 documents a replacement.

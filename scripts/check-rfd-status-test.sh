@@ -106,16 +106,28 @@ fi
 reset_fixtures; write_valid_rfd prediscussion "" md
 run_success "0001  prediscussion    0/1"
 
+for format in adoc md; do
+  reset_fixtures; write_valid_rfd committed https://example.com/pull/1 "$format"
+  cat >> "$rfd_root/0001/IMPLEMENTATION.$format" <<'EOF'
+* [x] Finished task.
+** [X] Finished nested task.
+* [~] Deferred: link:../../docs/deferred.md#example[follow-up].
+EOF
+  run_success "0001  committed        2/4         1"
+done
+
 reset_fixtures; write_valid_rfd prediscussion ""
 rm "$rfd_root/0001/IMPLEMENTATION.adoc"
 run_failure "missing implementation checklist"
 
 reset_fixtures; write_valid_rfd prediscussion ""
 for marker in '*' '-' '+'; do
-  printf '\n%s [ ] This belongs in the implementation document.\n' "$marker" >> "$rfd_root/0001/README.adoc"
-  run_failure "implementation checkboxes belong in a separate implementation document"
-  sed -i.bak '$d' "$rfd_root/0001/README.adoc"
-  rm "$rfd_root/0001/README.adoc.bak"
+  for status in ' ' x '~'; do
+    printf '\n%s [%s] This belongs in the implementation document.\n' "$marker" "$status" >> "$rfd_root/0001/README.adoc"
+    run_failure "implementation checkboxes belong in a separate implementation document"
+    sed -i.bak '$d' "$rfd_root/0001/README.adoc"
+    rm "$rfd_root/0001/README.adoc.bak"
+  done
 done
 
 reset_fixtures; write_valid_rfd prediscussion ""

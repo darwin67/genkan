@@ -8,7 +8,7 @@ Enter the pinned Nix shell before running Cargo or Make targets:
 nix develop
 ```
 
-The Makefile provides `dev`, `animated-dev`, `check`, `fmt`, `fmt-fix`, `lint`,
+The Makefile provides `dev`, `animated-dev`, `lock-dev`, `check`, `fmt`, `fmt-fix`, `lint`,
 `test`, `scripts-test`, `check-rfds`, `smoke`, `wallpaper-smoke`, `lock-smoke`,
 `lock-vm`, `heic-assets`, `heic-decode`, `evidence`, `update-reference-images`,
 `hardware-smoke`, `e2e`, `build`, `package`, `verify`, `changelog`,
@@ -160,11 +160,22 @@ Run all local checks:
 make verify
 ```
 
+Run `make test` (including its invocation by `make verify`) in the foreground.
+A background shell job can inherit ignored SIGINT and spuriously fail the
+reference-image interruption regression. Before a Nix build in a colocated jj
+checkout, describe the change and run `jj new`: Nix source filtering uses
+Git-tracked files, while new jj working-copy files are not yet tracked by Git.
+This matters especially for newly added reference images and fixtures.
+
 `make smoke` runs the packaged-binary graphics check used by both architecture
 jobs in CI. It starts headless Weston, nests Cage with its pixman renderer, and
 launches Genkan using Mesa's software Vulkan driver. Genkan must remain alive
 until the controlled timeout. The check requires iced's wgpu backend and proves
 that Cage launched the packaged process with the intended Vulkan driver.
+It also compares animated wallpaper crops with the static poster, requires
+multiple distinct nonblank frames, and bounds short-term RSS growth. Those
+checks do not constitute the sustained performance or input-latency acceptance
+pass tracked in [Deferred Work](deferred.md).
 
 `make wallpaper-smoke` runs the headless layer-shell desktop check. It launches
 the packaged `genkan wallpaper` under headless Sway with two differently scaled
@@ -229,6 +240,8 @@ Run it from a Wayland session. It tests the system AMD and NVIDIA Vulkan ICD
 once per detected vendor, launches packaged Genkan under Vulkan-rendered nested
 Cage when that vendor has a display-connected adapter, and verifies that an
 AMD-only run does not load or open the NVIDIA driver.
+The script passes `--reduce-motion`; validate animated playback separately
+before claiming physical animation coverage.
 
 On Sway, the stricter invocation below also moves Cage to every active output,
 verifies its resulting tree location, and requires both GPU vendors and an
