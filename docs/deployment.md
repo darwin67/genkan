@@ -57,10 +57,12 @@ systemd.services.greetd.restartIfChanged = false;
 
 On a multi-monitor layout, the Cage window continues to render wallpaper over
 the full desktop while Genkan places authentication on one output. By default
-it deterministically chooses the first connector name other than `eDP-1`, then
-falls back to `eDP-1` when no other named output is available. To prefer a
+it deterministically chooses an external connector by type and numeric suffix
+(`DP-2` before `DP-10`), then falls back to an internal `eDP-`, `LVDS-`, or
+`DSI-` panel when no external named output is available. To prefer a
 particular connector, add `--authentication-output DP-2` after `genkan login`;
-if that connector is absent, the same default fallback still applies. Genkan
+internal panels can also be selected explicitly. If that connector is absent,
+the same default fallback still applies. Genkan
 re-evaluates this placement when outputs are connected, removed, rearranged, or
 rescaled while the greeter is running.
 
@@ -100,7 +102,7 @@ interacts with the lock screen.
 
 The lock covers every output but presents the dimmed authentication interface
 on only one; all remaining outputs show unobstructed wallpaper. It uses the
-same external-output-first, `eDP-1` fallback policy as login. Pass
+same external-output-first, internal-panel fallback policy as login. Pass
 `--authentication-output DP-2` to select a preferred connector. The preference
 is preserved by `--daemonize`, and the lock moves authentication to the normal
 fallback if the chosen output disappears.
@@ -259,7 +261,19 @@ Wayland sessions come exclusively from validated
 `wayland-sessions/*.desktop` entries in `XDG_DATA_DIRS`. Genkan honors directory
 precedence and hidden-entry masking; validates type, visibility, `TryExec`, and
 executable availability; applies Desktop Entry quoting and field-code rules;
-and never invokes a shell.
+and retains the resulting validated argument vector. Genkan does not invoke a
+shell itself. Before sending `StartSession`, it POSIX-single-quotes every
+argument (including empty arguments and embedded single quotes), because
+greetd joins the vector with spaces and passes it to `/bin/sh -c`. This keeps
+spaces, dollar signs, and other shell syntax literal in session arguments.
+
+This boundary was verified against greetd **0.10.3**, commit
+[`08efe60feceea8c81f9571c666880ff1e1c2e3ff`](https://git.sr.ht/~kennylevinsen/greetd/tree/08efe60feceea8c81f9571c666880ff1e1c2e3ff/item/greetd/src/session/worker.rs):
+`greetd/src/session/worker.rs` lines 228–235 construct `exec {cmd.join(" ")}`
+(with optional profile sourcing), and lines 267–274 execute `/bin/sh -c`.
+The source archive is `https://git.sr.ht/~kennylevinsen/greetd/archive/0.10.3.tar.gz`;
+this is also the greetd version in the repository's pinned nixpkgs revision
+`44a91898084f46797b5fac650c7e8c9ac38c43d4`.
 
 ## Power policy
 

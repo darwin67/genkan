@@ -109,6 +109,7 @@ pub(super) fn build(
         page_scroll_id: Id::unique(),
         input_id,
         conversation,
+        retry_failure: None,
         session_message: state.session_message,
         power_message: state.power_message,
         power_message_is_error: state.power_message_is_error,
@@ -130,8 +131,7 @@ pub(super) fn build(
         output_monitor,
         authentication_region,
         window_size: None,
-        authentication_layout: (state.phase == Phase::WaitingForInput)
-            .then_some(super::view::ScreenLayout::Flow),
+        authentication_layout: None,
     };
     let base_focus = app.focus_order().first().copied();
     app.power_state = power_state;
@@ -250,7 +250,6 @@ impl State {
                 state.message_is_error = true;
             }
             Fixture::AuthenticationFailure => {
-                state.phase = Phase::Failed;
                 state.message = Some("Authentication failed".into());
                 state.message_is_error = true;
             }
@@ -469,11 +468,12 @@ mod tests {
         assert!(long.username.chars().count() >= 240);
         assert!(long.requires_flow_layout());
 
-        let (secret, _) = build_fixture(Fixture::SecretPrompt);
+        let (mut secret, _) = build_fixture(Fixture::SecretPrompt);
         assert!(secret.conversation.is_secret());
+        let _ = secret.update(Message::WindowResized(iced::Size::new(1280.0, 800.0)));
         assert_eq!(
             secret.authentication_layout,
-            Some(crate::app::view::ScreenLayout::Flow),
+            Some(crate::app::view::ScreenLayout::Wide),
             "preview prompts must exercise the production layout latch"
         );
 
@@ -484,12 +484,9 @@ mod tests {
         );
 
         let (authentication, _) = build_fixture(Fixture::AuthenticationFailure);
-        assert_eq!(authentication.phase, Phase::Failed);
+        assert_eq!(authentication.phase, Phase::WaitingForInput);
         assert!(authentication.conversation.notice_is_error());
-        assert_eq!(
-            authentication.focus_target,
-            Some(FocusTarget::RetryAuthentication)
-        );
+        assert!(authentication.conversation.input().is_empty());
 
         let (discovery, _) = build_fixture(Fixture::DiscoveryFailure);
         assert_eq!(
@@ -526,6 +523,30 @@ mod tests {
             power.focus_before_modal,
             Some(FocusTarget::AuthenticationInput)
         );
+    }
+
+    #[test]
+    fn preview_restarts_rejected_authentication_and_the_retry_fallback_without_services() {
+        let (mut app, _) = build_fixture(Fixture::Selected);
+        app.phase = Phase::Authenticating;
+        let attempt = app.conversation.attempt();
+        let _ = app.handle_auth_response(genkan::auth::Response::Error {
+            authentication: true,
+            description: "rejected".into(),
+        });
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_ne!(app.conversation.attempt(), attempt);
+        assert_eq!(app.conversation.notice(), Some("Authentication failed"));
+        assert!(app.conversation.input().is_empty());
+        assert_eq!(app.focus_target, Some(FocusTarget::AuthenticationInput));
+        assert!(app.client.is_none());
+
+        let _ = app.fail("Connection failed".into());
+        assert_eq!(app.focus_target, Some(FocusTarget::RetryAuthentication));
+        let _ = app.update(Message::Retry);
+        assert_eq!(app.phase, Phase::WaitingForInput);
+        assert_eq!(app.focus_target, Some(FocusTarget::AuthenticationInput));
+        assert!(app.client.is_none());
     }
 
     #[test]

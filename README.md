@@ -108,9 +108,10 @@ solar behavior, and autostart examples.
 
 With multiple outputs, Genkan presents authentication on one monitor and keeps
 the others as unobstructed animated wallpaper. It chooses the first available
-connector by name other than `eDP-1`, falling back to `eDP-1`; pass
+external connector by type and numeric suffix (`DP-2` before `DP-10`), falling
+back to an internal `eDP-`, `LVDS-`, or `DSI-` panel; pass
 `--authentication-output DP-2` to either `login` or `lock` to prefer a specific
-connector instead.
+connector instead, including an internal panel.
 
 ## Session-lock development status
 

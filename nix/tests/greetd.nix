@@ -9,6 +9,7 @@
         set -eu
         ${pkgs.coreutils}/bin/env > /tmp/genkan-e2e.env
         ${pkgs.coreutils}/bin/id -un > /tmp/genkan-e2e.user
+        printf '%s\0' "$@" > /tmp/genkan-e2e.argv
         ${pkgs.coreutils}/bin/touch /tmp/genkan-e2e.passed
         exec ${pkgs.coreutils}/bin/sleep infinity
       '';
@@ -60,5 +61,12 @@
     )
     machine.succeed("grep -Fx 'GENKAN_E2E=passed' /tmp/genkan-e2e.env")
     machine.succeed("grep -Fx 'alice' /tmp/genkan-e2e.user")
+    import base64
+    arguments = base64.b64decode(machine.succeed("base64 -w0 /tmp/genkan-e2e.argv"))
+    assert arguments.split(b"\0") == [
+        b"space value", b"single'quote", b"$HOME",
+        b"$(touch /tmp/genkan-e2e-injected)", b"", b"",
+    ], arguments
+    machine.fail("test -e /tmp/genkan-e2e-injected")
   '';
 }

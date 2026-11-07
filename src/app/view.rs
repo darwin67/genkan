@@ -136,6 +136,14 @@ impl App {
         .into()
     }
 
+    pub(super) fn prompt_screen_layout(&self) -> Option<ScreenLayout> {
+        self.window_size.map(|size| {
+            let region = authentication_region_or_full(self.authentication_region, size)
+                .scale_to(size.width, size.height);
+            screen_layout(Size::new(region.width, region.height))
+        })
+    }
+
     fn content(&self, size: Size) -> Element<'_, Message> {
         let main_content = self.main_content(size);
         match self.power_state {
@@ -805,7 +813,7 @@ fn account_tile<'a>(
 }
 
 fn dynamic_text_requires_flow(value: &str) -> bool {
-    value.contains(['\n', '\r']) || !value.is_ascii() || value.chars().count() > 80
+    value.contains(['\n', '\r']) || value.chars().count() > 80
 }
 
 fn authentication_region_or_full(
@@ -937,26 +945,42 @@ mod tests {
     #[test]
     fn active_prompt_uses_a_stable_scrollable_layout_across_resizes() {
         let compact = Size::new(640.0, 480.0);
-        let wide = Size::new(1920.0, 1080.0);
+        let wide = Size::new(1280.0, 800.0);
 
-        assert_eq!(
-            effective_screen_layout(
-                false,
-                Phase::WaitingForInput,
-                Some(ScreenLayout::Flow),
-                compact
+        let compact_output = crate::outputs::Region {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 960.0,
+            layout_width: 3840.0,
+            layout_height: 2160.0,
+        };
+        for (initial, region, expected) in [
+            (compact, None, ScreenLayout::Flow),
+            (wide, None, ScreenLayout::Wide),
+            (
+                Size::new(1920.0, 1080.0),
+                Some(compact_output),
+                ScreenLayout::Flow,
             ),
-            ScreenLayout::Flow
-        );
-        assert_eq!(
-            effective_screen_layout(
-                false,
-                Phase::Authenticating,
-                Some(ScreenLayout::Flow),
-                compact
-            ),
-            ScreenLayout::Flow
-        );
+        ] {
+            let mut app = super::super::tests::app();
+            app.authentication_region = region;
+            let _ = app.update(Message::WindowResized(initial));
+            let _ = app.handle_auth_response(genkan::auth::Response::Prompt {
+                secret: true,
+                message: "Password:".into(),
+            });
+            assert_eq!(app.authentication_layout, Some(expected));
+            for size in [compact, wide] {
+                let _ = app.update(Message::WindowResized(size));
+                let _ = app.update(Message::InputChanged("test input".into()));
+                assert_eq!(
+                    effective_screen_layout(false, app.phase, app.authentication_layout, size),
+                    expected
+                );
+            }
+        }
         assert_eq!(
             effective_screen_layout(true, Phase::WaitingForInput, Some(ScreenLayout::Flow), wide),
             ScreenLayout::Flow
@@ -1051,10 +1075,20 @@ mod tests {
     }
 
     #[test]
-    fn wide_glyphs_and_explicit_lines_require_flow_layout() {
-        assert!(dynamic_text_requires_flow("密碼を入力してください"));
+    fn unicode_labels_use_the_same_length_and_line_bounds() {
+        for label in [
+            "Password",
+            "José",
+            "Zoë",
+            "Preparing authentication…",
+            "密碼を入力してください",
+        ] {
+            assert!(!dynamic_text_requires_flow(label), "{label}");
+        }
         assert!(dynamic_text_requires_flow("first line\nsecond line"));
-        assert!(!dynamic_text_requires_flow("Password"));
+        assert!(dynamic_text_requires_flow("first line\rsecond line"));
+        assert!(!dynamic_text_requires_flow(&"é".repeat(80)));
+        assert!(dynamic_text_requires_flow(&"é".repeat(81)));
     }
 
     #[test]
