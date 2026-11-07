@@ -3,6 +3,7 @@ mod coordination;
 mod identity;
 mod launcher;
 mod preview;
+mod render;
 
 pub(crate) use preview::{run as run_preview, Fixture as PreviewFixture};
 
@@ -14,24 +15,14 @@ use std::io::Write;
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
 
-use bytes::Bytes;
-use cosmic_text::{Align, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
+use chrono::{DateTime, Local};
 use genkan_session_lock::{Input, Presentation, PresentationFrame, Refresh, RgbaFrame};
 use thiserror::Error;
 
 use crate::conversation::{Conversation, Effect, Response, Status};
-use crate::{theme, wallpaper};
+use crate::wallpaper;
 
 const MAX_AUTH_EVENTS_PER_REFRESH: usize = 32;
-const LOCK_CANVAS_WIDTH: u32 = 1280;
-const LOCK_CANVAS_HEIGHT: u32 = 800;
-const AUTHENTICATION_OVERLAY_WIDTH: u32 = 500;
-const AUTHENTICATION_OVERLAY_HEIGHT: u32 = 400;
-const AUTHENTICATION_RENDER_SCALE: u32 = 3;
-const AUTHENTICATION_FIELD_X: u32 = 55;
-const AUTHENTICATION_FIELD_Y: u32 = 247;
-const AUTHENTICATION_FIELD_WIDTH: u32 = 390;
-const AUTHENTICATION_FIELD_HEIGHT: u32 = 52;
 #[cfg(test)]
 static PROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -84,10 +75,13 @@ struct LockerPresentation {
     confirmed: bool,
     authorized: bool,
     background: Option<RgbaFrame>,
-    overlay: Option<RgbaFrame>,
+    /// The identity column; the frame exists once this does.
+    identity_overlay: Option<RgbaFrame>,
+    clock_overlay: Option<RgbaFrame>,
+    /// The minute since the Unix epoch the clock overlay shows.
+    clock_minute: Option<i64>,
     frame: Option<PresentationFrame>,
-    fonts: FontSystem,
-    glyphs: SwashCache,
+    renderer: render::Renderer,
     instruction_page: usize,
     #[cfg(feature = "lock-test")]
     fail_worker_after_ready: bool,
@@ -135,10 +129,11 @@ impl LockerPresentation {
             confirmed: false,
             authorized: false,
             background: None,
-            overlay: None,
+            identity_overlay: None,
+            clock_overlay: None,
+            clock_minute: None,
             frame: None,
-            fonts: crate::design::font::font_system(),
-            glyphs: SwashCache::new(),
+            renderer: render::Renderer::new(),
             instruction_page: 0,
             #[cfg(feature = "lock-test")]
             fail_worker_after_ready,
@@ -152,9 +147,8 @@ impl LockerPresentation {
     /// A presentation without the authentication worker, for wallpaper
     /// integration tests that do not exercise PAM.
     ///
-    /// `rebuild` is deliberately skipped: it shapes text and needs a host
-    /// font, which the sandboxed package test environment does not provide.
-    /// The wallpaper path under test does not depend on the overlay.
+    /// `rebuild` is deliberately skipped: the wallpaper path under test does
+    /// not depend on the overlays, and shaping them would only slow it down.
     #[cfg(test)]
     fn for_test(identity: identity::Identity, wallpaper: wallpaper::Settings) -> Self {
         Self {
@@ -166,10 +160,11 @@ impl LockerPresentation {
             confirmed: false,
             authorized: false,
             background: None,
-            overlay: None,
+            identity_overlay: None,
+            clock_overlay: None,
+            clock_minute: None,
             frame: None,
-            fonts: crate::design::font::font_system(),
-            glyphs: SwashCache::new(),
+            renderer: render::Renderer::new(),
             instruction_page: 0,
             #[cfg(feature = "lock-test")]
             fail_worker_after_ready: false,
@@ -300,45 +295,41 @@ impl LockerPresentation {
 
     fn rebuild(&mut self) {
         self.background = self.wallpaper.rgba_frame();
+        self.refresh_clock(Local::now());
         self.rebuild_overlay();
     }
 
+    /// Redraws the identity column and the frame that carries it.
     fn rebuild_overlay(&mut self) {
-        let (overlay_width, overlay_height) = authentication_overlay_dimensions();
-        let mut pixels = vec![0; (overlay_width * overlay_height * 4) as usize];
-        render_authentication_overlay(
-            &mut pixels,
-            overlay_width,
-            overlay_height,
+        self.identity_overlay = Some(self.renderer.identity(
             &self.identity,
             &self.conversation,
             self.confirmed,
             self.instruction_page,
-            &mut self.fonts,
-            &mut self.glyphs,
-        );
-        self.overlay = Some(
-            RgbaFrame::new(overlay_width, overlay_height, Bytes::from(pixels))
-                .expect("authentication overlay has valid dimensions"),
-        );
+        ));
         self.rebuild_frame();
     }
 
+    /// Redraws the clock when the minute it shows has passed, and reports
+    /// whether it did. The frame is rebuilt by the caller.
+    fn refresh_clock(&mut self, now: DateTime<Local>) -> bool {
+        let minute = now.timestamp().div_euclid(60);
+        if self.clock_minute == Some(minute) {
+            return false;
+        }
+        self.clock_minute = Some(minute);
+        self.clock_overlay = Some(self.renderer.clock(now));
+        true
+    }
+
     fn rebuild_frame(&mut self) {
-        let Some(overlay) = self.overlay.clone() else {
-            self.frame = None;
-            return;
-        };
-        let (overlay_width, overlay_height) = overlay.dimensions();
-        let (canvas_width, canvas_height) = authentication_canvas_dimensions();
-        self.frame = PresentationFrame::new(
-            canvas_width,
-            canvas_height,
-            self.background.clone(),
-            overlay,
-            (canvas_width - overlay_width) / 2,
-            (canvas_height - overlay_height) / 2,
-        );
+        self.frame = self.identity_overlay.clone().map(|identity| {
+            render::frame(
+                self.background.clone(),
+                self.clock_overlay.clone(),
+                Some(identity),
+            )
+        });
     }
 
     #[cfg(feature = "lock-test")]
@@ -352,12 +343,16 @@ impl LockerPresentation {
 
 impl Presentation for LockerPresentation {
     fn receive_latest(&mut self) -> Refresh {
-        if self.receive_auth() {
+        let authentication = self.receive_auth();
+        if authentication {
             self.rebuild_overlay();
-            Refresh::Overlay
-        } else {
-            Refresh::Unchanged
         }
+        if self.refresh_clock(Local::now()) {
+            self.rebuild_frame();
+        } else if !authentication {
+            return Refresh::Unchanged;
+        }
+        Refresh::Overlay
     }
 
     fn receive_deferred(&mut self) -> Refresh {
@@ -421,7 +416,10 @@ impl Presentation for LockerPresentation {
             }
             Input::Cancel => self.cancel_attempt(),
             Input::NextPage => {
-                if persistent_prompt(self.conversation.prompt()).is_none()
+                if self
+                    .renderer
+                    .prompt_above(&self.conversation, self.confirmed)
+                    .is_none()
                     && self.conversation.notice().is_none()
                 {
                     false
@@ -518,737 +516,6 @@ fn report_joined_ready(ready_fd: Option<OwnedFd>) -> Result<(), Error> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_authentication_overlay(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    identity: &identity::Identity,
-    conversation: &Conversation,
-    confirmed: bool,
-    instruction_page: usize,
-    fonts: &mut FontSystem,
-    glyphs: &mut SwashCache,
-) {
-    let scale = AUTHENTICATION_RENDER_SCALE;
-    let px = |value: u32| value * scale;
-    let position = |value: i32| value * scale as i32;
-    let font_size = |value: f32| value * scale as f32;
-
-    let display_name =
-        fit_single_line(fonts, &identity.display_name, font_size(27.0), width as f32);
-    let username = fit_single_line(
-        fonts,
-        &format!("@{}", identity.username),
-        font_size(16.0),
-        width as f32,
-    );
-    let detailed_prompt = confirmed
-        .then(|| persistent_prompt(conversation.prompt()))
-        .flatten();
-    if let Some(prompt) = detailed_prompt {
-        draw_shadowed_text(
-            pixels,
-            width,
-            height,
-            fonts,
-            glyphs,
-            &display_name,
-            font_size(22.0),
-            position(8),
-            [255, 255, 255, 255],
-            scale,
-        );
-        draw_shadowed_text(
-            pixels,
-            width,
-            height,
-            fonts,
-            glyphs,
-            &username,
-            font_size(14.0),
-            position(38),
-            [255, 255, 255, 255],
-            scale,
-        );
-        let prompt_pages = draw_wrapped_text_in(
-            pixels,
-            width,
-            fonts,
-            glyphs,
-            prompt,
-            font_size(15.0),
-            font_size(8.0),
-            font_size(1.0),
-            position(66),
-            px(15),
-            width - px(30),
-            px(155),
-            [255, 255, 255, 255],
-            instruction_page,
-        );
-        if prompt_pages > 1 {
-            draw_page_hint(
-                pixels,
-                width,
-                height,
-                fonts,
-                glyphs,
-                instruction_page,
-                prompt_pages,
-                position(226),
-                scale,
-            );
-        }
-    } else {
-        draw_authentication_avatar(pixels, width, scale);
-        draw_shadowed_text(
-            pixels,
-            width,
-            height,
-            fonts,
-            glyphs,
-            &initials(&identity.display_name),
-            font_size(34.0),
-            position(43),
-            [255, 255, 255, 255],
-            scale,
-        );
-        draw_shadowed_text(
-            pixels,
-            width,
-            height,
-            fonts,
-            glyphs,
-            &display_name,
-            font_size(27.0),
-            position(139),
-            [255, 255, 255, 255],
-            scale,
-        );
-        draw_shadowed_text(
-            pixels,
-            width,
-            height,
-            fonts,
-            glyphs,
-            &username,
-            font_size(16.0),
-            position(177),
-            [255, 255, 255, 255],
-            scale,
-        );
-    }
-    if !confirmed {
-        draw_shadowed_text(
-            pixels,
-            width,
-            height,
-            fonts,
-            glyphs,
-            "Securing session…",
-            font_size(17.0),
-            position(235),
-            [255, 255, 255, 255],
-            scale,
-        );
-        return;
-    }
-
-    draw_authentication_field(pixels, width, scale);
-
-    // Treat visible PAM responses as credentials too. Keeping all mutable
-    // responses out of the text renderer guarantees its internal scratch
-    // buffers never retain application-owned response text.
-    let input = masked_response(conversation.input().chars().count());
-    let submitting = conversation.status() == Status::Submitting;
-    let prompt = fit_single_line(
-        fonts,
-        if detailed_prompt.is_some() {
-            "Response"
-        } else {
-            conversation.prompt()
-        },
-        font_size(16.0),
-        px(AUTHENTICATION_FIELD_WIDTH - 82) as f32,
-    );
-    let field_text = if submitting {
-        "Authenticating…"
-    } else if input.is_empty() {
-        &prompt
-    } else {
-        &input
-    };
-    draw_text_in(
-        pixels,
-        width,
-        height,
-        fonts,
-        glyphs,
-        field_text,
-        font_size(if input.is_empty() { 16.0 } else { 21.0 }),
-        position(261),
-        px(AUTHENTICATION_FIELD_X + 24),
-        px(AUTHENTICATION_FIELD_WIDTH - 82),
-        if input.is_empty() || submitting {
-            [245, 246, 250, 255]
-        } else {
-            [255, 255, 255, 255]
-        },
-        false,
-    );
-    draw_text_in(
-        pixels,
-        width,
-        height,
-        fonts,
-        glyphs,
-        if submitting { "…" } else { "↵" },
-        font_size(20.0),
-        position(259),
-        px(AUTHENTICATION_FIELD_X + 346),
-        px(36),
-        if submitting {
-            [180, 184, 194, 255]
-        } else {
-            [245, 246, 250, 255]
-        },
-        false,
-    );
-
-    if let Some(notice) = conversation.notice() {
-        let notice_pages = draw_wrapped_text_in(
-            pixels,
-            width,
-            fonts,
-            glyphs,
-            notice,
-            font_size(15.0),
-            font_size(7.0),
-            font_size(1.0),
-            position(315),
-            px(10),
-            width - px(20),
-            px(66),
-            if conversation.notice_is_error() {
-                [255, 215, 215, 255]
-            } else {
-                [240, 242, 248, 255]
-            },
-            instruction_page,
-        );
-        if notice_pages > 1 {
-            draw_page_hint(
-                pixels,
-                width,
-                height,
-                fonts,
-                glyphs,
-                instruction_page,
-                notice_pages,
-                position(384),
-                scale,
-            );
-        }
-    }
-}
-
-fn authentication_overlay_dimensions() -> (u32, u32) {
-    (
-        AUTHENTICATION_OVERLAY_WIDTH * AUTHENTICATION_RENDER_SCALE,
-        AUTHENTICATION_OVERLAY_HEIGHT * AUTHENTICATION_RENDER_SCALE,
-    )
-}
-
-fn authentication_canvas_dimensions() -> (u32, u32) {
-    (
-        LOCK_CANVAS_WIDTH * AUTHENTICATION_RENDER_SCALE,
-        LOCK_CANVAS_HEIGHT * AUTHENTICATION_RENDER_SCALE,
-    )
-}
-
-fn initials(name: &str) -> String {
-    name.split_whitespace()
-        .filter_map(|word| word.chars().next())
-        .take(2)
-        .collect::<String>()
-        .to_uppercase()
-}
-
-fn masked_response(characters: usize) -> String {
-    "•".repeat(characters.min(18))
-}
-
-fn persistent_prompt(prompt: &str) -> Option<&str> {
-    (!prompt.eq_ignore_ascii_case("password")).then_some(prompt)
-}
-
-fn reflow_instruction(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn fit_single_line(fonts: &mut FontSystem, text: &str, size: f32, width: f32) -> String {
-    fit_single_line_by(text, width, |candidate| {
-        let mut buffer = Buffer::new(fonts, Metrics::new(size, size * 1.3));
-        buffer.set_size(fonts, None, Some(size * 1.4));
-        buffer.set_wrap(fonts, Wrap::None);
-        buffer.set_text(
-            fonts,
-            candidate,
-            &crate::design::font::attrs(),
-            Shaping::Advanced,
-            Some(Align::Left),
-        );
-        buffer.shape_until_scroll(fonts, true);
-        buffer
-            .layout_runs()
-            .map(|run| run.line_w)
-            .fold(0.0, f32::max)
-    })
-}
-
-fn fit_single_line_by(text: &str, width: f32, mut measure: impl FnMut(&str) -> f32) -> String {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if measure(&normalized) <= width {
-        return normalized;
-    }
-    if measure("…") > width {
-        return String::new();
-    }
-    let characters = normalized.chars().collect::<Vec<_>>();
-    let (mut lower, mut upper) = (0, characters.len());
-    while lower < upper {
-        let midpoint = (lower + upper).div_ceil(2);
-        let candidate = characters[..midpoint]
-            .iter()
-            .chain(std::iter::once(&'…'))
-            .collect::<String>();
-        if measure(&candidate) <= width {
-            lower = midpoint;
-        } else {
-            upper = midpoint - 1;
-        }
-    }
-    characters[..lower]
-        .iter()
-        .chain(std::iter::once(&'…'))
-        .collect()
-}
-
-fn blend_circle(
-    pixels: &mut [u8],
-    stride: u32,
-    center_x: u32,
-    center_y: u32,
-    radius: u32,
-    color: [u8; 4],
-) {
-    let radius_squared = i64::from(radius).pow(2);
-    for y in center_y.saturating_sub(radius)..center_y.saturating_add(radius) {
-        for x in center_x.saturating_sub(radius)..center_x.saturating_add(radius) {
-            let dx = i64::from(x) - i64::from(center_x);
-            let dy = i64::from(y) - i64::from(center_y);
-            if dx * dx + dy * dy <= radius_squared {
-                blend_pixel(pixels, stride, x as i32, y as i32, color);
-            }
-        }
-    }
-}
-
-fn draw_authentication_field(pixels: &mut [u8], width: u32, scale: u32) {
-    blend_rounded_rect(
-        pixels,
-        width,
-        AUTHENTICATION_FIELD_X * scale,
-        AUTHENTICATION_FIELD_Y * scale,
-        AUTHENTICATION_FIELD_WIDTH * scale,
-        AUTHENTICATION_FIELD_HEIGHT * scale,
-        AUTHENTICATION_FIELD_HEIGHT * scale / 2,
-        theme::AUTHENTICATION_INPUT_GLASS,
-    );
-    blend_rounded_rect_outline(
-        pixels,
-        width,
-        AUTHENTICATION_FIELD_X * scale,
-        AUTHENTICATION_FIELD_Y * scale,
-        AUTHENTICATION_FIELD_WIDTH * scale,
-        AUTHENTICATION_FIELD_HEIGHT * scale,
-        AUTHENTICATION_FIELD_HEIGHT * scale / 2,
-        scale,
-        theme::AUTHENTICATION_INPUT_BORDER,
-    );
-}
-
-fn draw_authentication_avatar(pixels: &mut [u8], width: u32, scale: u32) {
-    let x = 194 * scale;
-    let y = 10 * scale;
-    let diameter = 112 * scale;
-    let center_x = x + diameter / 2;
-    let center_y = y + diameter / 2;
-    blend_circle(
-        pixels,
-        width,
-        center_x,
-        center_y,
-        diameter / 2,
-        [255, 255, 255, 90],
-    );
-    blend_circle(
-        pixels,
-        width,
-        center_x,
-        center_y,
-        diameter / 2 - 3 * scale,
-        [24, 31, 46, 220],
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn blend_rounded_rect(
-    pixels: &mut [u8],
-    stride: u32,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    radius: u32,
-    color: [u8; 4],
-) {
-    let radius = radius.min(width / 2).min(height / 2);
-    for row in y..y.saturating_add(height) {
-        for column in x..x.saturating_add(width) {
-            let local_x = column - x;
-            let local_y = row - y;
-            if rounded_rect_contains(local_x, local_y, width, height, radius) {
-                blend_pixel(pixels, stride, column as i32, row as i32, color);
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn blend_rounded_rect_outline(
-    pixels: &mut [u8],
-    stride: u32,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    radius: u32,
-    thickness: u32,
-    color: [u8; 4],
-) {
-    let radius = radius.min(width / 2).min(height / 2);
-    let thickness = thickness.min(width / 2).min(height / 2);
-    for local_y in 0..height {
-        for local_x in 0..width {
-            let inside_outer = rounded_rect_contains(local_x, local_y, width, height, radius);
-            let inside_inner = local_x >= thickness
-                && local_y >= thickness
-                && local_x + thickness < width
-                && local_y + thickness < height
-                && rounded_rect_contains(
-                    local_x - thickness,
-                    local_y - thickness,
-                    width - thickness * 2,
-                    height - thickness * 2,
-                    radius.saturating_sub(thickness),
-                );
-            if inside_outer && !inside_inner {
-                blend_pixel(
-                    pixels,
-                    stride,
-                    (x + local_x) as i32,
-                    (y + local_y) as i32,
-                    color,
-                );
-            }
-        }
-    }
-}
-
-fn rounded_rect_contains(local_x: u32, local_y: u32, width: u32, height: u32, radius: u32) -> bool {
-    let dx = if local_x < radius {
-        radius - 1 - local_x
-    } else {
-        local_x.saturating_sub(width - radius)
-    };
-    let dy = if local_y < radius {
-        radius - 1 - local_y
-    } else {
-        local_y.saturating_sub(height - radius)
-    };
-    i64::from(dx).pow(2) + i64::from(dy).pow(2) <= i64::from(radius).pow(2)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_wrapped_text_in(
-    pixels: &mut [u8],
-    width: u32,
-    fonts: &mut FontSystem,
-    glyphs: &mut SwashCache,
-    text: &str,
-    maximum_size: f32,
-    minimum_size: f32,
-    size_step: f32,
-    y: i32,
-    x: u32,
-    text_width: u32,
-    text_height: u32,
-    color: [u8; 4],
-    page: usize,
-) -> usize {
-    let text = reflow_instruction(text);
-    let mut size = maximum_size;
-    let buffer = loop {
-        let mut candidate = Buffer::new(fonts, Metrics::new(size, size * 1.3));
-        candidate.set_size(fonts, Some(text_width as f32), None);
-        candidate.set_wrap(fonts, Wrap::WordOrGlyph);
-        candidate.set_text(
-            fonts,
-            &text,
-            &crate::design::font::attrs(),
-            Shaping::Advanced,
-            Some(Align::Center),
-        );
-        candidate.shape_until_scroll(fonts, true);
-        let content_height = candidate
-            .layout_runs()
-            .map(|run| run.line_top + run.line_height)
-            .fold(0.0, f32::max);
-        if content_height <= text_height as f32 || size <= minimum_size {
-            break candidate;
-        }
-        size = next_font_size(size, minimum_size, size_step);
-    };
-    let line_height = size * 1.3;
-    let line_count = buffer.layout_runs().count();
-    let (page_count, first_line, lines_on_page) =
-        page_layout(line_count, text_height, line_height, page);
-    let runs = buffer
-        .layout_runs()
-        .skip(first_line)
-        .take(lines_on_page)
-        .collect::<Vec<_>>();
-    let page_top = runs.first().map_or(0.0, |run| run.line_top).round() as i32;
-    let default_color = Color::rgba(color[0], color[1], color[2], color[3]);
-    for run in runs {
-        for glyph in run.glyphs {
-            let physical = glyph.physical((0.0, 0.0), 1.0);
-            let glyph_color = glyph.color_opt.unwrap_or(default_color);
-            glyphs.with_pixels(
-                fonts,
-                physical.cache_key,
-                glyph_color,
-                |offset_x, offset_y, glyph_color| {
-                    let glyph_x = physical.x + offset_x;
-                    let glyph_y = run.line_y as i32 + physical.y + offset_y - page_top;
-                    if glyph_x < 0
-                        || glyph_y < 0
-                        || glyph_x >= text_width as i32
-                        || glyph_y >= text_height as i32
-                    {
-                        return;
-                    }
-                    blend_pixel(
-                        pixels,
-                        width,
-                        x as i32 + glyph_x,
-                        y + glyph_y,
-                        glyph_pixel(glyph_color.as_rgba(), color, false),
-                    );
-                },
-            );
-        }
-    }
-    page_count
-}
-
-fn next_font_size(size: f32, minimum: f32, step: f32) -> f32 {
-    (size - step).max(minimum)
-}
-
-fn page_layout(
-    line_count: usize,
-    text_height: u32,
-    line_height: f32,
-    page: usize,
-) -> (usize, usize, usize) {
-    let lines_per_page = ((text_height as f32 / line_height).floor() as usize).max(1);
-    let page_count = line_count.max(1).div_ceil(lines_per_page);
-    let page = page % page_count;
-    let first_line = page * lines_per_page;
-    (
-        page_count,
-        first_line,
-        line_count.saturating_sub(first_line).min(lines_per_page),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_page_hint(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    fonts: &mut FontSystem,
-    glyphs: &mut SwashCache,
-    page: usize,
-    page_count: usize,
-    y: i32,
-    scale: u32,
-) {
-    draw_text(
-        pixels,
-        width,
-        height,
-        fonts,
-        glyphs,
-        &format!("{} / {page_count} · Tab for more", page % page_count + 1),
-        10.0 * scale as f32,
-        y,
-        [230, 232, 238, 255],
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_text(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    fonts: &mut FontSystem,
-    glyphs: &mut SwashCache,
-    text: &str,
-    size: f32,
-    y: i32,
-    color: [u8; 4],
-) {
-    draw_text_in(
-        pixels, width, height, fonts, glyphs, text, size, y, 0, width, color, false,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_shadowed_text(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    fonts: &mut FontSystem,
-    glyphs: &mut SwashCache,
-    text: &str,
-    size: f32,
-    y: i32,
-    color: [u8; 4],
-    scale: u32,
-) {
-    draw_text_in(
-        pixels,
-        width,
-        height,
-        fonts,
-        glyphs,
-        text,
-        size,
-        y + 2 * scale as i32,
-        0,
-        width,
-        [0, 0, 0, 190],
-        true,
-    );
-    draw_text(pixels, width, height, fonts, glyphs, text, size, y, color);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_text_in(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    fonts: &mut FontSystem,
-    glyphs: &mut SwashCache,
-    text: &str,
-    size: f32,
-    y: i32,
-    x: u32,
-    text_width: u32,
-    color: [u8; 4],
-    force_rgb: bool,
-) {
-    let text_height = (size * 1.4).ceil().min((height as i32 - y).max(0) as f32);
-    let mut buffer = Buffer::new(fonts, Metrics::new(size, size * 1.3));
-    buffer.set_size(fonts, Some(text_width as f32), Some(text_height));
-    buffer.set_wrap(fonts, Wrap::None);
-    buffer.set_text(
-        fonts,
-        text,
-        &crate::design::font::attrs(),
-        Shaping::Advanced,
-        Some(Align::Center),
-    );
-    buffer.shape_until_scroll(fonts, true);
-    buffer.draw(
-        fonts,
-        glyphs,
-        Color::rgba(color[0], color[1], color[2], color[3]),
-        |glyph_x, glyph_y, glyph_width, glyph_height, glyph_color| {
-            if glyph_x < 0
-                || glyph_y < 0
-                || glyph_x + glyph_width as i32 > text_width as i32
-                || glyph_y + glyph_height as i32 > text_height as i32
-            {
-                return;
-            }
-            blend_pixel(
-                pixels,
-                width,
-                x as i32 + glyph_x,
-                y + glyph_y,
-                glyph_pixel(glyph_color.as_rgba(), color, force_rgb),
-            );
-        },
-    );
-}
-
-fn glyph_pixel(glyph: [u8; 4], requested: [u8; 4], force_rgb: bool) -> [u8; 4] {
-    let rgb = if force_rgb {
-        [requested[0], requested[1], requested[2]]
-    } else {
-        [glyph[0], glyph[1], glyph[2]]
-    };
-    [
-        rgb[0],
-        rgb[1],
-        rgb[2],
-        ((u16::from(glyph[3]) * u16::from(requested[3])) / 255) as u8,
-    ]
-}
-
-fn blend_pixel(pixels: &mut [u8], width: u32, x: i32, y: i32, source: [u8; 4]) {
-    if x < 0 || y < 0 || x >= width as i32 {
-        return;
-    }
-    let Some(index) = (y as usize)
-        .checked_mul(width as usize)
-        .and_then(|row| row.checked_add(x as usize))
-        .and_then(|pixel| pixel.checked_mul(4))
-    else {
-        return;
-    };
-    let Some(target) = pixels.get_mut(index..index + 4) else {
-        return;
-    };
-    let source_alpha = u32::from(source[3]);
-    let target_alpha = u32::from(target[3]);
-    let output_alpha = source_alpha * 255 + target_alpha * (255 - source_alpha);
-    if output_alpha == 0 {
-        return;
-    }
-    for channel in 0..3 {
-        let premultiplied = u32::from(source[channel]) * source_alpha * 255
-            + u32::from(target[channel]) * target_alpha * (255 - source_alpha);
-        target[channel] = (premultiplied / output_alpha) as u8;
-    }
-    target[3] = (output_alpha / 255) as u8;
-}
-
 fn adopt_ready_fd(fd: RawFd) -> Result<OwnedFd, Error> {
     // SAFETY: `fcntl` accepts an integer descriptor and reports EBADF without
     // assuming ownership. A non-negative result is a new owned descriptor.
@@ -1292,9 +559,6 @@ fn adopt_ready_fd(fd: RawFd) -> Result<OwnedFd, Error> {
     // SAFETY: `duplicate` is a fresh descriptor uniquely owned by this call.
     Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
 }
-
-#[cfg(test)]
-mod properties;
 
 #[cfg(test)]
 mod tests {
@@ -1401,34 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn authentication_identity_uses_tahoe_style_initials() {
-        assert_eq!(initials("Preview User"), "PU");
-        assert_eq!(initials("alice"), "A");
-        assert_eq!(initials(""), "");
-    }
-
-    #[test]
-    fn authentication_text_is_bounded_to_single_line_regions() {
-        assert_eq!(masked_response(512).chars().count(), 18);
-        let measure = |text: &str| {
-            text.chars()
-                .map(|character| if character == '界' { 10.0 } else { 1.0 })
-                .sum()
-        };
-        assert_eq!(fit_single_line_by("short", 8.0, measure), "short");
-        assert_eq!(
-            fit_single_line_by(&"a".repeat(512), 8.0, measure),
-            "aaaaaaa…"
-        );
-        assert_eq!(fit_single_line_by("界界界界", 22.0, measure), "界界…");
-        assert_eq!(
-            fit_single_line_by("Challenge:\n Enter   token", 40.0, measure),
-            "Challenge: Enter token"
-        );
-    }
-
-    #[test]
-    fn challenge_instructions_remain_available_while_entering_a_response() {
+    fn challenge_prompts_stay_above_the_pill_while_entering_a_response() {
         let challenge = format!(
             "{}\nEnter the following challenge response: 793146",
             "Step\n".repeat(16)
@@ -1441,147 +678,54 @@ mod tests {
             false,
             Status::Waiting,
         );
+        let mut renderer = render::Renderer::new();
 
         assert_eq!(
-            persistent_prompt(conversation.prompt()),
+            renderer.prompt_above(&conversation, true),
             Some(challenge.as_str())
         );
         assert!(conversation.push_input("7"));
         assert_eq!(
-            persistent_prompt(conversation.prompt()),
+            renderer.prompt_above(&conversation, true),
             Some(challenge.as_str())
         );
-        let displayed = reflow_instruction(conversation.prompt());
-        assert!(!displayed.contains('\n'));
-        assert!(displayed.ends_with("Enter the following challenge response: 793146"));
-        assert_eq!(persistent_prompt("Password"), None);
-
-        assert_eq!(page_layout(17, 165, 10.4, 0), (2, 0, 15));
-        assert_eq!(page_layout(17, 165, 10.4, 1), (2, 15, 2));
-        assert_eq!(page_layout(10, 80, 9.1, 1), (2, 8, 2));
-    }
-
-    #[test]
-    fn authentication_overlay_is_bounded_independently_of_wallpaper_size() {
-        assert_eq!(authentication_overlay_dimensions(), (1500, 1200));
-        assert_eq!(authentication_canvas_dimensions(), (3840, 2400));
-        assert_eq!(1500 * 1200 * 4, 7_200_000);
-    }
-
-    #[test]
-    fn production_scale_preserves_field_and_avatar_border_thickness() {
-        let (width, height) = authentication_overlay_dimensions();
-        let mut pixels = vec![0; (width * height * 4) as usize];
-        draw_authentication_field(&mut pixels, width, AUTHENTICATION_RENDER_SCALE);
-        let center_x =
-            (AUTHENTICATION_FIELD_X + AUTHENTICATION_FIELD_WIDTH / 2) * AUTHENTICATION_RENDER_SCALE;
-        let top = AUTHENTICATION_FIELD_Y * AUTHENTICATION_RENDER_SCALE;
-        for y in top..top + AUTHENTICATION_RENDER_SCALE {
-            let offset = ((y * width + center_x) * 4) as usize;
-            assert!(pixels[offset + 3] > theme::AUTHENTICATION_INPUT_GLASS[3]);
-        }
-
-        draw_authentication_avatar(&mut pixels, width, AUTHENTICATION_RENDER_SCALE);
-        let avatar_center_x = (194 + 112 / 2) * AUTHENTICATION_RENDER_SCALE;
-        let avatar_top = 10 * AUTHENTICATION_RENDER_SCALE;
-        for y in avatar_top..avatar_top + 3 * AUTHENTICATION_RENDER_SCALE {
-            let offset = ((y * width + avatar_center_x) * 4) as usize;
-            assert_eq!(pixels[offset..offset + 3], [255, 255, 255]);
-        }
-    }
-
-    #[test]
-    fn scaled_font_fitting_uses_logical_size_steps() {
-        let candidates = |scale: f32| {
-            let mut size = 15.0 * scale;
-            let minimum = 7.0 * scale;
-            let mut count = 1;
-            while size > minimum {
-                size = next_font_size(size, minimum, scale);
-                count += 1;
-            }
-            count
-        };
-
-        assert_eq!(candidates(1.0), 9);
-        assert_eq!(candidates(3.0), 9);
-    }
-
-    #[test]
-    fn authentication_field_has_transparent_rounded_corners() {
-        let mut pixels = [0; 9 * 9 * 4];
-
-        blend_rounded_rect(&mut pixels, 9, 0, 0, 9, 9, 4, [10, 20, 30, 255]);
-
-        assert_eq!(&pixels[0..4], &[0, 0, 0, 0]);
-        assert_eq!(
-            &pixels[(4 * 9 + 4) * 4..(4 * 9 + 5) * 4],
-            &[10, 20, 30, 255]
+        assert_eq!(renderer.prompt_above(&conversation, false), None);
+        let password = Conversation::for_preview(
+            String::new(),
+            "Password".into(),
+            None,
+            false,
+            true,
+            Status::Waiting,
         );
-
-        let mut capsule = vec![0; 52 * 52 * 4];
-        blend_rounded_rect(&mut capsule, 52, 0, 0, 52, 52, 26, [10, 20, 30, 255]);
-        assert_eq!(
-            &capsule[(26 * 52 + 26) * 4..(26 * 52 + 27) * 4],
-            &[10, 20, 30, 255]
-        );
+        assert_eq!(renderer.prompt_above(&password, true), None);
     }
 
     #[test]
-    fn authentication_field_uses_translucent_glass_material() {
-        let mut pixels =
-            vec![0; (AUTHENTICATION_OVERLAY_WIDTH * AUTHENTICATION_OVERLAY_HEIGHT * 4) as usize];
-        draw_authentication_field(&mut pixels, AUTHENTICATION_OVERLAY_WIDTH, 1);
-        let pixel = |x: u32, y: u32| {
-            let offset = ((y * AUTHENTICATION_OVERLAY_WIDTH + x) * 4) as usize;
-            <[u8; 4]>::try_from(&pixels[offset..offset + 4]).unwrap()
+    fn the_clock_is_redrawn_only_when_its_minute_passes() {
+        let identity = identity::Identity {
+            uid: 1000,
+            username: "preview".into(),
+            display_name: "Preview User".into(),
         };
-
-        assert_eq!(
-            pixel(
-                AUTHENTICATION_FIELD_X + 12,
-                AUTHENTICATION_FIELD_Y + AUTHENTICATION_FIELD_HEIGHT / 2,
+        let settings = wallpaper::Settings {
+            catalog: wallpaper::Catalog::TahoeBeach,
+            override_path: Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/dynamic-heic/synthetic-all-properties.heic"),
             ),
-            theme::AUTHENTICATION_INPUT_GLASS
-        );
-        let border = pixel(
-            AUTHENTICATION_FIELD_X,
-            AUTHENTICATION_FIELD_Y + AUTHENTICATION_FIELD_HEIGHT / 2,
-        );
-        assert!(border[3] > theme::AUTHENTICATION_INPUT_GLASS[3]);
-        assert!(border[3] < 192);
-        assert!(theme::AUTHENTICATION_INPUT_GLASS[3] < 64);
-    }
+            animate: false,
+            reduced_motion: true,
+            appearance: genkan::dynamic_wallpaper::AppearancePreference::Automatic,
+        };
+        let mut presentation = LockerPresentation::for_test(identity, settings);
+        let now = crate::app::preview::preview_now();
 
-    #[test]
-    fn alpha_blending_preserves_transparency_for_layered_rendering() {
-        let mut transparent = [0, 0, 0, 0];
-
-        blend_pixel(&mut transparent, 1, 0, 0, [7, 10, 24, 210]);
-        assert_eq!(transparent, [7, 10, 24, 210]);
-
-        blend_pixel(&mut transparent, 1, 0, 0, [255, 255, 255, 255]);
-        assert_eq!(transparent, [255, 255, 255, 255]);
-
-        let mut translucent_white = [255, 255, 255, 128];
-        blend_pixel(&mut translucent_white, 1, 0, 0, [255, 255, 255, 128]);
-        assert_eq!(translucent_white, [255, 255, 255, 191]);
-    }
-
-    #[test]
-    fn glyph_rendering_applies_opacity_and_forces_black_shadows() {
-        assert_eq!(
-            glyph_pixel([240, 240, 240, 128], [240, 240, 240, 190], false),
-            [240, 240, 240, 95]
-        );
-        assert_eq!(
-            glyph_pixel([12, 140, 220, 255], [255, 255, 255, 128], false),
-            [12, 140, 220, 128]
-        );
-        assert_eq!(
-            glyph_pixel([12, 140, 220, 255], [0, 0, 0, 190], true),
-            [0, 0, 0, 190]
-        );
+        assert!(presentation.refresh_clock(now));
+        let shown = presentation.clock_overlay.clone();
+        assert!(!presentation.refresh_clock(now + chrono::Duration::seconds(59)));
+        assert_eq!(presentation.clock_overlay, shown);
+        assert!(presentation.refresh_clock(now + chrono::Duration::seconds(60)));
     }
 
     #[test]
@@ -1610,8 +754,8 @@ mod tests {
         // Install a transparent overlay before adoption so automatic rebuilding
         // in `receive_deferred` produces the frame. A regression that stopped
         // rebuilding would leave `frame()` empty and fail here.
-        presentation.overlay = Some(
-            RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 0]))
+        presentation.identity_overlay = Some(
+            RgbaFrame::new(1, 1, vec![0, 0, 0, 0].into())
                 .expect("synthetic overlay has valid dimensions"),
         );
 
@@ -1629,7 +773,7 @@ mod tests {
             .frame()
             .expect("automatic rebuilding produced a presentation frame");
         let rendered =
-            genkan_session_lock::render_preview(&frame, 4, 4).expect("render presentation");
+            genkan_session_lock::render_preview(&frame, 4, 4, 1).expect("render presentation");
         let background = presentation
             .background
             .as_ref()
@@ -1637,22 +781,9 @@ mod tests {
         assert_eq!(background.dimensions(), (8, 8));
         assert_eq!(rendered.dimensions(), (4, 4));
         assert_eq!(rendered.pixels()[3], 255);
-        // The authentication preview dims the background, but every rendered
-        // channel must still carry the fixture color rather than a fallback.
-        for channel in 0..3 {
-            let background_channel = u16::from(background.pixels()[channel]);
-            let rendered_channel = u16::from(rendered.pixels()[channel]);
-            assert!(
-                rendered_channel <= background_channel,
-                "render brightened channel {channel}"
-            );
-            assert!(
-                rendered_channel * 2 + 4 >= background_channel,
-                "render lost the fixture color at channel {channel}: {} vs {}",
-                rendered.pixels()[channel],
-                background.pixels()[channel]
-            );
-        }
+        // The wallpaper is not dimmed: away from the overlays the render
+        // carries the fixture's own top-left pixel rather than a fallback.
+        assert_eq!(rendered.pixels()[..3], background.pixels()[..3]);
     }
 
     #[cfg(feature = "lock-test")]

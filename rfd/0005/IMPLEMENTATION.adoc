@@ -38,12 +38,14 @@ reference images and compares them with the screens in `docs/design-system`.
 
 == Phase 3: Lock screen
 
-* [ ] Make the session-lock wallpaper dimming a caller-supplied factor and set
+* [x] Make the session-lock wallpaper dimming a caller-supplied factor and set
   it to none.
-* [ ] Draw the lock overlay from tokens with Inter: status bar without session
-  and power items, clock, avatar, name, pill, and message.
-* [ ] Share `initials()` and single-line fitting with login.
-* [ ] Regenerate lock reference captures.
+* [x] Draw the lock overlay from tokens with Inter: status bar without session
+  and power items, clock, avatar, name, pill, and message. Like login's, the
+  lock's status bar stays empty until the keyboard layout and network items
+  above have a data source.
+* [x] Share `initials()` and single-line fitting with login.
+* [x] Regenerate lock reference captures.
 
 == Phase 4: Enforcement and documentation
 

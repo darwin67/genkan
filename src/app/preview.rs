@@ -315,7 +315,8 @@ fn preview_session() -> Session {
     }
 }
 
-fn preview_now() -> chrono::DateTime<Local> {
+/// The fixed time the login and lock previews show.
+pub(crate) fn preview_now() -> chrono::DateTime<Local> {
     Local
         .with_ymd_and_hms(2026, 8, 29, 9, 41, 0)
         .single()

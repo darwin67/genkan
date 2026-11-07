@@ -27,8 +27,10 @@ synthetic accounts and sessions and never sends credentials or power requests.
 - Dynamic HEIC desktop wallpaper scheduling on wlr-layer-shell compositors.
 - Reproducible Nix packaging for x86_64-linux and aarch64-linux.
 - Service-free deterministic previews for UI development and review.
-- A consistent translucent-glass authentication field across login and lock
-  screens, with stronger focus indication in the keyboard-driven login flow.
+- One macOS-style composition for login and lock, drawn from shared design
+  tokens: the date and clock above the avatar, name, and password pill over an
+  undimmed wallpaper, with stronger focus indication in the keyboard-driven
+  login flow.
 - An experimental `ext-session-lock-v1` compositor boundary with fail-closed
   multi-output coverage and lock-confirmation readiness reporting, isolated in
   the independently tested `genkan-session-lock` workspace crate.

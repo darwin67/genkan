@@ -2,8 +2,8 @@
 //!
 //! The JSON file is the reference; a unit test fails when the two disagree.
 //! Values are logical points measured from the macOS Tahoe login window and
-//! lock screen. The lock renderer adopts them in RFD 5 phase 3, so constants
-//! the login greeter does not use yet are allowed until then.
+//! lock screen. Both the login greeter and the lock renderer read them;
+//! tokens for components neither draws yet are allowed to be unused.
 #![cfg_attr(not(test), allow(dead_code))]
 
 /// An sRGB color with straight alpha.
@@ -269,6 +269,9 @@ pub(crate) mod component {
 
     /// The smallest the clock may scale to make room for the identity column.
     pub(crate) const CLOCK_MIN_SCALE: f32 = 0.2;
+    /// Room the lock leaves on each side of the clock's advance width for
+    /// glyph ink that extends past it.
+    pub(crate) const CLOCK_OVERHANG: f32 = 8.0;
 }
 
 /// Motion. The rejection shake follows macOS: a short damped oscillation.

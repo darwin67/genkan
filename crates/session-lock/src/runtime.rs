@@ -36,14 +36,12 @@ use wayland_client::{Connection, Proxy, QueueHandle, WEnum};
 use wayland_protocols::wp::presentation_time::client::wp_presentation_feedback;
 
 use super::{
-    Action, Config, Event, Input, Presentation, PresentationFrame, PreviewError, Refresh,
-    RgbaFrame, State, UnlockAuthorization,
+    Action, AnchoredOverlay, Config, Dimming, Event, Input, OverlayLayout, Presentation,
+    PresentationFrame, PreviewError, Refresh, RgbaFrame, State, UnlockAuthorization,
 };
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const FALLBACK_RGB: [u8; 3] = [5, 9, 24];
-const DIM_NUMERATOR: u16 = 4;
-const DIM_DENOMINATOR: u16 = 5;
 const MAX_SURFACE_PIXELS: usize = 16_384 * 16_384;
 const MAX_SURFACE_DIMENSION: u32 = 16_384;
 const BUFFER_COUNT: usize = 2;
@@ -71,7 +69,8 @@ struct Surface {
     geometry_generation: u64,
     role_generation: u64,
     buffers: Vec<SurfaceBuffer>,
-    overlay_cache: Option<CachedOverlay>,
+    /// The top and bottom overlays scaled to their places on this surface.
+    overlay_cache: [Option<CachedOverlay>; 2],
     authentication: bool,
     redraw: RedrawState,
     first_presented: bool,
@@ -130,32 +129,51 @@ impl AuthenticationRetirement {
     }
 }
 
+/// An overlay scaled to its place on one surface.
+#[derive(Debug, Clone)]
+struct PlacedOverlay {
+    region: Region,
+    /// Exactly `region.width` by `region.height` pixels.
+    pixels: RgbaFrame,
+}
+
 impl Surface {
-    fn scaled_overlay(
+    fn placed_overlays(
         &mut self,
         frame: Option<&PresentationFrame>,
         width: u32,
         height: u32,
-    ) -> Option<RgbaFrame> {
+        scale: u32,
+    ) -> [Option<PlacedOverlay>; 2] {
         if !self.authentication {
-            self.overlay_cache = None;
-            return None;
+            self.overlay_cache = [None, None];
+            return [None, None];
         }
-        let frame = frame?;
-        let target = overlay_geometry(frame, width, height)?.target;
-        let size = (target.width, target.height);
-        if self
-            .overlay_cache
-            .as_ref()
-            .is_none_or(|cache| !cache.matches(&frame.overlay, size))
-        {
-            self.overlay_cache = Some(CachedOverlay {
-                source: frame.overlay.clone(),
-                size,
-                frame: scale_overlay(&frame.overlay, target.width, target.height),
-            });
-        }
-        self.overlay_cache.as_ref().map(|cache| cache.frame.clone())
+        let Some(frame) = frame else {
+            return [None, None];
+        };
+        let regions = overlay_regions(frame, width, height, scale);
+        let overlays = frame.overlays();
+        let caches = &mut self.overlay_cache;
+        std::array::from_fn(|index| {
+            let (region, anchored) = (regions[index]?, overlays[index]?);
+            let size = (region.width, region.height);
+            let cache = &mut caches[index];
+            if cache
+                .as_ref()
+                .is_none_or(|cache| !cache.matches(&anchored.overlay, size))
+            {
+                *cache = Some(CachedOverlay {
+                    source: anchored.overlay.clone(),
+                    size,
+                    frame: scale_overlay(&anchored.overlay, region.width, region.height),
+                });
+            }
+            cache.as_ref().map(|cache| PlacedOverlay {
+                region,
+                pixels: cache.frame.clone(),
+            })
+        })
     }
 }
 
@@ -182,10 +200,14 @@ enum OverlayProgress {
     Blocked,
 }
 
+/// Everything about a presentation frame that decides where its overlays sit
+/// and how its wallpaper is drawn, but not the overlay pixels themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FrameGeometry {
-    canvas: (u32, u32),
-    overlay: Region,
+    layout: OverlayLayout,
+    dimming: Option<Dimming>,
+    /// Width, height and edge offset of the top and bottom overlays.
+    overlays: [Option<(u32, u32, u32)>; 2],
 }
 
 #[derive(Default)]
@@ -536,7 +558,7 @@ impl Runtime {
             geometry_generation: 0,
             role_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
-            overlay_cache: None,
+            overlay_cache: [None, None],
             authentication: false,
             redraw: RedrawState {
                 redraw_pending: Some(RedrawKind::Full),
@@ -730,7 +752,7 @@ impl Runtime {
         let retiring = role_change
             && !authentication
             && self.retiring_authentication.as_ref() == Some(&output);
-        let scaled_overlay = surface.scaled_overlay(frame.as_ref(), buffer_width, buffer_height);
+        let placed = surface.placed_overlays(frame.as_ref(), buffer_width, buffer_height, scale);
         surface.buffers.retain(|item| {
             item.size == (buffer_width, buffer_height)
                 && item.geometry_generation == geometry_generation
@@ -747,7 +769,7 @@ impl Runtime {
             })
             .collect::<Vec<_>>();
         let reusable = select_reusable_buffer(requested_redraw, background_generation, &reusable);
-        let mut damaged = Region::full(buffer_width, buffer_height);
+        let mut damaged = vec![Region::full(buffer_width, buffer_height)];
         let buffer_index = if let Some(buffer_index) = reusable {
             let SurfaceBuffer {
                 background_generation: rendered_background,
@@ -760,31 +782,33 @@ impl Runtime {
                 .expect("buffer release state changed without dispatch");
             let full_redraw = requested_redraw == RedrawKind::Full
                 || *rendered_background != background_generation;
-            damaged = redraw_region(
+            damaged = redraw_regions(
                 requested_redraw,
                 *rendered_background,
                 background_generation,
-                frame.as_ref(),
+                &placed,
                 buffer_width,
                 buffer_height,
             );
             if !full_redraw {
-                draw_opaque_region_cached(
-                    canvas,
-                    buffer_width,
-                    buffer_height,
-                    frame.as_ref(),
-                    scaled_overlay.as_ref(),
-                    authentication,
-                    damaged,
-                );
+                for region in &damaged {
+                    draw_opaque_region(
+                        canvas,
+                        buffer_width,
+                        buffer_height,
+                        frame.as_ref(),
+                        &placed,
+                        authentication,
+                        *region,
+                    );
+                }
             } else {
-                draw_opaque_cached(
+                draw_opaque_placed(
                     canvas,
                     buffer_width,
                     buffer_height,
                     frame.as_ref(),
-                    scaled_overlay.as_ref(),
+                    &placed,
                     authentication,
                 );
                 *rendered_background = background_generation;
@@ -808,12 +832,12 @@ impl Runtime {
                 .map_err(|error| {
                     Error::Runtime(format!("could not allocate lock buffer: {error}"))
                 })?;
-            draw_opaque_cached(
+            draw_opaque_placed(
                 canvas,
                 buffer_width,
                 buffer_height,
                 frame.as_ref(),
-                scaled_overlay.as_ref(),
+                &placed,
                 authentication,
             );
             surface.buffers.push(SurfaceBuffer {
@@ -834,7 +858,7 @@ impl Runtime {
                         "genkan lock: cannot safely migrate authentication without presentation feedback: {error}"
                     );
                     surface.authentication = true;
-                    surface.overlay_cache = None;
+                    surface.overlay_cache = [None, None];
                     surface.role_generation = surface.role_generation.wrapping_add(1);
                     surface.redraw.request_role_change();
                     self.retiring_authentication = None;
@@ -854,12 +878,14 @@ impl Runtime {
         region.destroy();
         wl_surface.set_buffer_scale(scale as i32);
         wl_surface.set_buffer_transform(wl_output::Transform::Normal);
-        wl_surface.damage_buffer(
-            damaged.x as i32,
-            damaged.y as i32,
-            damaged.width as i32,
-            damaged.height as i32,
-        );
+        for region in &damaged {
+            wl_surface.damage_buffer(
+                region.x as i32,
+                region.y as i32,
+                region.width as i32,
+                region.height as i32,
+            );
+        }
         let request_frame_callback = surface.redraw.request_frame_callback();
         if request_frame_callback {
             wl_surface.frame(qh, wl_surface.clone());
@@ -1021,7 +1047,7 @@ impl Runtime {
             return;
         }
         surface.authentication = authentication;
-        surface.overlay_cache = None;
+        surface.overlay_cache = [None, None];
         surface.role_generation = surface.role_generation.wrapping_add(1);
         if surface.size.is_some() {
             surface.redraw.request_role_change();
@@ -1591,13 +1617,14 @@ impl Region {
 fn frame_geometry(frame: Option<&PresentationFrame>) -> Option<FrameGeometry> {
     let frame = frame?;
     Some(FrameGeometry {
-        canvas: frame.dimensions(),
-        overlay: Region {
-            x: frame.overlay_x,
-            y: frame.overlay_y,
-            width: frame.overlay.width,
-            height: frame.overlay.height,
-        },
+        layout: frame.layout,
+        dimming: frame.dimming,
+        overlays: frame.overlays().map(|anchored| {
+            anchored.map(|anchored| {
+                let (width, height) = anchored.overlay.dimensions();
+                (width, height, anchored.offset)
+            })
+        }),
     })
 }
 
@@ -1635,50 +1662,73 @@ fn buffer_size(
     Ok((width, height))
 }
 
-fn draw_opaque(target: &mut [u8], width: u32, height: u32, frame: Option<&PresentationFrame>) {
-    draw_opaque_cached(target, width, height, frame, None, true);
+/// Draws `frame` as an output `width`×`height` buffer pixels at buffer
+/// `scale` shows it when it owns authentication, scaling the overlays here
+/// instead of reusing a surface's cache.
+fn draw_opaque(
+    target: &mut [u8],
+    width: u32,
+    height: u32,
+    scale: u32,
+    frame: Option<&PresentationFrame>,
+) {
+    let placed = place_overlays(frame, width, height, scale);
+    draw_opaque_placed(target, width, height, frame, &placed, true);
 }
 
-fn draw_opaque_cached(
+fn place_overlays(
+    frame: Option<&PresentationFrame>,
+    width: u32,
+    height: u32,
+    scale: u32,
+) -> [Option<PlacedOverlay>; 2] {
+    let Some(frame) = frame else {
+        return [None, None];
+    };
+    let regions = overlay_regions(frame, width, height, scale);
+    let overlays = frame.overlays();
+    std::array::from_fn(|index| {
+        let (region, anchored) = (regions[index]?, overlays[index]?);
+        Some(PlacedOverlay {
+            region,
+            pixels: scale_overlay(&anchored.overlay, region.width, region.height),
+        })
+    })
+}
+
+fn draw_opaque_placed(
     target: &mut [u8],
     width: u32,
     height: u32,
     frame: Option<&PresentationFrame>,
-    scaled_overlay: Option<&RgbaFrame>,
+    placed: &[Option<PlacedOverlay>; 2],
     authentication: bool,
 ) {
-    draw_opaque_region_cached(
+    draw_opaque_region(
         target,
         width,
         height,
         frame,
-        scaled_overlay,
+        placed,
         authentication,
         Region::full(width, height),
     );
 }
 
-#[cfg(test)]
+/// Repaints `region`: the wallpaper, dimmed only on the authentication output
+/// and only when the frame supplies a factor, then the placed overlays.
 fn draw_opaque_region(
     target: &mut [u8],
     width: u32,
     height: u32,
     frame: Option<&PresentationFrame>,
-    region: Region,
-) {
-    draw_opaque_region_cached(target, width, height, frame, None, true, region);
-}
-
-fn draw_opaque_region_cached(
-    target: &mut [u8],
-    width: u32,
-    height: u32,
-    frame: Option<&PresentationFrame>,
-    scaled_overlay: Option<&RgbaFrame>,
+    placed: &[Option<PlacedOverlay>; 2],
     authentication: bool,
     region: Region,
 ) {
-    let overlay_geometry = frame.and_then(|frame| overlay_geometry(frame, width, height));
+    let dimming = frame
+        .filter(|_| authentication)
+        .and_then(|frame| frame.dimming);
     let background = BackgroundSampler::new(
         frame.and_then(|frame| frame.background.as_ref()),
         width,
@@ -1689,60 +1739,37 @@ fn draw_opaque_region_cached(
     for y in region.y..end_y {
         let source_row = background.source_row(y);
         for x in region.x..end_x {
-            let [red, green, blue] = background.pixel(source_row, x);
-            let offset = ((y as usize * width as usize) + x as usize) * 4;
-            let pixel = if authentication {
-                [dim(blue), dim(green), dim(red), u8::MAX]
-            } else {
-                [blue, green, red, u8::MAX]
-            };
-            target[offset..offset + 4].copy_from_slice(&pixel);
-        }
-    }
-
-    let Some((frame, geometry)) = frame
-        .filter(|_| authentication)
-        .zip(overlay_geometry.as_ref())
-    else {
-        return;
-    };
-    let Some(overlay_region) = intersect(region, geometry.target) else {
-        return;
-    };
-    if let Some(overlay) = scaled_overlay {
-        for y in overlay_region.y..overlay_region.y + overlay_region.height {
-            let source_row = background.source_row(y);
-            let overlay_y = y - geometry.target.y;
-            for x in overlay_region.x..overlay_region.x + overlay_region.width {
-                let overlay_x = x - geometry.target.x;
-                let offset = (overlay_y as usize * overlay.width as usize + overlay_x as usize) * 4;
-                let overlay = <[u8; 4]>::try_from(&overlay.pixels[offset..offset + 4]).unwrap();
-                if overlay[3] == 0 {
-                    continue;
-                }
-                let background = background.pixel(source_row, x).map(dim);
-                let [red, green, blue] = blend_rgb(background, overlay);
-                let offset = ((y as usize * width as usize) + x as usize) * 4;
-                target[offset..offset + 4].copy_from_slice(&[blue, green, red, u8::MAX]);
-            }
-        }
-        return;
-    }
-    let horizontal = filtered_axis(frame.overlay.width, geometry.target.width);
-    let vertical = filtered_axis(frame.overlay.height, geometry.target.height);
-    for y in overlay_region.y..overlay_region.y + overlay_region.height {
-        let source_row = background.source_row(y);
-        let vertical_samples = vertical.coordinate((y - geometry.target.y) as usize);
-        for x in overlay_region.x..overlay_region.x + overlay_region.width {
-            let horizontal_samples = horizontal.coordinate((x - geometry.target.x) as usize);
-            let overlay = filtered_pixel(&frame.overlay, horizontal_samples, vertical_samples);
-            if overlay[3] == 0 {
-                continue;
-            }
-            let background = background.pixel(source_row, x).map(dim);
-            let [red, green, blue] = blend_rgb(background, overlay);
+            let [red, green, blue] = background
+                .pixel(source_row, x)
+                .map(|value| dim(value, dimming));
             let offset = ((y as usize * width as usize) + x as usize) * 4;
             target[offset..offset + 4].copy_from_slice(&[blue, green, red, u8::MAX]);
+        }
+    }
+    if !authentication {
+        return;
+    }
+    // The bottom overlay is drawn last, over the top overlay where they meet.
+    for overlay in placed.iter().flatten() {
+        let Some(area) = intersect(region, overlay.region) else {
+            continue;
+        };
+        let stride = overlay.pixels.width as usize;
+        for y in area.y..area.y + area.height {
+            let overlay_y = (y - overlay.region.y) as usize;
+            for x in area.x..area.x + area.width {
+                let overlay_x = (x - overlay.region.x) as usize;
+                let source = (overlay_y * stride + overlay_x) * 4;
+                let pixel =
+                    <[u8; 4]>::try_from(&overlay.pixels.pixels[source..source + 4]).unwrap();
+                if pixel[3] == 0 {
+                    continue;
+                }
+                let offset = ((y as usize * width as usize) + x as usize) * 4;
+                let current = [target[offset + 2], target[offset + 1], target[offset]];
+                let [red, green, blue] = blend_rgb(current, pixel);
+                target[offset..offset + 4].copy_from_slice(&[blue, green, red, u8::MAX]);
+            }
         }
     }
 }
@@ -1946,7 +1973,7 @@ fn intersect(first: Region, second: Region) -> Option<Region> {
         .y
         .saturating_add(first.height)
         .min(second.y.saturating_add(second.height));
-    (left < right && top < bottom).then_some(Region {
+    (left < right && top < bottom).then(|| Region {
         x: left,
         y: top,
         width: right - left,
@@ -1954,84 +1981,111 @@ fn intersect(first: Region, second: Region) -> Option<Region> {
     })
 }
 
-#[derive(Debug, Clone, Copy)]
-struct OverlayGeometry {
-    target: Region,
-}
+/// Fixed-point one for overlay fit factors.
+const FIT_ONE: u128 = 1 << 16;
 
-fn overlay_region(frame: Option<&PresentationFrame>, width: u32, height: u32) -> Option<Region> {
-    Some(overlay_geometry(frame?, width, height)?.target)
-}
-
-fn overlay_geometry(frame: &PresentationFrame, width: u32, height: u32) -> Option<OverlayGeometry> {
-    let (source_width, source_height) = frame.dimensions();
-    if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
-        return None;
-    }
-    let width_limited = u128::from(width) * u128::from(source_height)
-        <= u128::from(source_width) * u128::from(height);
-    let (canvas_width, canvas_height) = if width_limited {
+/// Where the top and bottom overlays sit on a `width`×`height` buffer at
+/// buffer `scale`, in buffer pixels.
+///
+/// Overlays keep their logical size (overlay pixels divided by the density)
+/// and their logical edge offsets. The top overlay then shrinks, with its
+/// offset, to keep the layout's gap above the bottom overlay and its margin
+/// from the sides, but not below its minimum scale. Either overlay shrinks
+/// further only when it would not otherwise fit on the surface, so every
+/// returned region lies inside the buffer.
+fn overlay_regions(
+    frame: &PresentationFrame,
+    width: u32,
+    height: u32,
+    scale: u32,
+) -> [Option<Region>; 2] {
+    let layout = frame.layout;
+    let density = u128::from(layout.density);
+    let scale = u128::from(scale.max(1));
+    let (surface_width, surface_height) = (u128::from(width), u128::from(height));
+    let extent = |anchored: &AnchoredOverlay| {
+        let (overlay_width, overlay_height) = anchored.overlay.dimensions();
         (
-            width,
-            u32::try_from(u128::from(source_height) * u128::from(width) / u128::from(source_width))
-                .ok()?,
-        )
-    } else {
-        (
-            u32::try_from(
-                u128::from(source_width) * u128::from(height) / u128::from(source_height),
-            )
-            .ok()?,
-            height,
+            u128::from(overlay_width) * scale,
+            u128::from(overlay_height) * scale + u128::from(anchored.offset) * scale * density,
         )
     };
-    if canvas_width == 0 || canvas_height == 0 {
-        return None;
-    }
-    let canvas_x = (width - canvas_width) / 2;
-    let canvas_y = (height - canvas_height) / 2;
-    let left = canvas_x
-        + u32::try_from(
-            u128::from(frame.overlay_x) * u128::from(canvas_width) / u128::from(source_width),
+    // Extents are in buffer pixels times the density, so a fit of `FIT_ONE`
+    // is the overlay's natural logical size.
+    let fit_within = |anchored: &AnchoredOverlay, available_width: u128, available_height: u128| {
+        let (extent_width, extent_height) = extent(anchored);
+        FIT_ONE
+            .min(available_width * density * FIT_ONE / extent_width)
+            .min(available_height * density * FIT_ONE / extent_height)
+    };
+    // Lengths round to the nearest pixel and are then clamped to the surface,
+    // which absorbs the half pixel rounding can add to a fit at its limit.
+    let place = |anchored: &AnchoredOverlay, fit: u128, from_bottom: bool| -> Option<Region> {
+        let (overlay_width, overlay_height) = anchored.overlay.dimensions();
+        let round = |length: u128, denominator: u128| {
+            u32::try_from((length * scale * fit + denominator / 2) / denominator).ok()
+        };
+        let offset = round(u128::from(anchored.offset), FIT_ONE)?.min(height);
+        let region_width = round(u128::from(overlay_width), density * FIT_ONE)?.min(width);
+        let region_height =
+            round(u128::from(overlay_height), density * FIT_ONE)?.min(height - offset);
+        if region_width == 0 || region_height == 0 {
+            return None;
+        }
+        Some(Region {
+            x: (width - region_width) / 2,
+            y: if from_bottom {
+                height - offset - region_height
+            } else {
+                offset
+            },
+            width: region_width,
+            height: region_height,
+        })
+    };
+
+    let bottom = frame.bottom.as_ref().and_then(|anchored| {
+        place(
+            anchored,
+            fit_within(anchored, surface_width, surface_height),
+            true,
         )
-        .ok()?;
-    let top = canvas_y
-        + u32::try_from(
-            u128::from(frame.overlay_y) * u128::from(canvas_height) / u128::from(source_height),
-        )
-        .ok()?;
-    let right = canvas_x
-        + div_ceil_u128(
-            u128::from(frame.overlay_x + frame.overlay.width) * u128::from(canvas_width),
-            u128::from(source_width),
-        )?;
-    let bottom = canvas_y
-        + div_ceil_u128(
-            u128::from(frame.overlay_y + frame.overlay.height) * u128::from(canvas_height),
-            u128::from(source_height),
-        )?;
-    Some(OverlayGeometry {
-        target: Region {
-            x: left,
-            y: top,
-            width: right.saturating_sub(left),
-            height: bottom.saturating_sub(top),
-        },
-    })
+    });
+    let top = frame.top.as_ref().and_then(|anchored| {
+        let above_bottom = u128::from(bottom.map_or(height, |region| region.y))
+            .saturating_sub(u128::from(layout.gap) * scale);
+        let inside_margins = surface_width.saturating_sub(2 * u128::from(layout.margin) * scale);
+        let minimum = (FIT_ONE * u128::from(layout.min_top_scale_percent)).div_ceil(100);
+        let fit = fit_within(anchored, inside_margins, above_bottom)
+            .max(minimum)
+            .min(fit_within(anchored, surface_width, surface_height));
+        place(anchored, fit, false)
+    });
+    [top, bottom]
 }
 
-fn redraw_region(
+/// The buffer regions an overlay-only redraw repaints: every placed overlay,
+/// or the whole buffer when the buffer holds an older background.
+fn redraw_regions(
     kind: RedrawKind,
     rendered_background: u64,
     current_background: u64,
-    frame: Option<&PresentationFrame>,
+    placed: &[Option<PlacedOverlay>; 2],
     width: u32,
     height: u32,
-) -> Region {
-    if kind == RedrawKind::Overlay && rendered_background == current_background {
-        overlay_region(frame, width, height).unwrap_or_else(|| Region::full(width, height))
+) -> Vec<Region> {
+    let regions = placed
+        .iter()
+        .flatten()
+        .map(|overlay| overlay.region)
+        .collect::<Vec<_>>();
+    if kind == RedrawKind::Overlay
+        && rendered_background == current_background
+        && !regions.is_empty()
+    {
+        regions
     } else {
-        Region::full(width, height)
+        vec![Region::full(width, height)]
     }
 }
 
@@ -2044,14 +2098,11 @@ fn record_full_frame(
     *background_generation = background_generation.wrapping_add(1);
 }
 
-fn div_ceil_u128(numerator: u128, denominator: u128) -> Option<u32> {
-    u32::try_from(numerator.checked_add(denominator.checked_sub(1)?)? / denominator).ok()
-}
-
 pub(super) fn render_preview(
     frame: &PresentationFrame,
     width: u32,
     height: u32,
+    scale: u32,
 ) -> Result<RgbaFrame, PreviewError> {
     if width == 0 || height == 0 || width > MAX_SURFACE_DIMENSION || height > MAX_SURFACE_DIMENSION
     {
@@ -2066,7 +2117,7 @@ pub(super) fn render_preview(
         return Err(PreviewError::InvalidDimensions);
     }
     let mut pixels = allocate_preview_pixels(bytes)?;
-    draw_opaque(&mut pixels, width, height, Some(frame));
+    draw_opaque(&mut pixels, width, height, scale, Some(frame));
     for pixel in pixels.chunks_exact_mut(4) {
         pixel.swap(0, 2);
     }
@@ -2144,8 +2195,14 @@ fn blend_rgb(background: [u8; 3], foreground: [u8; 4]) -> [u8; 3] {
     })
 }
 
-fn dim(value: u8) -> u8 {
-    ((u16::from(value) * DIM_NUMERATOR) / DIM_DENOMINATOR) as u8
+fn dim(value: u8, dimming: Option<Dimming>) -> u8 {
+    match dimming {
+        Some(Dimming {
+            numerator,
+            denominator,
+        }) => (u32::from(value) * u32::from(numerator) / u32::from(denominator)) as u8,
+        None => value,
+    }
 }
 
 fn refresh_priority(presentation: &mut dyn Presentation, state: &mut State) -> Refresh {
@@ -2596,74 +2653,107 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rendering_forces_opaque_argb_and_dims_wallpaper() {
-        let background = RgbaFrame {
-            width: 1,
-            height: 1,
-            pixels: Bytes::from_static(&[100, 150, 200, 0]),
-        };
-        let overlay = RgbaFrame {
-            width: 1,
-            height: 1,
-            pixels: Bytes::from_static(&[0, 0, 0, 0]),
-        };
-        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
-        let mut target = [0; 8];
-        draw_opaque(&mut target, 2, 1, Some(&frame));
-        assert_eq!(target, [160, 120, 80, 255, 160, 120, 80, 255]);
+    fn solid(width: u32, height: u32, rgba: [u8; 4]) -> RgbaFrame {
+        RgbaFrame::new(
+            width,
+            height,
+            Bytes::from(rgba.repeat((width * height) as usize)),
+        )
+        .unwrap()
+    }
+
+    fn anchored(width: u32, height: u32, rgba: [u8; 4], offset: u32) -> Option<AnchoredOverlay> {
+        AnchoredOverlay::new(solid(width, height, rgba), offset)
+    }
+
+    /// A frame whose single overlay is anchored to the bottom edge at density 1.
+    fn bottom_frame(background: RgbaFrame, overlay: RgbaFrame) -> PresentationFrame {
+        PresentationFrame::new(
+            Some(background),
+            OverlayLayout::new(1).unwrap(),
+            None,
+            AnchoredOverlay::new(overlay, 0),
+        )
     }
 
     #[test]
-    fn overlay_is_blended_at_full_strength_over_dimmed_wallpaper() {
-        for (alpha, expected) in [(255, [255; 4]), (128, [207, 187, 167, 255])] {
-            let background =
-                RgbaFrame::new(1, 1, Bytes::from_static(&[100, 150, 200, 255])).unwrap();
-            let overlay = RgbaFrame::new(1, 1, Bytes::from(vec![255, 255, 255, alpha])).unwrap();
-            let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
-            let scaled = scale_overlay(&frame.overlay, 1, 1);
-            for cached in [None, Some(&scaled)] {
-                let mut target = [0; 4];
-                draw_opaque_cached(&mut target, 1, 1, Some(&frame), cached, true);
-                assert_eq!(target, expected);
-            }
+    fn rendering_forces_opaque_argb_and_leaves_wallpaper_undimmed() {
+        let frame = bottom_frame(
+            RgbaFrame::new(1, 1, Bytes::from_static(&[100, 150, 200, 0])).unwrap(),
+            solid(1, 1, [0; 4]),
+        );
+        let mut target = [0; 8];
+        draw_opaque(&mut target, 2, 1, 1, Some(&frame));
+        assert_eq!(target, [200, 150, 100, 255, 200, 150, 100, 255]);
+    }
+
+    #[test]
+    fn a_supplied_dimming_factor_dims_only_the_authentication_wallpaper() {
+        let frame = bottom_frame(solid(1, 1, [100, 150, 200, 255]), solid(1, 1, [0; 4]))
+            .with_dimming(Dimming::new(4, 5));
+        let mut target = [0; 8];
+        draw_opaque(&mut target, 2, 1, 1, Some(&frame));
+        assert_eq!(target, [160, 120, 80, 255, 160, 120, 80, 255]);
+
+        let placed = place_overlays(Some(&frame), 2, 1, 1);
+        draw_opaque_placed(&mut target, 2, 1, Some(&frame), &placed, false);
+        assert_eq!(target, [200, 150, 100, 255, 200, 150, 100, 255]);
+    }
+
+    #[test]
+    fn overlay_is_blended_at_full_strength_over_the_wallpaper() {
+        for (alpha, dimming, expected) in [
+            (255, None, [255; 4]),
+            (128, None, [227, 202, 177, 255]),
+            (255, Dimming::new(4, 5), [255; 4]),
+            (128, Dimming::new(4, 5), [207, 187, 167, 255]),
+        ] {
+            let frame = bottom_frame(
+                solid(1, 1, [100, 150, 200, 255]),
+                solid(1, 1, [255, 255, 255, alpha]),
+            )
+            .with_dimming(dimming);
+            let mut target = [0; 4];
+            draw_opaque(&mut target, 1, 1, 1, Some(&frame));
+            assert_eq!(target, expected, "alpha {alpha}, dimming {dimming:?}");
         }
     }
 
     #[test]
-    fn rendering_scales_wallpaper_independently_from_the_overlay_canvas() {
-        let background =
-            RgbaFrame::new(2, 1, Bytes::from_static(&[100, 0, 0, 255, 0, 0, 200, 255])).unwrap();
-        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
-        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
+    fn rendering_scales_wallpaper_independently_from_the_overlays() {
+        let frame = bottom_frame(
+            RgbaFrame::new(2, 1, Bytes::from_static(&[100, 0, 0, 255, 0, 0, 200, 255])).unwrap(),
+            solid(1, 1, [0; 4]),
+        );
         let mut target = [0; 8];
 
-        draw_opaque(&mut target, 2, 1, Some(&frame));
+        draw_opaque(&mut target, 2, 1, 1, Some(&frame));
 
-        assert_eq!(target, [0, 0, 80, 255, 160, 0, 0, 255]);
+        assert_eq!(target, [0, 0, 100, 255, 200, 0, 0, 255]);
     }
 
     #[test]
-    fn background_only_surface_keeps_wallpaper_bright_and_omits_overlay() {
-        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[100, 150, 200, 255])).unwrap();
-        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[255, 255, 255, 255])).unwrap();
-        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
+    fn background_only_surface_keeps_wallpaper_bright_and_omits_overlays() {
+        let frame = bottom_frame(solid(1, 1, [100, 150, 200, 255]), solid(1, 1, [255; 4]))
+            .with_dimming(Dimming::new(1, 2));
+        let placed = place_overlays(Some(&frame), 1, 1, 1);
+        assert!(placed[1].is_some());
         let mut target = [0; 4];
 
-        draw_opaque_cached(&mut target, 1, 1, Some(&frame), None, false);
+        draw_opaque_placed(&mut target, 1, 1, Some(&frame), &placed, false);
 
         assert_eq!(target, [200, 150, 100, 255]);
     }
 
     #[test]
     fn scaled_overlays_are_filtered_instead_of_pixel_doubled() {
-        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[0, 0, 0, 255])).unwrap();
-        let overlay =
-            RgbaFrame::new(2, 1, Bytes::from_static(&[255, 0, 0, 255, 0, 0, 255, 255])).unwrap();
-        let frame = PresentationFrame::new(2, 1, Some(background), overlay, 0, 0).unwrap();
+        let frame = bottom_frame(
+            solid(1, 1, [0, 0, 0, 255]),
+            RgbaFrame::new(2, 1, Bytes::from_static(&[255, 0, 0, 255, 0, 0, 255, 255])).unwrap(),
+        );
         let mut target = [0; 32];
 
-        draw_opaque(&mut target, 4, 2, Some(&frame));
+        draw_opaque(&mut target, 4, 2, 2, Some(&frame));
 
         assert_eq!(target[0..4], [0, 0, 255, 255]);
         assert_eq!(target[4..8], [63, 0, 191, 255]);
@@ -2702,26 +2792,6 @@ mod tests {
     }
 
     #[test]
-    fn cached_scaled_overlay_matches_direct_filtered_rendering() {
-        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[80, 60, 40, 255])).unwrap();
-        let overlay = RgbaFrame::new(
-            3,
-            1,
-            Bytes::from_static(&[255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0]),
-        )
-        .unwrap();
-        let frame = PresentationFrame::new(3, 1, Some(background), overlay, 0, 0).unwrap();
-        let scaled = scale_overlay(&frame.overlay, 1, 1);
-        let mut direct = [0; 4];
-        let mut cached = [0; 4];
-
-        draw_opaque(&mut direct, 1, 1, Some(&frame));
-        draw_opaque_cached(&mut cached, 1, 1, Some(&frame), Some(&scaled), true);
-
-        assert_eq!(cached, direct);
-    }
-
-    #[test]
     fn scaled_overlay_cache_tracks_source_allocation_and_target_size() {
         let source = RgbaFrame::new(1, 1, Bytes::from(vec![1, 2, 3, 4])).unwrap();
         let same_source = source.clone();
@@ -2738,15 +2808,23 @@ mod tests {
     }
 
     #[test]
-    fn overlay_redraw_touches_only_the_contained_overlay_region() {
-        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[100, 0, 0, 255])).unwrap();
-        let overlay = RgbaFrame::new(2, 2, Bytes::from_static(&[200; 16])).unwrap();
-        let frame = PresentationFrame::new(4, 4, Some(background), overlay, 1, 1).unwrap();
-        let region = overlay_region(Some(&frame), 8, 4).unwrap();
+    fn overlay_redraw_touches_only_the_placed_overlay_regions() {
+        let frame = PresentationFrame::new(
+            Some(solid(1, 1, [100, 0, 0, 255])),
+            OverlayLayout::new(1).unwrap(),
+            anchored(2, 1, [200; 4], 0),
+            anchored(2, 1, [200; 4], 0),
+        );
+        let placed = place_overlays(Some(&frame), 8, 4, 1);
+        let regions = redraw_regions(RedrawKind::Overlay, 7, 7, &placed, 8, 4);
         let mut target = vec![17; 8 * 4 * 4];
 
-        let moved_overlay = RgbaFrame::new(2, 2, Bytes::from_static(&[200; 16])).unwrap();
-        let moved = PresentationFrame::new(4, 4, None, moved_overlay, 2, 1).unwrap();
+        let moved = PresentationFrame::new(
+            None,
+            OverlayLayout::new(1).unwrap(),
+            anchored(2, 1, [200; 4], 0),
+            anchored(2, 1, [200; 4], 1),
+        );
         assert_eq!(
             overlay_redraw_kind(frame_geometry(Some(&frame)), frame_geometry(Some(&moved))),
             RedrawKind::Full
@@ -2755,42 +2833,60 @@ mod tests {
             overlay_redraw_kind(frame_geometry(Some(&frame)), frame_geometry(Some(&frame))),
             RedrawKind::Overlay
         );
-
+        let dimmed = frame.clone().with_dimming(Dimming::new(1, 2));
         assert_eq!(
-            redraw_region(RedrawKind::Overlay, 7, 7, Some(&frame), 8, 4),
-            region
-        );
-        assert_eq!(
-            redraw_region(RedrawKind::Overlay, 6, 7, Some(&frame), 8, 4),
-            Region::full(8, 4)
-        );
-        assert_eq!(
-            redraw_region(RedrawKind::Full, 7, 7, Some(&frame), 8, 4),
-            Region::full(8, 4)
+            overlay_redraw_kind(frame_geometry(Some(&frame)), frame_geometry(Some(&dimmed))),
+            RedrawKind::Full,
+            "changing the wallpaper factor repaints the whole wallpaper"
         );
 
-        draw_opaque_region(&mut target, 8, 4, Some(&frame), region);
-
         assert_eq!(
-            region,
-            Region {
-                x: 3,
-                y: 1,
-                width: 2,
-                height: 2
-            }
+            regions,
+            [
+                Region {
+                    x: 3,
+                    y: 0,
+                    width: 2,
+                    height: 1
+                },
+                Region {
+                    x: 3,
+                    y: 3,
+                    width: 2,
+                    height: 1
+                }
+            ]
         );
-        assert_eq!(&target[0..4], &[17; 4]);
-        assert_ne!(&target[(8 + 3) * 4..(8 + 4) * 4], &[17; 4]);
-        assert_eq!(&target[(3 * 8 + 7) * 4..(4 * 8) * 4], &[17; 4]);
+        assert_eq!(
+            redraw_regions(RedrawKind::Overlay, 6, 7, &placed, 8, 4),
+            [Region::full(8, 4)]
+        );
+        assert_eq!(
+            redraw_regions(RedrawKind::Full, 7, 7, &placed, 8, 4),
+            [Region::full(8, 4)]
+        );
+        assert_eq!(
+            redraw_regions(RedrawKind::Overlay, 7, 7, &[None, None], 8, 4),
+            [Region::full(8, 4)]
+        );
+
+        for region in &regions {
+            draw_opaque_region(&mut target, 8, 4, Some(&frame), &placed, true, *region);
+        }
+
+        let pixel = |x: usize, y: usize| &target[(y * 8 + x) * 4..(y * 8 + x + 1) * 4];
+        assert_ne!(pixel(3, 0), &[17; 4]);
+        assert_ne!(pixel(4, 3), &[17; 4]);
+        for (x, y) in [(0, 0), (2, 0), (5, 0), (3, 1), (4, 2), (7, 3)] {
+            assert_eq!(pixel(x, y), &[17; 4], "({x}, {y}) is outside both overlays");
+        }
     }
 
     #[test]
     fn full_redraws_record_current_geometry_and_invalidate_every_buffer_once() {
-        let old_overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
-        let old = PresentationFrame::new(2, 2, None, old_overlay, 0, 0).unwrap();
-        let new_overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
-        let new = PresentationFrame::new(4, 4, None, new_overlay, 2, 2).unwrap();
+        let layout = OverlayLayout::new(1).unwrap();
+        let old = PresentationFrame::new(None, layout, None, anchored(1, 1, [0; 4], 0));
+        let new = PresentationFrame::new(None, layout, None, anchored(1, 1, [0; 4], 2));
         let mut geometry = frame_geometry(Some(&old));
         let mut generation = u64::MAX;
 
@@ -2804,55 +2900,143 @@ mod tests {
         );
     }
 
-    #[test]
-    fn overlay_remains_visible_on_portrait_ultrawide_and_minimum_outputs() {
-        let overlay = RgbaFrame::new(500, 400, Bytes::from(vec![0; 500 * 400 * 4])).unwrap();
-        let frame = PresentationFrame::new(1280, 800, None, overlay, 390, 200).unwrap();
+    /// A clock 600x294 points, 183 points from the top, over an identity
+    /// column 300x262 points on the bottom edge, rendered at density 3.
+    fn lock_like_frame() -> PresentationFrame {
+        PresentationFrame::new(
+            None,
+            OverlayLayout::new(3).unwrap().with_top_fit(12, 48, 20),
+            anchored(1800, 882, [0; 4], 183),
+            anchored(900, 786, [0; 4], 0),
+        )
+    }
 
-        for (width, height) in [(1080, 1920), (3840, 1080), (320, 320)] {
-            let region = overlay_region(Some(&frame), width, height).unwrap();
-            assert!(region.width > 0 && region.height > 0, "{width}x{height}");
-            assert!(region.x + region.width <= width, "{width}x{height}");
-            assert!(region.y + region.height <= height, "{width}x{height}");
+    #[test]
+    fn overlays_remain_visible_on_portrait_ultrawide_and_minimum_outputs() {
+        let frame = lock_like_frame();
+
+        for (width, height, scale) in [
+            (1080, 1920, 1),
+            (3840, 1080, 1),
+            (320, 320, 1),
+            (480, 600, 1),
+            (1280, 800, 1),
+            (2560, 1600, 2),
+        ] {
+            let [top, bottom] = overlay_regions(&frame, width, height, scale);
+            let (top, bottom) = (top.unwrap(), bottom.unwrap());
+            for region in [top, bottom] {
+                assert!(region.width > 0 && region.height > 0, "{width}x{height}");
+                assert!(region.x + region.width <= width, "{width}x{height}");
+                assert!(region.y + region.height <= height, "{width}x{height}");
+            }
+            assert_eq!(
+                bottom.y + bottom.height,
+                height,
+                "identity sits on the edge"
+            );
+            assert_eq!(bottom.height, 262 * scale, "identity keeps its point size");
+            if height >= 600 {
+                assert!(
+                    top.y + top.height + 12 * scale <= bottom.y,
+                    "clock overlaps identity on {width}x{height}"
+                );
+            }
         }
     }
 
     #[test]
+    fn the_top_overlay_keeps_its_point_size_unless_the_output_is_too_small() {
+        let frame = lock_like_frame();
+        let [top, _] = overlay_regions(&frame, 1280, 800, 1);
+        assert_eq!(
+            top.unwrap(),
+            Region {
+                x: 340,
+                y: 183,
+                width: 600,
+                height: 294
+            }
+        );
+        let [top, bottom] = overlay_regions(&frame, 2560, 1600, 2);
+        assert_eq!(
+            (top.unwrap().y, top.unwrap().height, bottom.unwrap().y),
+            (366, 588, 1076)
+        );
+        // Too narrow for the clock between the margins: it shrinks with its offset.
+        let [top, _] = overlay_regions(&frame, 480, 600, 1);
+        let top = top.unwrap();
+        assert_eq!(top.width, 384);
+        assert!(top.y < 183);
+
+        let layout = OverlayLayout::new(1).unwrap().with_top_fit(5, 0, 20);
+        let frame = |margin| {
+            PresentationFrame::new(
+                None,
+                layout.with_top_fit(5, margin, 20),
+                anchored(100, 50, [0; 4], 10),
+                anchored(40, 20, [0; 4], 0),
+            )
+        };
+        let regions = |width, height, margin| overlay_regions(&frame(margin), width, height, 1);
+        assert_eq!(
+            regions(200, 100, 0)[0],
+            Some(Region {
+                x: 50,
+                y: 10,
+                width: 100,
+                height: 50
+            }),
+            "room to spare keeps the natural size"
+        );
+        // Too short: the clock and its offset shrink to keep the gap.
+        assert_eq!(
+            regions(200, 60, 0)[0],
+            Some(Region {
+                x: 71,
+                y: 6,
+                width: 58,
+                height: 29
+            })
+        );
+        // Never below the minimum scale, even when that means overlapping.
+        assert_eq!(regions(200, 30, 0)[0].unwrap().height, 10);
+        // The margin narrows the room for the top overlay only.
+        assert_eq!(regions(120, 200, 20)[0].unwrap().width, 80);
+        assert_eq!(regions(120, 200, 20)[1].unwrap().width, 40);
+    }
+
+    #[test]
     fn rendering_composites_only_inside_the_positioned_overlay_bounds() {
-        let background = RgbaFrame::new(
-            3,
-            1,
-            Bytes::from_static(&[100, 150, 200, 255, 100, 150, 200, 255, 100, 150, 200, 255]),
-        )
-        .unwrap();
-        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[200, 100, 50, 128])).unwrap();
-        let frame = PresentationFrame::new(3, 1, Some(background), overlay, 1, 0).unwrap();
+        let frame = bottom_frame(
+            solid(3, 1, [100, 150, 200, 255]),
+            solid(1, 1, [200, 100, 50, 128]),
+        );
         let mut target = [0; 12];
 
-        draw_opaque(&mut target, 3, 1, Some(&frame));
+        draw_opaque(&mut target, 3, 1, 1, Some(&frame));
 
         assert_eq!(
             target,
-            [160, 120, 80, 255, 104, 109, 140, 255, 160, 120, 80, 255,]
+            [200, 150, 100, 255, 124, 124, 150, 255, 200, 150, 100, 255],
+            "the wallpaper outside the overlay is exactly the source pixel"
         );
     }
 
     #[test]
     fn preview_rendering_converts_compositor_argb_to_rgba_and_bounds_allocations() {
-        let background = RgbaFrame::new(1, 1, Bytes::from_static(&[100, 150, 200, 255])).unwrap();
-        let overlay = RgbaFrame::new(1, 1, Bytes::from_static(&[0; 4])).unwrap();
-        let frame = PresentationFrame::new(1, 1, Some(background), overlay, 0, 0).unwrap();
+        let frame = bottom_frame(solid(1, 1, [100, 150, 200, 255]), solid(1, 1, [0; 4]));
 
         assert_eq!(
-            render_preview(&frame, 1, 1).unwrap().pixels(),
-            &[80, 120, 160, 255]
+            render_preview(&frame, 1, 1, 1).unwrap().pixels(),
+            &[100, 150, 200, 255]
         );
         assert!(matches!(
-            render_preview(&frame, 0, 1),
+            render_preview(&frame, 0, 1, 1),
             Err(PreviewError::InvalidDimensions)
         ));
         assert!(matches!(
-            render_preview(&frame, MAX_SURFACE_DIMENSION + 1, 1),
+            render_preview(&frame, MAX_SURFACE_DIMENSION + 1, 1, 1),
             Err(PreviewError::InvalidDimensions)
         ));
         assert!(matches!(
@@ -2864,8 +3048,8 @@ mod tests {
     #[test]
     fn missing_wallpaper_uses_an_opaque_generated_fallback() {
         let mut target = [0; 4];
-        draw_opaque(&mut target, 1, 1, None);
-        assert_eq!(target, [19, 7, 4, 255]);
+        draw_opaque(&mut target, 1, 1, 1, None);
+        assert_eq!(target, [24, 9, 5, 255]);
     }
 
     #[test]
@@ -2996,9 +3180,9 @@ mod tests {
 
             assert_eq!(refresh_priority(&mut presentation, &mut state), refresh);
             let mut target = [0; 4];
-            draw_opaque(&mut target, 1, 1, presentation.frame().as_ref());
+            draw_opaque(&mut target, 1, 1, 1, presentation.frame().as_ref());
 
-            assert_eq!(target, [19, 7, 4, 255]);
+            assert_eq!(target, [24, 9, 5, 255]);
             assert_eq!(state.lifecycle, super::super::Lifecycle::Locked);
             assert_eq!(state.presentation_failed, refresh == Refresh::Failed);
         }

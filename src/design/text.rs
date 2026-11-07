@@ -1,5 +1,5 @@
-//! Renderer-independent text policy shared by login and lock: initials and
-//! single-line fitting with an ellipsis.
+//! Renderer-independent text policy shared by login and lock: initials,
+//! single-line fitting with an ellipsis, and where a PAM prompt is shown.
 //!
 //! The fitting helpers take a width-measuring function so the iced greeter
 //! and the lock's CPU renderer can share them; [`measure`] is the iced one.
@@ -15,6 +15,34 @@ use super::iced as convert;
 use super::tokens::TextStyle;
 
 const ELLIPSIS: char = '…';
+
+/// The placeholder for a PAM prompt that carries no text.
+pub(crate) const DEFAULT_PROMPT: &str = "Enter Password";
+
+/// Where a PAM prompt's text is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptPlacement<'a> {
+    /// Inside the empty pill.
+    Placeholder(&'a str),
+    /// As a StatusMessage above the pill, which then has no placeholder.
+    Above(&'a str),
+}
+
+/// A short secret prompt is the pill's placeholder. A visible prompt, or one
+/// too long for the pill, is shown above it so it stays readable while typing.
+pub(crate) fn prompt_placement(
+    prompt: &str,
+    secret: bool,
+    fits: impl FnOnce(&str) -> bool,
+) -> PromptPlacement<'_> {
+    if prompt.trim().is_empty() {
+        PromptPlacement::Placeholder(DEFAULT_PROMPT)
+    } else if secret && fits(prompt) {
+        PromptPlacement::Placeholder(prompt)
+    } else {
+        PromptPlacement::Above(prompt)
+    }
+}
 
 /// The first letters of the first two words, uppercased.
 pub(crate) fn initials(name: &str) -> String {
@@ -198,6 +226,46 @@ mod tests {
     }
 
     #[test]
+    fn end_truncation_measures_wide_characters_and_collapses_whitespace() {
+        let measure = |text: &str| {
+            text.chars()
+                .map(|character| if character == '界' { 10.0 } else { 1.0 })
+                .sum()
+        };
+        assert_eq!(
+            fit_single_line_by(&"a".repeat(512), 8.0, measure),
+            "aaaaaaa…"
+        );
+        assert_eq!(fit_single_line_by("界界界界", 22.0, measure), "界界…");
+        assert_eq!(
+            fit_single_line_by("Challenge:\n Enter   token", 40.0, measure),
+            "Challenge: Enter token"
+        );
+    }
+
+    #[test]
+    fn prompts_are_placeholders_only_when_short_and_secret() {
+        assert_eq!(
+            prompt_placement("Password", true, |_| true),
+            PromptPlacement::Placeholder("Password")
+        );
+        assert_eq!(
+            prompt_placement("", true, |_| true),
+            PromptPlacement::Placeholder("Enter Password")
+        );
+        assert_eq!(
+            prompt_placement("Verification code", false, |_| true),
+            PromptPlacement::Above("Verification code")
+        );
+        assert_eq!(
+            prompt_placement("Enter the complete authentication challenge", true, |_| {
+                false
+            }),
+            PromptPlacement::Above("Enter the complete authentication challenge")
+        );
+    }
+
+    #[test]
     fn middle_truncation_keeps_both_ends() {
         assert_eq!(fit_middle_by("prefix-alpha", 7.0, chars), "pre…pha");
         assert_eq!(fit_middle_by("short", 7.0, chars), "short");
@@ -226,5 +294,43 @@ mod tests {
         assert!(
             measure_scaled("10:38", text_style::CLOCK, 0.5) < measure("10:38", text_style::CLOCK)
         );
+    }
+}
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Deterministic positive widths, including multibyte characters and ellipsis.
+    fn measure(value: &str) -> f32 {
+        value.chars().map(|c| (1 + u32::from(c) % 7) as f32).sum()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn fitting_preserves_prefix_and_is_monotone(
+            chars in prop::collection::vec(prop_oneof![any::<char>(), prop::sample::select(vec![' ', '\t', '\n', '界', '…'])], 0..180),
+            width in 0u16..1400, extra in 0u16..1400,
+        ) {
+            let text: String = chars.into_iter().collect();
+            let normalized = normalize(&text);
+            let result = fit_single_line_by(&text, f32::from(width), measure);
+            prop_assert!(measure(&result) <= f32::from(width));
+            let prefix_len = |result: &str| {
+                if result == normalized { normalized.chars().count() }
+                else { result.strip_suffix('…').unwrap_or("").chars().count() }
+            };
+            if result != normalized && !result.is_empty() {
+                let prefix = result.strip_suffix('…').unwrap();
+                prop_assert!(normalized.starts_with(prefix));
+                prop_assert!(measure(&normalized) > f32::from(width));
+            }
+            if result.is_empty() && !normalized.is_empty() { prop_assert!(measure("…") > f32::from(width)); }
+            let wider = fit_single_line_by(&text, f32::from(width) + f32::from(extra), measure);
+            prop_assert!(prefix_len(&wider) >= prefix_len(&result));
+        }
     }
 }

@@ -100,18 +100,23 @@ and after it resumes. Resume does not start a second authentication attempt or
 unlock the session; the existing PAM conversation continues only when the user
 interacts with the lock screen.
 
-The lock covers every output but presents the dimmed authentication interface
-on only one; all remaining outputs show unobstructed wallpaper. It uses the
+The lock covers every output but presents the clock and authentication column
+on only one; all remaining outputs show unobstructed wallpaper. No output's
+wallpaper is dimmed. It uses the
 same external-output-first, internal-panel fallback policy as login. Pass
 `--authentication-output DP-2` to select a preferred connector. The preference
 is preserved by `--daemonize`, and the lock moves authentication to the normal
 fallback if the chosen output disappears.
 
-The login and lock screens use the same translucent authentication-field
-material and light outline over the selected wallpaper. Login adds a stronger
-outline to the currently focused control for keyboard navigation; the lock
-screen has a single active response field. This presentation consistency does
-not join their security backends: greetd still owns login authentication and
+The login and lock screens share one composition drawn from the same design
+tokens: the date and clock a fixed distance below the top edge of the
+authentication output, and the avatar, name, and password pill a fixed distance
+above its bottom edge, over the selected wallpaper. Only the clock shrinks, and
+only on outputs too short for both. The lock omits login's session and power
+items. Login adds a stronger outline to the currently focused control for
+keyboard navigation; the lock screen has a single active response field, shows
+every response masked, and asks for Return to start a new attempt after a
+failure. This presentation consistency does not join their security backends: greetd still owns login authentication and
 the dedicated `genkan-lock` PAM worker still owns unlock authentication.
 
 For Sway and other sessions using swayidle, use its wait mode so the

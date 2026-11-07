@@ -17,7 +17,7 @@ use crate::background;
 use crate::design::glyph::{self, Kind as Glyph};
 use crate::design::iced::{color, font, label, line_height, scaled_label};
 use crate::design::style;
-use crate::design::text::{self as text_policy, initials};
+use crate::design::text::{self as text_policy, initials, prompt_placement, PromptPlacement};
 use crate::design::tokens::{
     color as palette, component, motion, radius, size, spacing, text_style, Rgba, TextStyle,
 };
@@ -29,8 +29,6 @@ use super::focus::Target as FocusTarget;
 use super::modal as modal_widget;
 use super::{App, Menu, Message, PowerState, POWER_MENU};
 
-/// The placeholder for a PAM prompt that carries no text.
-const DEFAULT_PROMPT: &str = "Enter Password";
 const POWER_CONSEQUENCE: &str = "Anyone still signed in will lose unsaved work.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,15 +44,6 @@ pub(super) enum AuthenticationControls {
     Retry,
     Progress(&'static str),
     Unavailable,
-}
-
-/// Where a PAM prompt's text is shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PromptPlacement<'a> {
-    /// Inside the empty pill.
-    Placeholder(&'a str),
-    /// As a StatusMessage above the pill, which then has no placeholder.
-    Above(&'a str),
 }
 
 /// Where the clock sits once it has made room for the identity column.
@@ -774,22 +763,6 @@ pub(super) fn authentication_controls(phase: Phase, has_session: bool) -> Authen
     }
 }
 
-/// A short secret prompt is the pill's placeholder. A visible prompt, or one
-/// too long for the pill, is shown above it so it stays readable while typing.
-pub(super) fn prompt_placement(
-    prompt: &str,
-    secret: bool,
-    fits: impl FnOnce(&str) -> bool,
-) -> PromptPlacement<'_> {
-    if prompt.trim().is_empty() {
-        PromptPlacement::Placeholder(DEFAULT_PROMPT)
-    } else if secret && fits(prompt) {
-        PromptPlacement::Placeholder(prompt)
-    } else {
-        PromptPlacement::Above(prompt)
-    }
-}
-
 /// The height of the identity column without PAM text: avatar, name, pill.
 fn identity_height() -> f32 {
     size::AVATAR
@@ -1147,28 +1120,6 @@ mod tests {
         assert_eq!(
             clock_layout(Size::new(100.0, 100.0), 600.0).scale,
             component::CLOCK_MIN_SCALE
-        );
-    }
-
-    #[test]
-    fn prompts_are_placeholders_only_when_short_and_secret() {
-        assert_eq!(
-            prompt_placement("Password", true, |_| true),
-            PromptPlacement::Placeholder("Password")
-        );
-        assert_eq!(
-            prompt_placement("", true, |_| true),
-            PromptPlacement::Placeholder("Enter Password")
-        );
-        assert_eq!(
-            prompt_placement("Verification code", false, |_| true),
-            PromptPlacement::Above("Verification code")
-        );
-        assert_eq!(
-            prompt_placement("Enter the complete authentication challenge", true, |_| {
-                false
-            }),
-            PromptPlacement::Above("Enter the complete authentication challenge")
         );
     }
 

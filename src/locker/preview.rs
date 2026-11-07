@@ -1,6 +1,5 @@
 use clap::ValueEnum;
-use cosmic_text::SwashCache;
-use genkan_session_lock::{PresentationFrame, RgbaFrame};
+use genkan_session_lock::PresentationFrame;
 use iced::widget::{container, image, Image};
 use iced::{Element, Fill, Subscription, Task, Theme};
 use std::sync::{Arc, Mutex};
@@ -9,10 +8,7 @@ use thiserror::Error;
 use crate::conversation::{Conversation, Status};
 use crate::wallpaper;
 
-use super::{
-    authentication_canvas_dimensions, authentication_overlay_dimensions,
-    render_authentication_overlay,
-};
+use super::render;
 
 const MAX_PREVIEW_PIXELS: u32 = 4096 * 4096;
 type ExitStatus = Arc<Mutex<ExitState>>;
@@ -91,7 +87,7 @@ impl Preview {
             record_failure(&self.exit_status, Error::Dimensions);
             return iced::exit();
         };
-        match render_frame(&self.presentation, width, height) {
+        match render_frame(&self.presentation, width, height, buffer_scale(self.scale)) {
             Ok(frame) => {
                 let (width, height) = frame.dimensions();
                 self.image = image::Handle::from_rgba(width, height, frame.into_pixels());
@@ -131,7 +127,7 @@ pub(crate) fn run(
         return Err(Error::Dimensions);
     }
     let presentation = presentation(settings, fixture);
-    let frame = render_frame(&presentation, width, height)?;
+    let frame = render_frame(&presentation, width, height, 1)?;
     let (frame_width, frame_height) = frame.dimensions();
     let image = image::Handle::from_rgba(frame_width, frame_height, frame.into_pixels());
     let exit_status = Arc::new(Mutex::new(ExitState::default()));
@@ -217,48 +213,41 @@ fn finish(exit_status: ExitStatus) -> Result<(), Error> {
 
 fn presentation(settings: wallpaper::Settings, fixture: Fixture) -> PresentationFrame {
     let wallpaper = wallpaper::State::start(settings).rgba_frame();
-    let (overlay_width, overlay_height) = authentication_overlay_dimensions();
-    let mut pixels = vec![0; (overlay_width * overlay_height * 4) as usize];
     let identity = super::identity::Identity {
         uid: 1000,
         username: "preview".into(),
         display_name: "Preview User".into(),
     };
     let (conversation, confirmed) = fixture.conversation();
-    render_authentication_overlay(
-        &mut pixels,
-        overlay_width,
-        overlay_height,
-        &identity,
-        &conversation,
-        confirmed,
-        0,
-        &mut crate::design::font::font_system(),
-        &mut SwashCache::new(),
-    );
-    let overlay = RgbaFrame::new(overlay_width, overlay_height, pixels.into())
-        .expect("preview overlay has valid dimensions");
-    let (canvas_width, canvas_height) = authentication_canvas_dimensions();
-    PresentationFrame::new(
-        canvas_width,
-        canvas_height,
-        wallpaper,
-        overlay,
-        (canvas_width - overlay_width) / 2,
-        (canvas_height - overlay_height) / 2,
-    )
-    .expect("preview presentation has valid dimensions")
+    let mut renderer = render::Renderer::new();
+    // The login preview's fixed time keeps both previews deterministic.
+    let clock = renderer.clock(crate::app::preview::preview_now());
+    let overlay = renderer.identity(&identity, &conversation, confirmed, 0);
+    render::frame(wallpaper, Some(clock), Some(overlay))
 }
 
+/// Renders the presentation as an authentication output `width`×`height`
+/// pixels at the integer buffer `scale` shows it.
 fn render_frame(
     presentation: &PresentationFrame,
     width: u32,
     height: u32,
-) -> Result<RgbaFrame, Error> {
+    scale: u32,
+) -> Result<genkan_session_lock::RgbaFrame, Error> {
     if !valid_dimensions(width, height) {
         return Err(Error::Dimensions);
     }
-    genkan_session_lock::render_preview(presentation, width, height).map_err(Error::Render)
+    genkan_session_lock::render_preview(presentation, width, height, scale).map_err(Error::Render)
+}
+
+/// The integer buffer scale nearest a window's scale factor, as a session
+/// lock surface would use.
+fn buffer_scale(scale: f32) -> u32 {
+    if scale.is_finite() {
+        scale.round().clamp(1.0, 16.0) as u32
+    } else {
+        1
+    }
 }
 
 fn physical_dimensions(size: iced::Size, scale: f32) -> Option<(u32, u32)> {
@@ -362,11 +351,11 @@ mod tests {
 
     #[test]
     fn oversized_dimension_pairs_return_an_error_instead_of_panicking() {
-        let overlay = RgbaFrame::new(1, 1, vec![0; 4].into()).unwrap();
-        let presentation = PresentationFrame::new(1, 1, None, overlay, 0, 0).unwrap();
+        let overlay = genkan_session_lock::RgbaFrame::new(1, 1, vec![0; 4].into()).unwrap();
+        let presentation = render::frame(None, None, Some(overlay));
 
         assert!(matches!(
-            render_frame(&presentation, 16_384, 16_384),
+            render_frame(&presentation, 16_384, 16_384, 1),
             Err(Error::Dimensions)
         ));
 
@@ -376,8 +365,10 @@ mod tests {
             physical_dimensions(iced::Size::new(1280.0, 800.0), 2.0),
             Some((2560, 1600))
         );
-        let hidpi = render_frame(&presentation, 4, 2).unwrap();
+        let hidpi = render_frame(&presentation, 4, 2, buffer_scale(2.0)).unwrap();
         assert_eq!(hidpi.dimensions(), (4, 2));
+        assert_eq!(buffer_scale(1.25), 1);
+        assert_eq!(buffer_scale(f32::NAN), 1);
         assert_eq!(
             physical_dimensions(iced::Size::new(4096.0, 4096.0), 2.0),
             None
