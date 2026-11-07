@@ -1,0 +1,277 @@
+:authors: Darwin D. Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: greeter, niri, wayland, outputs, deployment, security
+
+= RFD 6 niri as the greeter compositor
+
+== Goal
+
+Run the Genkan login greeter under niri instead of Cage, so the login screen
+uses the same output scales, rotations, and positions as the niri desktop that
+follows it. Authentication appears on one chosen monitor, every other monitor
+shows the wallpaper, and fractional scales render sharply.
+
+Cage remains a supported deployment for hosts that do not use niri.
+
+Implementation progress is tracked in
+link:IMPLEMENTATION.adoc[the implementation checklist].
+
+== Context
+
+Genkan's login process is one iced window. Under Cage that window covers every
+connected output (Cage's default `-m extend`), and
+link:../0001/README.adoc[RFD 1]'s output-placement rules decide where inside
+that window the interface appears: `src/outputs.rs` scales the authentication
+output's geometry into the window's bounding box.
+
+That arrangement has three costs on a multi-monitor, high-density desk:
+
+* Cage has no output configuration of its own. The Cage 0.3.0 package used here
+  includes wlroots output management, so an external tool such as `wlr-randr`
+  can set scale, rotation, and position before Genkan starts. That is a second
+  copy of the desktop's output configuration, and it drifts.
+* The Cage binary does not offer `wp_fractional_scale_v1`, so clients render at
+  the next whole scale and the compositor downsamples. Outputs scaled to 1.275
+  or 1.5 come out soft.
+* The login screen and the desktop are rendered by different compositors, so
+  the transition at login is visibly different from the lock screen, which runs
+  inside the desktop compositor.
+
+A concrete deployment motivates this RFD. It has three external monitors and a
+laptop panel:
+
+[cols="1,2,2",options="header"]
+|===
+|Connector |Monitor |Desktop configuration
+
+|`DP-10` |Dell S2421HGF, 1920×1080, 144 Hz |scale 1, left
+|`DP-3` |Dell U3223QE, 3840×2160 |scale about 1.275, center; authentication here
+|`DP-11` |Dell U2720QM, 3840×2160 rotated |scale 1.5, portrait, right
+|`eDP-1` |Laptop panel, 2560×1600 |host policy
+|===
+
+Under today's selection rules the authentication output would be `DP-10`, the
+lexicographically first non-`eDP-1` connector, which is the smallest monitor at
+the edge of the desk.
+
+== Decision
+
+greetd runs niri with a dedicated, locked-down greeter configuration. That
+configuration includes the same `output` blocks as the user's niri desktop.
+Genkan's login window remains an ordinary iced toplevel; niri places it
+fullscreen on the authentication output. A separate Genkan background client
+draws the wallpaper on every output. A small Genkan supervisor owns the
+lifetime of both processes and of niri.
+
+=== Placement
+
+The greeter configuration contains one window rule for Genkan's application ID
+that opens the window fullscreen on the authentication output:
+
+[source,kdl]
+----
+window-rule {
+    match app-id="^genkan$"
+    open-on-output "DP-3"
+    open-fullscreen true
+}
+----
+
+niri names outputs either by connector or by make, model, and serial, so the
+rule can follow a monitor across docks and cable changes. When the named output
+is absent, niri opens the window on the focused output, which matches RFD 1's
+fallback intent.
+
+Genkan gains a placement mode. `spanning`, the default and the only mode under
+Cage, keeps RFD 1's bounding-box placement. `compositor` treats the whole window
+as the authentication region and skips `src/outputs.rs` region selection
+entirely, because the compositor has already chosen the output. Output-change
+handling reduces to ordinary window resizes. The supervisor selects
+`compositor` mode; the flag is not intended for interactive use.
+
+=== Wallpaper on other outputs
+
+`genkan wallpaper` already creates one non-interactive background-layer surface
+per output for the desktop. It is extended to show the same wallpaper the
+login window shows: the selected MOV catalog entry, its poster under reduced
+motion, or a HEIC override. It accepts an output to skip so the authentication
+output, which the fullscreen login window already covers, does not decode video
+that nobody can see.
+
+The login window and the background client choose the same wallpaper from the
+same arguments, so every monitor matches.
+
+=== Lifecycle
+
+greetd starts the greeter session with `niri -c <greeter config>`. The greeter
+session ends, and greetd starts the user's session, only when that command
+exits. niri does not exit when its clients do, so something must ask it to quit.
+
+The configuration starts one process, `genkan greeter-session`, with
+`spawn-at-startup`. That supervisor:
+
+. starts `genkan wallpaper` for the non-authentication outputs and
+  `genkan login --placement compositor` as children, without a shell;
+. waits for the login child to exit, for any reason;
+. stops the wallpaper child; and
+. asks niri to quit through its IPC socket (`NIRI_SOCKET`) with the quit action
+  and confirmation skipped.
+
+Quitting on every login exit, including a crash, matters: otherwise a failed
+greeter leaves niri running with nothing on screen and greetd never restarts the
+greeter. greetd already restarts the greeter session when its command exits
+without starting a session.
+
+Genkan continues to start the user's session only through greetd's
+`StartSession`; the supervisor never launches a desktop session itself.
+
+=== Locked-down greeter configuration
+
+A niri configuration is a set of capabilities for whoever sits at the keyboard
+before login. The greeter configuration therefore:
+
+* defines an empty `binds {}` block. niri's default configuration binds keys
+  that spawn a terminal and a launcher, which would give anyone a shell as the
+  greeter user;
+* skips the hotkey overlay at startup and defines no screenshot path;
+* starts nothing but `genkan greeter-session`;
+* disables Xwayland integration; and
+* contains no `include` of user-writable files. Output blocks are copied in at
+  build time.
+
+If niri cannot parse a configuration it may fall back to defaults, which include
+those spawn bindings. This RFD therefore requires the configuration to be
+validated with `niri validate` when the NixOS module builds it, so a broken
+greeter configuration fails the system build instead of booting into niri's
+defaults. Verify the runtime fallback behavior and record it in the
+implementation checklist.
+
+=== Fractional scaling
+
+The iced login window is rendered through winit, which supports
+`wp_fractional_scale_v1`. The background client and the session lock
+(link:../0003/README.adoc[RFD 3]) currently request only integer buffer scales.
+Both gain `wp_fractional_scale_v1` and `wp_viewporter` support when the
+compositor offers them: they render at the exact device size and set the
+viewport to the logical size, falling back to integer scales otherwise.
+
+=== Naming the authentication output
+
+`--authentication-output` accepts a connector name today. The lock and the Cage
+deployment gain the same make, model, and serial matching that niri uses, so an
+administrator can name the monitor once ("Dell Inc. DELL U3223QE …") in both the
+niri window rule and Genkan's own arguments.
+
+=== Deployment
+
+The NixOS module gains greeter options. When the niri greeter is selected it
+generates the greeter configuration, validates it, and sets
+`services.greetd.settings.default_session.command`. The host provides the
+output blocks once, and the same text is used in the greeter configuration and
+offered for the desktop's niri configuration. Cage remains the default when no
+greeter compositor is chosen.
+
+=== Reloads and rebuilds
+
+A greeter compositor can blank the screens in three ways, and the design
+addresses each:
+
+* *Restarting greetd under a running session.* `nixos-rebuild switch` restarts
+  changed services by default. Restarting greetd ends the greeter and the
+  session it started, and a new greeter competes for the same VT, which can
+  leave the displays dark. The module sets
+  `systemd.services.greetd.restartIfChanged = false` whenever it configures a
+  greeter, as the deployment guide already recommends for Cage.
+* *Two compositors holding the displays at once.* greetd starts the user's
+  session only after the greeter command exits, so the greeter's niri must
+  always exit. The supervisor quits niri on every login exit path, and the VM
+  test covers both a successful login and a crashed login process.
+* *Reloading a compositor configuration.* The greeter's niri runs only until
+  login and shares no runtime configuration with the desktop's niri, so
+  reloading the desktop cannot affect it. niri watches its configuration file
+  and reloads it live; a rebuild while the greeter is on screen applies the new
+  greeter configuration in place. Whether a failed live reload keeps the
+  previous configuration must be verified alongside the startup open question.
+* *Running out of scanout memory.* On the motivating Framework 16, the amdgpu
+  integrated GPU has a 512 MiB VRAM carve-out and the kernel runs with
+  `amdgpu.sg_display=0`, so every scanout buffer must fit in that carve-out. The
+  kernel log repeatedly reports `Failed to pin framebuffer with error -12`
+  (out of memory). A compositor that reallocates buffers for several 4K outputs,
+  as a configuration reload does, can fail to pin them and leave displays dark.
+  This affects any compositor, niri included, and is a host graphics
+  configuration problem rather than a greeter one. Genkan reduces its share by
+  rendering at exact fractional sizes instead of the next whole scale, and the
+  greeter and desktop compositors never hold buffers at the same time.
+
+== Relationship to other RFDs
+
+* RFD 1's output-placement section continues to govern `spanning` mode. In
+  `compositor` mode the compositor places the window and RFD 1's selection order
+  does not apply.
+* RFD 3's session lock already runs inside the desktop compositor with one
+  surface per output. This RFD changes only its scaling and output naming.
+* RFD 5's design system renders inside the window regardless of placement mode.
+  This RFD changes neither the visual design nor the layout regions.
+
+== Security
+
+* greetd remains the owner of authentication and session creation, and PAM
+  responses are never logged.
+* The greeter configuration grants no way to start programs other than Genkan.
+* The supervisor uses only niri's IPC quit action and never execs a shell.
+* niri's IPC socket lives in the greeter user's runtime directory and is
+  reachable only by the greeter user's processes, which are Genkan's.
+* The supervisor is unprivileged, like the rest of the greeter.
+
+== Verification
+
+* A NixOS VM test boots greetd with the niri greeter and checks that the login
+  window is fullscreen on the configured output, that the other outputs show the
+  wallpaper, that a successful login ends niri and starts the user's session,
+  and that a crashing login process still ends niri and lets greetd restart the
+  greeter.
+* The same test sends the key combinations niri's default configuration binds
+  to spawns and confirms that no process starts.
+* A build-time check fails when the generated greeter configuration does not
+  pass `niri validate`.
+* Fractional-scale rendering of the background client and the lock is checked
+  under nested niri at scale 1.5.
+* The existing Cage tests keep passing unchanged.
+
+== Alternatives considered
+
+=== Keep Cage and set outputs with `wlr-randr`
+
+This is the smallest change and stays available. It duplicates the desktop's
+output configuration and keeps integer rendering with downsampling.
+
+=== Render the login screen as layer-shell surfaces
+
+One overlay surface on the authentication output and background surfaces
+elsewhere would work under any layer-shell compositor without window rules, and
+would match the lock's per-output model. Stock iced does not provide layer-shell
+surfaces, and the third-party adapters would add a large dependency to the
+credential-handling process. Revisit if iced gains layer-shell support upstream.
+
+=== Request fullscreen on a chosen output from the client
+
+`xdg_toplevel.set_fullscreen` takes an output, so Genkan could choose the
+monitor itself and work without a window rule on any compositor. iced does not
+currently expose output selection for fullscreen. This is an open question
+rather than a rejection.
+
+=== Sway as the greeter compositor
+
+Sway supports the same pattern, but it would duplicate the output configuration
+of a niri desktop.
+
+== Open questions
+
+* Does niri fall back to its default configuration at runtime when the greeter
+  configuration fails to parse, or does it refuse to start?
+* Should the supervisor use the `niri-ipc` crate, pinned to the niri release the
+  host ships, or send the single quit request as raw JSON?
+* Should the background client skip the authentication output, or is decoding
+  hidden video cheap enough to keep the supervisor simpler?
+* Does niri's startup time delay the greeter noticeably compared with Cage?
