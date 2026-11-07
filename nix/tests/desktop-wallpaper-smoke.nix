@@ -189,35 +189,51 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     transaction_matches() {
       expected_surface=$1
       buffer=$2
-      scale=$3
-      awk -v surface="$expected_surface" -v buffer="$buffer" -v scale="$scale" '
+      viewport=$3
+      destination=$4
+      awk -v surface="$expected_surface" -v buffer="$buffer" \
+        -v viewport="$viewport" -v destination="$destination" '
         index($0, surface ".set_buffer_scale(") {
           value = $0
           sub("^.*" surface "\\.set_buffer_scale\\(", "", value)
           sub("\\).*$", "", value)
           current_scale = value + 0
         }
+        index($0, viewport ".set_destination(") {
+          destination_matches = index($0, viewport ".set_destination(" destination ")") > 0
+        }
         index($0, surface ".attach(") {
           attached = index($0, surface ".attach(" buffer ",") > 0
         }
-        index($0, surface ".commit()") && attached && current_scale == scale {
+        index($0, surface ".commit()") && attached && current_scale == 1 && destination_matches {
           found = 1
           exit
         }
         END { exit !found }
       '
     }
+    # Fractional-capable compositors use buffer scale one even for integer
+    # output scales. Both scale and logical viewport must match at commit.
     if printf '%s\n' \
-      'wl_surface#7.set_buffer_scale(2)' 'wl_surface#7.commit()' \
-      'wl_surface#7.attach(wl_buffer#9, 0, 0)' \
+      'wp_viewport#8.set_destination(180, 320)' \
       'wl_surface#7.set_buffer_scale(1)' 'wl_surface#7.commit()' \
-      | transaction_matches wl_surface#7 wl_buffer#9 2; then
+      'wl_surface#7.attach(wl_buffer#9, 0, 0)' \
+      'wl_surface#7.set_buffer_scale(2)' 'wl_surface#7.commit()' \
+      | transaction_matches wl_surface#7 wl_buffer#9 wp_viewport#8 '180, 320'; then
       echo "geometry transaction parser accepted a superseded scale" >&2
       exit 1
     fi
-    printf '%s\n' 'wl_surface#7.set_buffer_scale(2)' \
+    if printf '%s\n' 'wp_viewport#8.set_destination(180, 320)' \
+      'wl_surface#7.set_buffer_scale(1)' 'wl_surface#7.attach(wl_buffer#9, 0, 0)' \
+      'wp_viewport#8.set_destination(360, 640)' 'wl_surface#7.commit()' \
+      | transaction_matches wl_surface#7 wl_buffer#9 wp_viewport#8 '180, 320'; then
+      echo "geometry transaction parser accepted a superseded viewport" >&2
+      exit 1
+    fi
+    printf '%s\n' 'wp_viewport#8.set_destination(180, 320)' \
+      'wl_surface#7.set_buffer_scale(1)' \
       'wl_surface#7.attach(wl_buffer#9, 0, 0)' 'wl_surface#7.commit()' \
-      | transaction_matches wl_surface#7 wl_buffer#9 2
+      | transaction_matches wl_surface#7 wl_buffer#9 wp_viewport#8 '180, 320'
 
     await_new_surface() {
       first_line=$1
@@ -253,6 +269,12 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
       width=$4
       height=$5
       stride=$((width * 4))
+      viewport=$(
+        grep -E "\.get_viewport\(new id wp_viewport#[0-9]+, $expected_surface\)" \
+          "$wallpaper_log" | grep -Eo 'wp_viewport#[0-9]+' | tail -1
+      )
+      [[ -n "$viewport" ]]
+      destination="$((width / scale)), $((height / scale))"
       for _ in $(seq 1 100); do
         segment=$(tail -n +"$first_line" "$wallpaper_log")
         buffer=$(
@@ -262,13 +284,13 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
         )
         if [[ -n "$buffer" ]] \
           && printf '%s\n' "$segment" \
-            | transaction_matches "$expected_surface" "$buffer" "$scale"; then
+            | transaction_matches "$expected_surface" "$buffer" "$viewport" "$destination"; then
           return
         fi
         kill -0 "$wallpaper_pid"
         sleep 0.02
       done
-      echo "expected $width x $height scale-$scale wallpaper commit was not observed" >&2
+      echo "expected $width x $height wallpaper commit with viewport $destination at scale one was not observed" >&2
       return 1
     }
 
