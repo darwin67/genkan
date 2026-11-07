@@ -63,14 +63,19 @@ Evidence and decisions: link:INVESTIGATION.adoc[niri 26.04 investigation].
 
 == Phase 7: Verification
 
-* [ ] Add a NixOS VM test that boots greetd with the niri greeter and checks
+* [x] Add a NixOS VM test that boots greetd with the niri greeter and checks
   fullscreen placement on the configured output and wallpaper on the others.
-* [ ] Check that a successful login ends niri and starts the session, and that a
+* [x] Check that a successful login ends niri and starts the session, and that a
   crashed login process still ends niri and greetd restarts the greeter.
-* [ ] Send the key combinations niri's default configuration binds to spawns and
+* [x] Send the key combinations niri's default configuration binds to spawns and
   confirm nothing starts.
-* [ ] Switch the VM to a new system generation while a session is running and
+* [x] Switch the VM to a new system generation while a session is running and
   confirm the session and its displays survive.
-* [ ] Check fractional-scale rendering of the background client and lock under
+* [x] Check fractional-scale rendering of the background client and lock under
   nested niri at scale 1.5.
-* [ ] Keep the existing Cage tests passing.
+* [x] Keep the existing Cage tests passing.
+
+The niri/greetd VM and existing greetd E2E passed under QEMU TCG in the orb,
+with only the test derivations' KVM scheduling requirement disabled; no
+assertions were skipped. Nested niri also exercised wallpaper scales 1.275,
+1.3, 1.2, and 1. These runs do not replace physical-workstation validation.
