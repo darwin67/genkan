@@ -28,7 +28,9 @@ Controls sample a shared blurred copy of the owned wallpaper frame. The copy
 is at most 192 pixels on its longest edge, uses bounded stratified downsampling
 and three separable box passes, and is cached until the wallpaper allocation
 changes. Both renderers crop it with the original wallpaper's cover geometry
-and clip it to the control. A dark backing bounds its brightest channel even
+and clip it to the control. Login rasterizes a control-sized rounded alpha mask
+because iced's tiny-skia backend does not implement image-local clipping.
+A dark backing bounds its brightest channel even
 over white artwork; the wallpaper outside controls stays undimmed. The fallback
 generated background keeps its existing contrast-tested control treatment.
 
@@ -44,8 +46,12 @@ XKB keymap and `modifiers` event, never from observing Caps Lock key presses.
 Lock reuses its SCTK seat keyboard. Login briefly observes iced's own borrowed
 Wayland connection every 500ms; a second connection would not own keyboard
 focus and cannot reliably supply this state. The observer does not interpret
-key events, change focus, or retain response text. Unavailable keymaps, absent
-focus, and non-Wayland backends omit the items rather than guess. Deterministic
+key events, change focus, or retain response text. It reads keymap descriptors
+at offset zero without advancing their potentially shared open-file offset.
+Lock selects metadata from the keyboard producing input; removing another
+seat cannot clear it. Login omits conflicting or unknown focused-seat snapshots.
+Unavailable keymaps, absent focus, unnamed layouts, and non-Wayland backends
+omit the items rather than guess. Deterministic
 previews use explicitly synthetic metadata and never contact system services.
 
 Network presentation reads only `/sys/class/net/*/operstate` (excluding loopback).

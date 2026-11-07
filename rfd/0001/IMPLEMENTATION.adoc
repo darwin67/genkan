@@ -140,7 +140,7 @@ Implements link:README.adoc[RFD 1: Tahoe-inspired greeter interaction and visual
 
 == Amendment: follow macOS
 
-* [ ] Implement the macOS-fidelity presentation from the 2026-11 amendment
+* [x] Implement the macOS-fidelity presentation from the 2026-11 amendment
   through link:../0005/IMPLEMENTATION.adoc[RFD 5's checklist], including a
   visible Change User control in the new identity region and confirmation for
   restart and shutdown only.
