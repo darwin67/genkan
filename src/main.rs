@@ -5,6 +5,7 @@ mod conversation;
 mod design;
 mod desktop_wallpaper;
 mod geoclue;
+mod greeter_session;
 mod locker;
 mod outputs;
 mod power;
@@ -33,8 +34,10 @@ enum Command {
     Login(LoginArguments),
     /// Securely cover and lock the current Wayland session.
     Lock(LockArguments),
-    /// Display a dynamic HEIC wallpaper on a supported Wayland desktop.
+    /// Display a login or dynamic HEIC wallpaper on a Wayland desktop.
     Wallpaper(WallpaperArguments),
+    /// Supervise the login clients and end the niri greeter when login exits.
+    GreeterSession(greeter_session::Arguments),
     /// Parse and decode a dynamic HEIC in a resource-bounded child process.
     #[command(hide = true)]
     HeicWorker(HeicWorkerArguments),
@@ -352,6 +355,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Login(arguments) => run_login(arguments)?,
         Command::Lock(arguments) => run_lock(arguments)?,
         Command::Wallpaper(arguments) => run_wallpaper(arguments)?,
+        Command::GreeterSession(arguments) => greeter_session::run(arguments)?,
         Command::HeicWorker(arguments) => wallpaper::run_heic_worker(
             &arguments.file,
             appearance_preference(arguments.appearance),
@@ -632,6 +636,7 @@ mod tests {
             Command::Login(arguments) => Ok(arguments),
             Command::Lock(_)
             | Command::Wallpaper(_)
+            | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects login")
@@ -648,6 +653,7 @@ mod tests {
             Command::Lock(arguments) => Ok(arguments),
             Command::Login(_)
             | Command::Wallpaper(_)
+            | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects lock")
@@ -666,6 +672,7 @@ mod tests {
             Command::Wallpaper(arguments) => Ok(arguments),
             Command::Login(_)
             | Command::Lock(_)
+            | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects wallpaper")

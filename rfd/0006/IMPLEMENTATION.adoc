@@ -35,11 +35,11 @@ Evidence and decisions: link:INVESTIGATION.adoc[niri 26.04 investigation].
 
 == Phase 4: Supervisor
 
-* [ ] Add `genkan greeter-session`, which starts the wallpaper and login
+* [x] Add `genkan greeter-session`, which starts the wallpaper and login
   children without a shell, waits for login to exit, stops the wallpaper, and
   quits niri through its IPC socket.
-* [ ] Quit niri on every login exit path, including a crash and a signal.
-* [ ] Never start a desktop session from the supervisor.
+* [x] Quit niri on every login exit path, including a crash and a signal.
+* [x] Never start a desktop session from the supervisor.
 
 == Phase 5: Output naming and lock scaling
 
