@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: published
+:state: committed
 :discussion: https://github.com/darwin67/genkan/pull/60
 :labels: greeter, niri, wayland, outputs, deployment, security
 
@@ -266,12 +266,21 @@ rather than a rejection.
 Sway supports the same pattern, but it would duplicate the output configuration
 of a niri desktop.
 
-== Open questions
+== Resolved questions
 
-* Does niri fall back to its default configuration at runtime when the greeter
-  configuration fails to parse, or does it refuse to start?
-* Should the supervisor use the `niri-ipc` crate, pinned to the niri release the
-  host ships, or send the single quit request as raw JSON?
-* Should the background client skip the authentication output, or is decoding
-  hidden video cheap enough to keep the supervisor simpler?
-* Does niri's startup time delay the greeter noticeably compared with Cage?
+These were open when the RFD was written. link:INVESTIGATION.adoc[The niri
+26.04 investigation] records the evidence.
+
+* *Parse failures.* niri 26.04 falls back to its built-in default
+  configuration when the startup configuration fails to parse, and keeps the
+  previous configuration on a failed live reload. The module therefore
+  validates the greeter configuration at build time and again with the exact
+  runtime binary before starting niri.
+* *Quit request.* The supervisor sends the single fixed
+  `{"Action":{"Quit":{"skip_confirmation":true}}}` request on `NIRI_SOCKET`
+  without a niri library dependency, and does not wait for a reply.
+* *Background on the authentication output.* The background client skips a
+  named authentication output to avoid hidden output-sized buffers. An absent
+  requested output is not skipped.
+* *Startup time.* In a nested software-rendered comparison, niri reached the
+  login's first buffer about 350 ms later than Cage at the median.
