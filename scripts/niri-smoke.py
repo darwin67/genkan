@@ -80,7 +80,9 @@ with tempfile.TemporaryDirectory(prefix="genkan-niri-") as directory:
             'output * mode 1280x800\nfor_window [app_id="niri"] fullscreen enable\n'
         )
         start([os.environ["SWAY_BIN"], "--config", str(runtime / "sway.conf")], "sway")
-        outer = wait_for(lambda: next(iter(glob.glob(directory + "/wayland-*")), None))
+        # Sway creates a matching .lock file before its Wayland socket; glob
+        # order is unspecified, and the lock file is not a client endpoint.
+        outer = wait_for(lambda: next((path for path in glob.glob(directory + "/wayland-*") if Path(path).is_socket()), None))
         outer_env = env | {"WAYLAND_DISPLAY": outer}
         env["WAYLAND_DISPLAY"] = outer
         (runtime / "niri.kdl").write_text('''
