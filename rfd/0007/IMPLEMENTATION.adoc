@@ -13,13 +13,16 @@ Implements link:README.adoc[RFD 7: Account pictures].
 
 == Phase 2: Sandboxed decoder
 
-* [ ] Add the hidden `genkan avatar-decode` process: no-new-privileges,
+* [x] Add the hidden `genkan avatar-decode` process: no-new-privileges,
   resource limits, seccomp filter, PNG and JPEG only, dimension limit, centered
-  square crop, 256 by 256 premultiplied RGBA output.
-* [ ] Add the parent side: safe open, empty environment, exact-length read,
-  two-second timeout, kill and reap.
-* [ ] Test malformed, oversized, truncated, slow and non-image inputs, and that
-  each one falls back to initials.
+  square crop, 256 by 256 premultiplied RGBA output. JPEG uses zune-jpeg, which
+  decodes on one thread; the `image` crate's JPEG decoder starts worker threads,
+  which the filter forbids.
+* [x] Add the parent side: safe open, empty environment, exact-length read,
+  two-second timeout, kill and reap (`genkan::avatar::decode_file`).
+* [x] Test malformed, oversized, truncated, slow and non-image inputs, and the
+  sandbox the kernel reports for a running decoder (`tests/avatar_decode.rs`).
+  Falling back to initials is Phase 3.
 
 == Phase 3: Showing pictures
 

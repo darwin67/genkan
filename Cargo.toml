@@ -47,6 +47,7 @@ gui = [
     "dep:iced",
     "dep:iced_runtime",
     "dep:rclip-desktop-entry",
+    "dep:seccompiler",
     "dep:smithay-client-toolkit",
     "dep:tiny-skia",
     "tokio/macros",
@@ -57,6 +58,8 @@ gui = [
     "dep:xkbcommon",
     "dep:zeroize",
     "dep:zbus",
+    "dep:zune-core",
+    "dep:zune-jpeg",
 ]
 
 [[bin]]
@@ -85,7 +88,7 @@ greetd_ipc = { version = "0.10.3", features = ["tokio-codec"] }
 gstreamer = { version = "0.24.2", features = ["v1_26"], optional = true }
 gstreamer-app = { version = "0.24.2", features = ["v1_26"], optional = true }
 gstreamer-video = { version = "0.24.2", features = ["v1_26"], optional = true }
-image = { version = "0.24.9", default-features = false, features = ["jpeg"], optional = true }
+image = { version = "0.24.9", default-features = false, features = ["jpeg", "png"], optional = true }
 iced = { version = "0.14.0", default-features = false, features = ["advanced", "canvas", "crisp", "image-without-codecs", "lazy", "sysinfo", "thread-pool", "tiny-skia", "tokio", "wayland", "wgpu"], optional = true }
 iced_runtime = { version = "0.14.0", optional = true }
 libc = { version = "=0.2.189", optional = true }
@@ -98,6 +101,7 @@ plist = { version = "1.10.1", default-features = false, optional = true }
 quick-xml = { version = "0.42.0", default-features = false, optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
 rustix = { version = "1.1.4", features = ["fs", "process", "time"], optional = true }
+seccompiler = { version = "0.5.0", optional = true }
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std"], optional = true }
 smithay-client-toolkit = { version = "=0.20.0", default-features = false, optional = true }
 thiserror = "2.0.9"
@@ -107,6 +111,8 @@ wayland-client = { version = "=0.31.15", features = ["system"], optional = true 
 xkbcommon = { version = "0.8.0", optional = true }
 zeroize = { version = "=1.9.0", optional = true }
 zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }
+zune-core = { version = "0.4", optional = true }
+zune-jpeg = { version = "0.4", optional = true }
 
 [dev-dependencies]
 proptest = "1.6"

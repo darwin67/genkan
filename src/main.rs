@@ -45,6 +45,21 @@ enum Command {
     /// Decode every frame of an installed dynamic HEIC.
     #[command(hide = true)]
     VerifyWallpapers(VerifyWallpapersArguments),
+    /// Decode one account picture from standard input in a confined process.
+    #[command(hide = true)]
+    AvatarDecode(AvatarDecodeArguments),
+}
+
+/// Internal decoder for account pictures (RFD 7).
+///
+/// `login` and `lock` start it with the picture as standard input. It confines
+/// itself before reading, so a decoder fault cannot reach the process that
+/// handles credentials.
+#[derive(Debug, Args)]
+struct AvatarDecodeArguments {
+    /// The process that started the decoder; it exits if that is not its parent.
+    #[arg(long)]
+    parent_pid: i32,
 }
 
 /// Decodes a packaged dynamic HEIC end to end.
@@ -364,6 +379,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             arguments.parent_pid,
         ),
         Command::VerifyWallpapers(arguments) => run_verify_wallpapers(arguments)?,
+        Command::AvatarDecode(arguments) => genkan::avatar::run_decoder(arguments.parent_pid),
     }
     Ok(())
 }
@@ -639,7 +655,8 @@ mod tests {
             | Command::Wallpaper(_)
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
-            | Command::VerifyWallpapers(_) => {
+            | Command::VerifyWallpapers(_)
+            | Command::AvatarDecode(_) => {
                 unreachable!("the helper always selects login")
             }
         }
@@ -656,7 +673,8 @@ mod tests {
             | Command::Wallpaper(_)
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
-            | Command::VerifyWallpapers(_) => {
+            | Command::VerifyWallpapers(_)
+            | Command::AvatarDecode(_) => {
                 unreachable!("the helper always selects lock")
             }
         }
@@ -675,7 +693,8 @@ mod tests {
             | Command::Lock(_)
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
-            | Command::VerifyWallpapers(_) => {
+            | Command::VerifyWallpapers(_)
+            | Command::AvatarDecode(_) => {
                 unreachable!("the helper always selects wallpaper")
             }
         }
