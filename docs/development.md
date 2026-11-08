@@ -36,8 +36,8 @@ generated background keeps its existing contrast-tested control treatment.
 
 Contrast tests use the actual control color roles and filtered material over
 RGB cube vertices and packaged poster samples, in encoded and linear sRGB.
-Wallpaper text is tested with its dark outline; this does not claim exhaustive
-antialias-edge coverage. The lock rejection shake uses the login motion curve,
+Wallpaper text has a soft shadow below it rather than an outline, so its
+contrast over bright photographic regions is a visual check, not a numeric one. The lock rejection shake uses the login motion curve,
 requests overlay-only frames at the runtime's 16ms cadence, ends at rest, and
 is disabled by reduced motion. It does not change authentication or unlocking.
 

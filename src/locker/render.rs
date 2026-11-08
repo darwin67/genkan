@@ -591,11 +591,12 @@ impl Renderer {
                                 let alpha =
                                     glyph_pixel(glyph_color.as_rgba(), rgba8(palette::TEXT_SHADOW))
                                         [3];
-                                let offset = DENSITY as i32;
-                                for (dx, dy) in
-                                    [(-offset, 0), (offset, 0), (0, -offset), (0, offset)]
-                                {
-                                    canvas.blend(pixel_x + dx, pixel_y + dy, [0, 0, 0, alpha]);
+                                for (dx, dy) in component::TEXT_SHADOW_TAPS {
+                                    canvas.blend(
+                                        pixel_x + px(dx) as i32,
+                                        pixel_y + px(dy) as i32,
+                                        [0, 0, 0, alpha],
+                                    );
                                 }
                             } else {
                                 canvas.blend(
@@ -1180,7 +1181,7 @@ mod tests {
                     && pixel[0] <= pixel[1]
                     && pixel[1] <= pixel[2]
                     && pixel[3] > glass[3]),
-            "the translucent clock glass is composited over its dark outline"
+            "the translucent clock glass is composited over its soft shadow"
         );
         let date_rows = &frame.pixels()[..time_top];
         assert!(

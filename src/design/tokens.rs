@@ -32,7 +32,7 @@ pub(crate) mod color {
     use super::{rgb, rgba, Rgba};
 
     pub(crate) const TEXT_PRIMARY: Rgba = rgb(255, 255, 255);
-    pub(crate) const TEXT_SHADOW: Rgba = rgba(0, 0, 0, 0.9);
+    pub(crate) const TEXT_SHADOW: Rgba = rgba(0, 0, 0, 0.08);
     pub(crate) const TEXT_DATE: Rgba = rgba(255, 255, 255, 0.94);
     pub(crate) const TEXT_SECONDARY: Rgba = rgba(255, 255, 255, 0.78);
     pub(crate) const TEXT_PLACEHOLDER: Rgba = rgba(255, 255, 255, 0.72);
@@ -231,6 +231,9 @@ pub(crate) mod component {
     /// Vertical inset of a menu heading.
     pub(crate) const MENU_HEADING_PADDING_Y: f32 = 3.0;
 
+    /// Height of the text line, and so of the caret, inside the password
+    /// pill. It is shorter than the pill so the caret clears its border.
+    pub(crate) const FIELD_CARET_HEIGHT: f32 = 16.0;
     /// Leading inset of text in the password pill.
     pub(crate) const FIELD_PADDING_LEADING: f32 = 10.0;
     /// Trailing inset of text in the password pill, clearing the submit arrow.
@@ -241,6 +244,21 @@ pub(crate) mod component {
     pub(crate) const CIRCLE_OUTLINE_WIDTH: f32 = 1.2;
     /// Outline color of the submit and back circles.
     pub(crate) const CIRCLE_OUTLINE: Rgba = rgba(255, 255, 255, 0.85);
+
+    /// Offsets, in points, of the nine taps of the soft shadow under
+    /// wallpaper text: a three-point box one point below the glyphs. Each tap
+    /// draws the text in `color::TEXT_SHADOW`.
+    pub(crate) const TEXT_SHADOW_TAPS: [(f32, f32); 9] = [
+        (-1.0, 0.0),
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (-1.0, 1.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+        (-1.0, 2.0),
+        (0.0, 2.0),
+        (1.0, 2.0),
+    ];
 
     /// Width of the avatar's ring.
     pub(crate) const AVATAR_RING_WIDTH: f32 = 1.5;

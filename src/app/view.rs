@@ -5,7 +5,7 @@
 use std::f32::consts::TAU;
 use std::time::Duration;
 
-use iced::widget::text::Wrapping;
+use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{
     button, column, container, float, mouse_area, opaque, pin, responsive, row, scrollable, stack,
     text_input, Id, Space, Stack,
@@ -15,7 +15,7 @@ use iced::{padding, Alignment, Element, Fill, Length, Padding, Size, Vector};
 use crate::accounts::Account;
 use crate::background;
 use crate::design::glyph::{self, Kind as Glyph};
-use crate::design::iced::{color, font, label, line_height, wallpaper_label as wallpaper_text};
+use crate::design::iced::{color, font, label, wallpaper_label as wallpaper_text};
 use crate::design::style;
 use crate::design::text::{self as text_policy, initials, prompt_placement, PromptPlacement};
 use crate::design::tokens::{
@@ -276,10 +276,10 @@ impl App {
             .secure(self.conversation.is_secret())
             .font(font(text_style::FIELD))
             .size(text_style::FIELD.size)
-            .line_height(line_height(text_style::FIELD))
+            .line_height(LineHeight::Absolute(component::FIELD_CARET_HEIGHT.into()))
             .padding(Padding {
-                top: 0.0,
-                bottom: 0.0,
+                top: (size::FIELD_HEIGHT - component::FIELD_CARET_HEIGHT) / 2.0,
+                bottom: (size::FIELD_HEIGHT - component::FIELD_CARET_HEIGHT) / 2.0,
                 left: component::FIELD_PADDING_LEADING,
                 right: component::FIELD_PADDING_TRAILING
                     + if caps {
