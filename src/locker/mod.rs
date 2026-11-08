@@ -834,16 +834,23 @@ mod tests {
         );
         presentation.rebuild();
         let rest = presentation.frame();
+        // `receive_latest` reads the host's real network status every five
+        // seconds. A slow test run would otherwise cross that interval and
+        // draw the CI runner's link into a frame compared against `rest`.
+        let receive_latest = |presentation: &mut LockerPresentation| {
+            presentation.status_checked = std::time::Instant::now();
+            presentation.receive_latest()
+        };
         presentation.shake_started =
             Some(std::time::Instant::now() - std::time::Duration::from_millis(80));
-        assert_eq!(presentation.receive_latest(), Refresh::Overlay);
+        assert_eq!(receive_latest(&mut presentation), Refresh::Overlay);
         assert_ne!(presentation.frame(), rest);
         assert!(!presentation.authorized);
         presentation.shake_started =
             Some(std::time::Instant::now() - crate::design::tokens::motion::SHAKE_DURATION);
-        assert_eq!(presentation.receive_latest(), Refresh::Overlay);
+        assert_eq!(receive_latest(&mut presentation), Refresh::Overlay);
         assert_eq!(presentation.frame(), rest);
-        assert_eq!(presentation.receive_latest(), Refresh::Unchanged);
+        assert_eq!(receive_latest(&mut presentation), Refresh::Unchanged);
         assert!(!presentation.authorized);
     }
 
