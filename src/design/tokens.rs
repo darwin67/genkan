@@ -231,6 +231,9 @@ pub(crate) mod component {
     /// Vertical inset of a menu heading.
     pub(crate) const MENU_HEADING_PADDING_Y: f32 = 3.0;
 
+    /// Height of the text line, and so of the caret, inside the password
+    /// pill. It is shorter than the pill so the caret clears its border.
+    pub(crate) const FIELD_CARET_HEIGHT: f32 = 16.0;
     /// Leading inset of text in the password pill.
     pub(crate) const FIELD_PADDING_LEADING: f32 = 10.0;
     /// Trailing inset of text in the password pill, clearing the submit arrow.

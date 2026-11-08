@@ -21,11 +21,6 @@ pub(crate) fn font(style: TextStyle) -> Font {
     }
 }
 
-/// The style's line height as an absolute iced line height.
-pub(crate) fn line_height(style: TextStyle) -> LineHeight {
-    LineHeight::Absolute(Pixels(style.line_height))
-}
-
 /// A single-line text widget in the given style and color.
 ///
 /// Callers that want wrapping set it explicitly; there is no unbounded
