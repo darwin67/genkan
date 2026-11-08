@@ -1,0 +1,40 @@
+= RFD 0007 implementation checklist
+
+Implements link:README.adoc[RFD 7: Account pictures].
+
+== Phase 1: Built-in pictures
+
+* [ ] Add the twelve approved SVG sources to `assets/avatars/`.
+* [ ] Rasterize them to 512 by 512 PNGs with resvg in the Nix build and install
+  sources and PNGs under `share/genkan/avatars/`.
+* [ ] Pin every source and output by SHA-256 in a manifest checked by the
+  build.
+
+== Phase 2: Sandboxed decoder
+
+* [ ] Add the hidden `genkan avatar-decode` process: no-new-privileges,
+  resource limits, seccomp filter, PNG and JPEG only, dimension limit, centered
+  square crop, 256 by 256 premultiplied RGBA output.
+* [ ] Add the parent side: safe open, empty environment, exact-length read,
+  two-second timeout, kill and reap.
+* [ ] Test malformed, oversized, truncated, slow and non-image inputs, and that
+  each one falls back to initials.
+
+== Phase 3: Showing pictures
+
+* [ ] Read `IconFile` with the other AccountsService properties.
+* [ ] Draw decoded pictures in the login avatar and account tiles, loading
+  after the accounts appear and decoding each file once per run.
+* [ ] Draw the locked user's picture in the lock's CPU renderer.
+
+== Phase 4: Choosing pictures
+
+* [ ] Add `genkan avatar list`, `set <name>`, `set --file <path>` and `clear`.
+* [ ] Re-encode photos as metadata-free 512 by 512 PNGs before `SetIconFile`.
+* [ ] Extend the greetd VM test: set a picture as the user, see it on the login
+  screen, and see initials for a malformed file.
+
+== Phase 5: Records
+
+* [ ] Update RFD 1, RFD 5 and the design system's Avatar component.
+* [ ] Document `genkan avatar` in the deployment guide.

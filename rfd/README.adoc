@@ -25,6 +25,9 @@ authoritative merely because it exists; its `state` says how it should be read.
 
 |link:0006/README.adoc[6: niri as the greeter compositor]
 |Running the login greeter under a locked-down niri with shared output configuration, compositor placement, and a supervised lifecycle
+
+|link:0007/README.adoc[7: Account pictures]
+|Built-in account pictures, user photos through AccountsService, and sandboxed decoding outside the credential process
 |===
 
 == Source format

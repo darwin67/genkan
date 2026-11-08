@@ -1,0 +1,165 @@
+:authors: Darwin D. Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/darwin67/genkan/pull/79
+:labels: accounts, design, security, accountsservice, packaging
+
+= RFD 7 Account pictures
+
+== Goal
+
+Show each account's picture on the login and lock screens, as macOS does, in
+the 75-point avatar circle that currently holds initials. Ship a built-in set
+of original illustrations, let a user choose one or a photo of their own, and
+store the choice through AccountsService so every greeter and desktop tool sees
+the same picture.
+
+Genkan must never decode a picture inside a process that handles credentials,
+and a broken or hostile picture must cost nothing worse than the initials.
+
+Implementation progress is tracked in
+link:IMPLEMENTATION.adoc[the implementation checklist].
+
+== Context
+
+Every avatar is generated initials today. Two earlier RFDs left pictures for
+later:
+
+* link:../0001/README.adoc[RFD 1] requires that the credential-handling process
+  not decode user-controlled avatar files, and leaves account artwork to a
+  separate provenance and packaging review.
+* link:../0005/README.adoc[RFD 5] keeps initials "until a separate change adds
+  sandboxed photo decoding".
+
+AccountsService already stores one picture per account. Its
+`org.freedesktop.Accounts.User.SetIconFile` method copies a file of up to
+1 MiB into `/var/lib/AccountsService/icons/<user>`, and the user's `IconFile`
+property names that copy. Polkit's `change-own-user-data` action lets an
+active local user change their own picture without a password. AccountsService
+does not check that the file is an image, so the copy is user-controlled bytes
+that the `greeter` user can read.
+
+The approved design is board 11, "Account picture set", on the
+link:https://claude.ai/artifact/NGG3P7BLRaTN2BRFh4pXut[Genkan macOS mocks]
+canvas: twelve illustrations (Lake, Sunrise, Dune, Leaf, Wave, Moon, Pine,
+Bloom, Orbit, Pebbles, Aurora and Citrus) with initials as the fallback.
+
+== Proposal
+
+=== Built-in pictures
+
+The twelve illustrations are original vector artwork drawn for Genkan in the
+spirit of the macOS defaults. They contain no Apple images, symbols or fonts.
+Their SVG sources live in `assets/avatars/` under the repository's MIT license,
+each a 100-unit square without text, scripts, external references or embedded
+raster data.
+
+The package build rasterizes each source with resvg to a 512 by 512 PNG and
+installs both under `share/genkan/avatars/`. A manifest, like the wallpaper
+manifest, records the SHA-256 of every source and output, and the Nix build
+fails if either differs. The greeter never parses SVG at runtime.
+
+=== Choosing a picture
+
+A new `genkan avatar` command runs as the user, in their desktop session:
+
+* `genkan avatar list` prints the built-in names.
+* `genkan avatar set <name>` passes the packaged PNG to `SetIconFile`.
+* `genkan avatar set --file <path>` decodes the photo with the sandboxed
+  decoder below, crops it to a centered square, scales it to 512 by 512,
+  re-encodes it as a PNG without metadata in a private temporary file, and
+  passes that file to `SetIconFile`. Re-encoding guarantees that what
+  AccountsService stores is a small, plain PNG, whatever the user started with.
+* `genkan avatar clear` passes an empty path, which restores initials.
+
+The command acts only on the calling user's own AccountsService object and
+relies on AccountsService's polkit policy; Genkan adds no privilege. There is no
+picture picker in the greeter or the lock, as on macOS, where pictures are
+chosen in System Settings.
+
+=== Showing a picture
+
+The login process reads each eligible account's `IconFile` with the other
+account properties. The lock reads the locked user's. Neither decodes it.
+
+Instead they ask a decoder process, `genkan avatar-decode`, which is not a
+public command. The parent:
+
+. opens the file itself with `O_RDONLY | O_NOFOLLOW | O_CLOEXEC`, requires a
+  regular file of at most 1 MiB, and gives the decoder only that descriptor, as
+  standard input;
+. starts the decoder from its own executable path with an empty environment,
+  no other inherited descriptors, and standard output on a pipe;
+. reads exactly 256 by 256 premultiplied RGBA pixels (262,144 bytes) within two
+  seconds, and otherwise kills and reaps the decoder.
+
+Before it reads its input, the decoder sets `PR_SET_NO_NEW_PRIVS`, applies
+resource limits (256 MiB of address space, two seconds of CPU, no new files or
+processes, no file writes), and installs a seccomp filter that allows only the
+system calls a memory-only decoder needs: reading and writing its standard
+descriptors, memory management, and exiting. It accepts PNG and JPEG only,
+rejects images larger than 4096 pixels on either side before decoding them,
+crops the image to a centered square, and scales it to 256 by 256. That covers
+the 75-point avatar at the lock's density of three pixels per point (225
+pixels).
+
+Pictures load after the accounts appear and never delay a prompt. An account
+shows initials until its picture arrives, and keeps them for good if the
+file is missing, oversized, malformed, slow, or anything else goes wrong. The
+login process decodes each distinct file at most once per run.
+
+== Non-goals
+
+* No picture picker, camera capture or editing in the greeter or the lock.
+* No SVG, HEIC, GIF, WebP or animated pictures from users. Built-in SVGs are
+  rasterized at build time.
+* No network pictures such as Gravatar, and no per-user files outside
+  AccountsService.
+* No change to authentication, account eligibility or session start.
+
+== Security considerations
+
+The picture file is controlled by its user, and on the login screen it is read
+by the `greeter` user, before anyone has authenticated. Decoding happens in a
+separate, unprivileged, resource-limited process under a seccomp filter, so a
+decoder crash, abort, endless loop or memory blow-up ends that process and
+nothing else, and the login and lock processes only ever receive a fixed number
+of pixel bytes. The PNG and JPEG decoders are memory-safe Rust; the sandbox is
+there because "memory-safe" does not rule out panics, unbounded allocation or
+logic bugs.
+
+The sandbox does not protect against kernel vulnerabilities or a system-wide
+out-of-memory kill, and the decoder runs as the same user as its parent, so it
+offers no protection between users beyond what the filter allows.
+
+`genkan avatar set --file` decodes the user's own photo in their own session,
+with the same decoder, before anything reaches AccountsService.
+
+== Alternatives considered
+
+=== Decode in the login process
+
+RFD 1 forbids it: a decoder bug would run in the process that holds the
+password being typed.
+
+=== Decode on a thread
+
+The desktop wallpaper decodes HEIC on a worker thread, which contains a panic
+but not an allocation abort, a crash, or an endless loop, and shares the login
+process's memory.
+
+=== Store the SVG
+
+AccountsService would then hold user-controlled SVG, and the greeter would
+have to parse SVG at runtime. Rasterizing at build time keeps runtime decoding
+to PNG and JPEG.
+
+=== An external sandbox such as bubblewrap or systemd-run
+
+Either adds a runtime dependency and a setup the `greeter` user may not be
+allowed to perform. The required containment is small enough to apply directly.
+
+== Amendments to earlier RFDs
+
+RFD 1's rule that the credential-handling process does not decode avatar files
+still holds. RFD 5's "initials until sandboxed photo decoding" is resolved by
+this RFD; both will be updated when the implementation lands.
