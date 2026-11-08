@@ -339,10 +339,16 @@ let
             };
             "eDP-1".scale = 1.2;
           };
+          niri.renderDevice = "/dev/dri/by-path/pci-0000:c2:00.0-render";
         };
       })
     ];
   };
+  # The same greeter without a render device must not emit a debug block.
+  noRenderDeviceConfig =
+    (niriGreeterSystem.extendModules {
+      modules = [ { programs.genkan.greeter.niri.renderDevice = pkgs.lib.mkForce null; } ];
+    }).config.programs.genkan.greeter.niri.configFile;
   greeterModuleCheck =
     assert !moduleSystem.config.services.greetd.enable;
     assert cageGreeterSystem.config.programs.genkan.greeter.compositor == "cage";
@@ -351,7 +357,10 @@ let
     assert pkgs.lib.hasInfix "cage"
       cageGreeterSystem.config.services.greetd.settings.default_session.command;
     pkgs.runCommand "genkan-greeter-module-check" { } ''
-      cp ${niriGreeterSystem.config.programs.genkan.greeter.niri.configFile} "$out"
+      config=${niriGreeterSystem.config.programs.genkan.greeter.niri.configFile}
+      grep -Fq 'render-drm-device "/dev/dri/by-path/pci-0000:c2:00.0-render"' "$config"
+      ! grep -Fq 'render-drm-device' ${noRenderDeviceConfig}
+      cp "$config" "$out"
     '';
   solarAppConfig = solarModuleSystem.config.services.geoclue2.appConfig."genkan-wallpaper";
   solarGeoclueConfig =
