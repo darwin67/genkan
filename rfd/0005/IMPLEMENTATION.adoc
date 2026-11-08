@@ -18,18 +18,18 @@ reference images and compares them with the screens in `docs/design-system`.
 
 == Phase 2: Login screen
 
-* [ ] `StatusBar` with session and power items, keyboard layout, and network
+* [x] `StatusBar` with session and power items, keyboard layout, and network
   status.
 * [x] `Menu` for the session list and for Sleep, Restart…, and Shut Down….
 * [x] `Alert` for Restart and Shut Down, with Cancel focused initially.
 * [x] `Clock` with the short date and the glass time.
 * [x] `Avatar` and `AccountRow`, with one shared `initials()` helper.
-* [ ] `PasswordField` with placeholder, secret and visible input, the submit
+* [x] `PasswordField` with placeholder, secret and visible input, the submit
   circle, the Caps Lock glyph, and the rejection shake.
 * [x] `StatusMessage` above or below the pill.
 * [x] A visible Change User control in the identity region whenever another
   eligible account exists.
-* [ ] Background blur for the pill, menus, and alert sampled from the wallpaper
+* [x] Background blur for the pill, menus, and alert sampled from the wallpaper
   frame.
 * [x] Place everything through the `status`, `clock`, and `identity` regions and
   remove the old Wide and Flow layouts.
@@ -41,17 +41,20 @@ reference images and compares them with the screens in `docs/design-system`.
 * [x] Make the session-lock wallpaper dimming a caller-supplied factor and set
   it to none.
 * [x] Draw the lock overlay from tokens with Inter: status bar without session
-  and power items, clock, avatar, name, pill, and message. Like login's, the
-  lock's status bar stays empty until the keyboard layout and network items
-  above have a data source.
+  and power items, clock, avatar, name, pill, and message. Both screens use
+  compositor XKB metadata and local network-link state; unavailable or
+  ambiguous metadata is omitted rather than guessed.
+* [x] Sample blurred wallpaper behind the pill, show Caps Lock from compositor
+  modifiers, and shake on rejection unless reduced motion is enabled. Finish
+  at rest without keeping an idle redraw loop alive.
 * [x] Share `initials()` and single-line fitting with login.
 * [x] Regenerate lock reference captures.
 
 == Phase 4: Enforcement and documentation
 
-* [ ] Move the contrast tests to color roles, including text with its shadow
+* [x] Move the contrast tests to color roles, including text with its shadow
   over samples of the packaged posters.
-* [ ] Add the literal check to `make verify`, with regression fixtures in
+* [x] Add the literal check to `make verify`, with regression fixtures in
   `scripts/regression-tests.sh`.
-* [ ] Document the design module, the token mirror test, and the literal check
+* [x] Document the design module, the token mirror test, and the literal check
   in `docs/development.md`.

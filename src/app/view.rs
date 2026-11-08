@@ -15,7 +15,7 @@ use iced::{padding, Alignment, Element, Fill, Length, Padding, Size, Vector};
 use crate::accounts::Account;
 use crate::background;
 use crate::design::glyph::{self, Kind as Glyph};
-use crate::design::iced::{color, font, label, line_height, scaled_label};
+use crate::design::iced::{color, font, label, line_height, wallpaper_label as wallpaper_text};
 use crate::design::style;
 use crate::design::text::{self as text_policy, initials, prompt_placement, PromptPlacement};
 use crate::design::tokens::{
@@ -72,7 +72,7 @@ impl App {
             Space::new().height(region.y),
             row![
                 Space::new().width(region.x),
-                container(self.content(Size::new(region.width, region.height)))
+                container(self.content(Size::new(region.width, region.height), size))
                     .width(region.width)
                     .height(region.height)
                     .clip(true)
@@ -83,30 +83,37 @@ impl App {
         .into()
     }
 
-    fn content(&self, size: Size) -> Element<'_, Message> {
+    fn content(&self, size: Size, window: Size) -> Element<'_, Message> {
         let time = self.now.format("%-I:%M").to_string();
         let clock = clock_layout(size, text_policy::measure(&time, text_style::CLOCK));
         let mut layers = vec![
             self.clock(time, clock),
-            self.identity(size, clock),
+            self.identity(size, clock, window),
             self.status_bar(size),
             self.preview_badge(size),
         ];
-        layers.extend(self.menu(size));
-        layers.extend(self.alert());
+        layers.extend(self.menu(size, window));
+        layers.extend(self.alert(window));
         Stack::with_children(layers).width(Fill).height(Fill).into()
     }
 
     fn clock(&self, time: String, layout: ClockLayout) -> Element<'_, Message> {
         column![
             Space::new().height(layout.top),
-            scaled_label(
+            wallpaper_text(
                 self.now.format("%a %b %-d").to_string(),
                 text_style::DATE,
                 palette::TEXT_DATE,
                 layout.scale,
+                Wrapping::None,
             ),
-            scaled_label(time, text_style::CLOCK, palette::CLOCK_GLASS, layout.scale),
+            wallpaper_text(
+                time,
+                text_style::CLOCK,
+                palette::CLOCK_GLASS,
+                layout.scale,
+                Wrapping::None
+            ),
         ]
         .width(Fill)
         .align_x(Alignment::Center)
@@ -115,7 +122,7 @@ impl App {
 
     /// The identity column, or the AccountRow that replaces it, anchored so
     /// the pill's bottom edge sits `identity-bottom` above the region's.
-    fn identity(&self, size: Size, clock: ClockLayout) -> Element<'_, Message> {
+    fn identity(&self, size: Size, clock: ClockLayout, window: Size) -> Element<'_, Message> {
         let state = account_selector_state(
             self.phase,
             self.can_select_account(),
@@ -130,20 +137,20 @@ impl App {
             AccountSelectorState::Hidden => identity
                 .push(self.identity_column())
                 .push(Space::new().height(spacing::IDENTITY_GAP))
-                .push(self.authentication_slot()),
+                .push(self.authentication_slot(window)),
         };
         identity.push(self.below_anchor(state)).into()
     }
 
     fn identity_column(&self) -> Element<'_, Message> {
-        let mut name = column![label(
+        let mut name = column![wallpaper_label(
             text_policy::fit(&self.display_name, text_style::NAME, size::MESSAGE_WIDTH),
             text_style::NAME,
             palette::TEXT_PRIMARY,
         )]
         .align_x(Alignment::Center);
         if let Some(username) = self.selected_username_if_ambiguous() {
-            name = name.push(label(
+            name = name.push(wallpaper_label(
                 text_policy::fit(username, text_style::MESSAGE, size::MESSAGE_WIDTH),
                 text_style::MESSAGE,
                 palette::TEXT_SECONDARY,
@@ -196,7 +203,7 @@ impl App {
     }
 
     /// The pill, or what replaces it while no prompt is waiting.
-    fn authentication_slot(&self) -> Element<'_, Message> {
+    fn authentication_slot(&self, window: Size) -> Element<'_, Message> {
         let interactive = self.closing.is_none() && self.power_state == PowerState::Idle;
         match authentication_controls(self.phase, self.selected_session.is_some()) {
             AuthenticationControls::Prompt => {
@@ -204,11 +211,11 @@ impl App {
                     PromptPlacement::Placeholder(prompt) => prompt,
                     PromptPlacement::Above(_) => "",
                 };
-                self.pill_row(self.pill(placeholder, interactive))
+                self.pill_row(self.pill(placeholder, interactive, window))
             }
             // The pill stays in place, empty and disabled, so the rejection
             // shake and the next prompt do not move the column.
-            AuthenticationControls::Progress(_) => self.pill_row(self.pill("", false)),
+            AuthenticationControls::Progress(_) => self.pill_row(self.pill("", false, window)),
             AuthenticationControls::Retry => container(small_pill(
                 "Retry",
                 interactive.then_some(Message::Retry),
@@ -255,7 +262,13 @@ impl App {
             .into()
     }
 
-    fn pill<'a>(&'a self, placeholder: &'a str, interactive: bool) -> Element<'a, Message> {
+    fn pill<'a>(
+        &'a self,
+        placeholder: &'a str,
+        interactive: bool,
+        window: Size,
+    ) -> Element<'a, Message> {
+        let caps = self.keyboard.as_ref().is_some_and(|state| state.caps_lock);
         let input = text_input(placeholder, self.conversation.input())
             .id(self.input_id.clone())
             .on_input_maybe(interactive.then_some(Message::InputChanged))
@@ -268,11 +281,27 @@ impl App {
                 top: 0.0,
                 bottom: 0.0,
                 left: component::FIELD_PADDING_LEADING,
-                right: component::FIELD_PADDING_TRAILING,
+                right: component::FIELD_PADDING_TRAILING
+                    + if caps {
+                        component::GLYPH_ARROW + component::ITEM_CONTENT_GAP
+                    } else {
+                        0.0
+                    },
             })
             .width(Fill)
             .style(style::field);
         let mut layers: Vec<Element<'a, Message>> = vec![input.into()];
+        if caps {
+            layers.push(
+                container(glyph::glyph(Glyph::CapsLock, color(palette::TEXT_PRIMARY)))
+                    .width(Fill)
+                    .height(Fill)
+                    .padding(padding::right(component::FIELD_PADDING_TRAILING))
+                    .align_x(Alignment::End)
+                    .align_y(Alignment::Center)
+                    .into(),
+            );
+        }
         if !self.conversation.input().is_empty() {
             let focused = self.is_focused(FocusTarget::Submit);
             let submit = button(
@@ -300,11 +329,16 @@ impl App {
                     .into(),
             );
         }
-        container(Stack::with_children(layers))
-            .id(Id::new("authentication-input-anchor"))
-            .width(size::FIELD_WIDTH)
-            .height(size::FIELD_HEIGHT)
-            .into()
+        crate::design::material::backdrop(
+            container(Stack::with_children(layers))
+                .id(Id::new("authentication-input-anchor"))
+                .width(size::FIELD_WIDTH)
+                .height(size::FIELD_HEIGHT),
+            self.wallpaper.rgba_frame(),
+            radius::FIELD,
+            window,
+            self.shake_offset(),
+        )
     }
 
     /// The `identity-bottom` band under the pill: PAM notices, progress, the
@@ -449,6 +483,26 @@ impl App {
     fn status_bar(&self, size: Size) -> Element<'_, Message> {
         let open = self.open_menu();
         let mut items = row![].spacing(spacing::BAR_GAP).align_y(Alignment::Center);
+        for item in [
+            self.keyboard
+                .as_ref()
+                .and_then(|state| state.layout.as_deref()),
+            self.network,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            items = items.push(wallpaper_label(
+                text_policy::fit(
+                    item,
+                    text_style::BAR,
+                    ((size.width / 2.0 - spacing::BAR_INSET_RIGHT - 2.0 * spacing::BAR_GAP) / 2.0)
+                        .max(0.0),
+                ),
+                text_style::BAR,
+                palette::TEXT_PRIMARY,
+            ));
+        }
         if let Some(session) = &self.selected_session {
             let active = open == Some(Menu::Session);
             let focused = self.is_focused(FocusTarget::Session);
@@ -461,7 +515,7 @@ impl App {
                 button(
                     row![
                         glyph::glyph(Glyph::Monitor, color(palette::TEXT_PRIMARY)),
-                        label(name, text_style::BAR, palette::TEXT_PRIMARY),
+                        wallpaper_label(name, text_style::BAR, palette::TEXT_PRIMARY),
                     ]
                     .spacing(component::ITEM_CONTENT_GAP)
                     .align_y(Alignment::Center),
@@ -547,7 +601,7 @@ impl App {
     }
 
     /// The open menu, floating under its status item without moving anything.
-    fn menu(&self, size: Size) -> Option<Element<'_, Message>> {
+    fn menu(&self, size: Size, window: Size) -> Option<Element<'_, Message>> {
         let menu = self.open_menu()?;
         let anchor = menu_anchor(size, menu);
         let content = match menu {
@@ -570,7 +624,15 @@ impl App {
                 opaque(
                     mouse_area(Space::new().width(Fill).height(Fill)).on_press(Message::MenuClosed)
                 ),
-                pin(surface).x(anchor.x).y(anchor.y),
+                pin(crate::design::material::backdrop(
+                    surface,
+                    self.wallpaper.rgba_frame(),
+                    radius::MENU,
+                    window,
+                    0.0
+                ))
+                .x(anchor.x)
+                .y(anchor.y),
             ]
             .into(),
         )
@@ -669,7 +731,7 @@ impl App {
     }
 
     /// The Restart or Shut Down alert over the modal scrim.
-    fn alert(&self) -> Option<Element<'_, Message>> {
+    fn alert(&self, window: Size) -> Option<Element<'_, Message>> {
         let (action, executing) = match self.power_state {
             PowerState::Confirming(action) => (action, false),
             PowerState::Executing(action) if action != PowerAction::Suspend => (action, true),
@@ -739,11 +801,17 @@ impl App {
                 .width(Fill)
                 .height(Fill)
                 .style(style::scrim),
-            container(surface)
-                .width(Fill)
-                .height(Fill)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center),
+            container(crate::design::material::backdrop(
+                surface,
+                self.wallpaper.rgba_frame(),
+                radius::ALERT,
+                window,
+                0.0
+            ))
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
         ]))
     }
 }
@@ -795,7 +863,7 @@ pub(super) fn clock_layout(region: Size, clock_width: f32) -> ClockLayout {
 
 /// The pill's displacement `elapsed` into a rejection shake: a damped sine
 /// that starts and ends at rest.
-pub(super) fn shake_offset(elapsed: Duration) -> f32 {
+pub(crate) fn shake_offset(elapsed: Duration) -> f32 {
     let progress = (elapsed.as_secs_f32() / motion::SHAKE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
     let damping = (1.0 - progress).powi(2);
     motion::SHAKE_AMPLITUDE * damping * (progress * motion::SHAKE_CYCLES * TAU).sin()
@@ -927,13 +995,23 @@ fn wrapped<'a>(
 
 /// A StatusMessage: PAM text centered and wrapped at `message-width`.
 fn message<'a>(content: &'a str) -> Element<'a, Message> {
-    container(
-        label(content, text_style::MESSAGE, palette::TEXT_PRIMARY)
-            .wrapping(Wrapping::WordOrGlyph)
-            .align_x(Alignment::Center),
-    )
+    container(wallpaper_text(
+        content,
+        text_style::MESSAGE,
+        palette::TEXT_PRIMARY,
+        1.0,
+        Wrapping::WordOrGlyph,
+    ))
     .max_width(size::MESSAGE_WIDTH)
     .into()
+}
+
+fn wallpaper_label<'a>(
+    content: impl Into<String>,
+    style: TextStyle,
+    tone: Rgba,
+) -> Element<'a, Message> {
+    wallpaper_text(content, style, tone, 1.0, Wrapping::None)
 }
 
 fn avatar<'a>(name: &str) -> Element<'a, Message> {
@@ -964,10 +1042,14 @@ fn account_item<'a>(
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
         .style(move |_| style::avatar_focus(ring, focused));
-    let mut names =
-        column![label(name, text_style::NAME, palette::TEXT_PRIMARY)].align_x(Alignment::Center);
+    let mut names = column![wallpaper_label(
+        name,
+        text_style::NAME,
+        palette::TEXT_PRIMARY
+    )]
+    .align_x(Alignment::Center);
     if let Some(username) = username {
-        names = names.push(label(
+        names = names.push(wallpaper_label(
             username,
             text_style::MESSAGE,
             palette::TEXT_SECONDARY,

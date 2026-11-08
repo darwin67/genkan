@@ -1,13 +1,10 @@
 use iced::mouse;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path};
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Theme};
+#[cfg(test)]
+use iced::Color;
+use iced::{Element, Length, Point, Rectangle, Renderer, Theme};
 
-const BASE_COLOR: Color = Color::from_rgb(5.0 / 255.0, 9.0 / 255.0, 24.0 / 255.0);
-const BLOB_COLORS: [Color; 3] = [
-    Color::from_rgba(51.0 / 255.0, 72.0 / 255.0, 181.0 / 255.0, 0.42),
-    Color::from_rgba(142.0 / 255.0, 44.0 / 255.0, 118.0 / 255.0, 0.34),
-    Color::from_rgba(23.0 / 255.0, 111.0 / 255.0, 140.0 / 255.0, 0.35),
-];
+use crate::design::style::{FALLBACK_BASE as BASE_COLOR, FALLBACK_BLOBS as BLOB_COLORS};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Background {

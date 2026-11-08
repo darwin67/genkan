@@ -78,7 +78,7 @@ timestamps and window chrome are excluded by kiosk-shell capture.
 
 == Durable reference images
 
-The six primary acceptance views are retained in
+The primary acceptance and shared-design views are retained in
 link:reference-images/[reference-images/] for review across later design changes:
 
 [cols="2,3",options="header"]
@@ -91,6 +91,11 @@ link:reference-images/[reference-images/] for review across later design changes
 |Authentication failure |link:reference-images/authentication-failure.png[authentication-failure.png]
 |Power confirmation |link:reference-images/power-confirmation.png[power-confirmation.png]
 |Narrow flow layout |link:reference-images/narrow-selected.png[narrow-selected.png]
+|Caps Lock |link:reference-images/caps-lock.png[caps-lock.png]
+|Keyboard layout and network link |link:reference-images/status-bar.png[status-bar.png]
+|Session menu material |link:reference-images/session-menu.png[session-menu.png]
+|Lock prompt material |link:reference-images/lock-prompt.png[lock-prompt.png]
+|Lock Caps Lock |link:reference-images/lock-caps-lock.png[lock-caps-lock.png]
 |===
 
 Run `make update-reference-images` to deliberately refresh them from the current
@@ -122,6 +127,15 @@ The generated captures were reviewed on 2026-08-30 with these results:
 |Long identity and PAM text wrap; focus reveal leaves the input and submit action fully visible with bottom margin.
 |===
 
-These textual outcomes and the six primary review images are durable. The
+These textual outcomes and the primary review images are durable. The
 historical pre-layout baseline remains unavailable because it was not captured
 before implementation began; current images are not presented as substitutes.
+
+The November 2026 shared-design refresh adds wallpaper-sampled rounded material,
+Caps Lock fixtures, and synthetic layout/link metadata to the durable captures.
+Live metadata is compositor-derived XKB state and sysfs link state, not Internet
+reachability. Unknown or conflicting keyboard metadata and unknown link state
+are omitted. Numeric acceptance includes the actual filtered material and
+outlined wallpaper text; screenshots alone do not establish contrast or
+authentication correctness. Lock rejection motion is separately covered by
+the presentation tests, including reduced motion and the final idle frame.

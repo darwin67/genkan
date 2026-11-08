@@ -32,6 +32,7 @@ pub(crate) mod color {
     use super::{rgb, rgba, Rgba};
 
     pub(crate) const TEXT_PRIMARY: Rgba = rgb(255, 255, 255);
+    pub(crate) const TEXT_SHADOW: Rgba = rgba(0, 0, 0, 0.9);
     pub(crate) const TEXT_DATE: Rgba = rgba(255, 255, 255, 0.94);
     pub(crate) const TEXT_SECONDARY: Rgba = rgba(255, 255, 255, 0.78);
     pub(crate) const TEXT_PLACEHOLDER: Rgba = rgba(255, 255, 255, 0.72);
@@ -47,12 +48,13 @@ pub(crate) mod color {
     pub(crate) const MENU_BORDER: Rgba = rgba(255, 255, 255, 0.18);
     pub(crate) const ALERT_MATERIAL: Rgba = rgba(40, 42, 48, 0.8);
     pub(crate) const ACCENT: Rgba = rgb(0x2f, 0x6f, 0xe0);
-    pub(crate) const PILL_SECONDARY: Rgba = rgba(255, 255, 255, 0.16);
+    pub(crate) const PILL_SECONDARY: Rgba = rgba(255, 255, 255, 0.12);
     pub(crate) const FOCUS_RING: Rgba = rgba(80, 150, 255, 0.85);
     pub(crate) const SCRIM_MODAL: Rgba = rgba(0, 0, 0, 0.3);
 
     pub(super) const ALL: &[(&str, Rgba)] = &[
         ("text-primary", TEXT_PRIMARY),
+        ("text-shadow", TEXT_SHADOW),
         ("text-date", TEXT_DATE),
         ("text-secondary", TEXT_SECONDARY),
         ("text-placeholder", TEXT_PLACEHOLDER),

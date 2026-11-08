@@ -4,10 +4,17 @@ use std::f32::consts::PI;
 
 use iced::gradient::Linear;
 use iced::widget::{button, container, scrollable, text_input};
-use iced::{Background, Border, Radians, Shadow, Theme};
+use iced::{Background, Border, Color, Radians, Shadow, Theme};
 
 use super::iced::color;
 use super::tokens::{color as palette, component, radius, Rgba};
+
+pub(crate) const FALLBACK_BASE: Color = Color::from_rgb(5.0 / 255.0, 9.0 / 255.0, 24.0 / 255.0);
+pub(crate) const FALLBACK_BLOBS: [Color; 3] = [
+    Color::from_rgba(51.0 / 255.0, 72.0 / 255.0, 181.0 / 255.0, 0.42),
+    Color::from_rgba(142.0 / 255.0, 44.0 / 255.0, 118.0 / 255.0, 0.34),
+    Color::from_rgba(23.0 / 255.0, 111.0 / 255.0, 140.0 / 255.0, 0.35),
+];
 
 fn fill(token: Rgba) -> Option<Background> {
     Some(Background::Color(color(token)))
@@ -227,9 +234,8 @@ pub(crate) fn scrollbar(_theme: &Theme, status: scrollable::Status) -> scrollabl
 
 #[cfg(test)]
 mod tests {
-    //! WCAG contrast for the surfaces Genkan draws itself. Text over the
-    //! wallpaper relies on the wallpaper, which the design never dims; the
-    //! generated fallback background is covered here.
+    //! Renderer-aware color-role checks. Wallpaper text is measured against
+    //! its outline, not falsely claimed to contrast against every bright pixel.
     use super::*;
     use iced::Color;
 
@@ -304,19 +310,71 @@ mod tests {
         );
     }
 
-    /// Dark and mid-tone wallpaper underlays. Over a pure white underlay the
-    /// translucent materials depend on the background blur macOS draws behind
-    /// them, which Genkan does not draw yet.
-    fn underlays() -> [Color; 2] {
-        [Color::BLACK, Color::from_rgb(0.5, 0.6, 0.8)]
+    fn posters() -> Vec<image::RgbaImage> {
+        [
+            include_bytes!("../../assets/wallpapers/tahoe-beach-poster.jpg").as_slice(),
+            include_bytes!("../../assets/wallpapers/golden-gate-poster.jpg").as_slice(),
+            include_bytes!("../../assets/wallpapers/sequoia-morning-poster.jpg").as_slice(),
+            include_bytes!("../../assets/wallpapers/sequoia-night-poster.jpg").as_slice(),
+            include_bytes!("../../assets/wallpapers/sequoia-sunrise-poster.jpg").as_slice(),
+        ]
+        .into_iter()
+        .map(|bytes| image::load_from_memory(bytes).unwrap().to_rgba8())
+        .collect()
+    }
+
+    fn underlays() -> Vec<Color> {
+        let mut result = Vec::new();
+        // RGB cube vertices include pure white: blur cannot make a white
+        // wallpaper darker, so the actual material backing must do that.
+        for r in [0, 255] {
+            for g in [0, 255] {
+                for b in [0, 255] {
+                    let source =
+                        genkan_session_lock::RgbaFrame::new(1, 1, vec![r, g, b, 255].into())
+                            .unwrap();
+                    let blur = genkan_session_lock::material::blurred(&source);
+                    let pixel = blur.pixels();
+                    result.push(Color::from_rgb8(pixel[0], pixel[1], pixel[2]));
+                }
+            }
+        }
+        for poster in posters() {
+            let (width, height) = poster.dimensions();
+            let frame =
+                genkan_session_lock::RgbaFrame::new(width, height, poster.into_raw().into())
+                    .unwrap();
+            let blur = genkan_session_lock::material::blurred(&frame);
+            result.extend(
+                blur.pixels()
+                    .chunks_exact(4)
+                    .step_by(173)
+                    .map(|p| Color::from_rgb8(p[0], p[1], p[2])),
+            );
+        }
+        result
     }
 
     #[test]
     fn menu_and_alert_text_meet_contrast_over_wallpaper_underlays() {
         let theme = Theme::Dark;
+        let underlays = underlays();
         for blend_space in [BlendSpace::LinearSrgb, BlendSpace::EncodedSrgb] {
-            for underlay in underlays() {
+            for &underlay in &underlays {
+                let field_surface = composite(color(palette::FIELD_GLASS), underlay, blend_space);
+                for (label, token) in [
+                    ("response", palette::TEXT_PRIMARY),
+                    ("placeholder", palette::TEXT_PLACEHOLDER),
+                ] {
+                    assert_text(color(token), field_surface, blend_space, label);
+                }
                 let menu_surface = composite(solid(menu(&theme).background), underlay, blend_space);
+                assert_text(
+                    color(palette::TEXT_MENU_HEADING),
+                    menu_surface,
+                    blend_space,
+                    "menu heading",
+                );
                 assert_text(
                     color(palette::TEXT_PRIMARY),
                     menu_surface,
@@ -332,9 +390,8 @@ mod tests {
                     "highlighted menu item",
                 );
 
-                let scrimmed = composite(solid(scrim(&theme).background), underlay, blend_space);
                 let alert_surface =
-                    composite(solid(alert(&theme).background), scrimmed, blend_space);
+                    composite(solid(alert(&theme).background), underlay, blend_space);
                 assert_text(
                     color(palette::TEXT_PRIMARY),
                     alert_surface,
@@ -355,12 +412,34 @@ mod tests {
                     blend_space,
                     "default alert button",
                 );
-                // The translucent Cancel pill lightens sharply under linear
-                // blending; its label keeps at least the 3:1 component ratio.
                 let cancel = pill(false, false, button::Status::Active);
                 let surface = composite(solid(cancel.background), alert_surface, blend_space);
-                let rendered = composite(cancel.text_color, surface, blend_space);
-                assert!(contrast(rendered, surface) >= 3.0, "cancel alert button");
+                assert_text(
+                    cancel.text_color,
+                    surface,
+                    blend_space,
+                    "cancel alert button",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wallpaper_text_with_its_outline_meets_contrast_over_packaged_posters() {
+        for poster in posters() {
+            for pixel in poster.pixels().step_by(997) {
+                let background = Color::from_rgb8(pixel[0], pixel[1], pixel[2]);
+                for space in [BlendSpace::LinearSrgb, BlendSpace::EncodedSrgb] {
+                    let outlined = composite(color(palette::TEXT_SHADOW), background, space);
+                    for (role, token) in [
+                        ("name and status", palette::TEXT_PRIMARY),
+                        ("date", palette::TEXT_DATE),
+                        ("clock", palette::CLOCK_GLASS),
+                        ("secondary name", palette::TEXT_SECONDARY),
+                    ] {
+                        assert_text(color(token), outlined, space, role);
+                    }
+                }
             }
         }
     }

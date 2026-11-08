@@ -1118,6 +1118,7 @@ dependencies = [
  "tokio",
  "unicode-general-category",
  "wayland-client",
+ "xkbcommon",
  "zbus",
  "zeroize",
 ]
@@ -1152,6 +1153,7 @@ dependencies = [
  "thiserror 2.0.20",
  "wayland-client",
  "wayland-protocols",
+ "xkbcommon",
  "zeroize",
 ]
 

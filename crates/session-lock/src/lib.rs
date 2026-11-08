@@ -6,6 +6,9 @@ use std::os::unix::net::UnixStream;
 #[cfg(feature = "lock-test")]
 use std::time::Duration;
 
+pub mod keyboard;
+pub mod material;
+
 use bytes::Bytes;
 use zeroize::Zeroizing;
 
@@ -115,11 +118,21 @@ impl OverlayLayout {
 pub struct AnchoredOverlay {
     overlay: RgbaFrame,
     offset: u32,
+    backdrop: Option<material::Backdrop>,
 }
 
 impl AnchoredOverlay {
     pub fn new(overlay: RgbaFrame, offset: u32) -> Option<Self> {
-        (offset <= MAX_LOGICAL_LENGTH).then_some(Self { overlay, offset })
+        (offset <= MAX_LOGICAL_LENGTH).then_some(Self {
+            overlay,
+            offset,
+            backdrop: None,
+        })
+    }
+
+    pub fn with_backdrop(mut self, backdrop: material::Backdrop) -> Self {
+        self.backdrop = Some(backdrop);
+        self
     }
 }
 
@@ -148,6 +161,7 @@ pub struct PresentationFrame {
     top: Option<AnchoredOverlay>,
     /// Anchored to the bottom edge; drawn over the top overlay.
     bottom: Option<AnchoredOverlay>,
+    status: Option<AnchoredOverlay>,
     dimming: Option<Dimming>,
 }
 
@@ -166,6 +180,7 @@ impl PresentationFrame {
             layout,
             top,
             bottom,
+            status: None,
             dimming: None,
         }
     }
@@ -176,8 +191,17 @@ impl PresentationFrame {
         self
     }
 
-    fn overlays(&self) -> [Option<&AnchoredOverlay>; 2] {
-        [self.top.as_ref(), self.bottom.as_ref()]
+    pub fn with_status(mut self, status: Option<AnchoredOverlay>) -> Self {
+        self.status = status;
+        self
+    }
+
+    fn overlays(&self) -> [Option<&AnchoredOverlay>; 3] {
+        [
+            self.top.as_ref(),
+            self.bottom.as_ref(),
+            self.status.as_ref(),
+        ]
     }
 }
 
@@ -194,6 +218,7 @@ pub enum Refresh {
 
 #[derive(PartialEq, Eq)]
 pub enum Input {
+    Keyboard(keyboard::KeyboardStatus),
     Text(Zeroizing<String>),
     Backspace,
     Submit,

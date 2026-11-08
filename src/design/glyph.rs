@@ -33,6 +33,7 @@ pub(crate) enum Kind {
     ArrowRight,
     /// A leftward arrow: back to the account list.
     ArrowLeft,
+    CapsLock,
 }
 
 impl Kind {
@@ -45,7 +46,7 @@ impl Kind {
             ),
             Self::Power => Size::new(component::GLYPH_POWER, component::GLYPH_POWER),
             Self::Check => Size::new(component::GLYPH_CHECK_WIDTH, component::GLYPH_CHECK_HEIGHT),
-            Self::ArrowRight | Self::ArrowLeft => {
+            Self::ArrowRight | Self::ArrowLeft | Self::CapsLock => {
                 Size::new(component::GLYPH_ARROW, component::GLYPH_ARROW)
             }
         }
@@ -57,7 +58,7 @@ impl Kind {
             Self::Monitor => Size::new(15.0, 12.0),
             Self::Power => Size::new(20.0, 20.0),
             Self::Check => Size::new(11.0, 10.0),
-            Self::ArrowRight | Self::ArrowLeft => Size::new(14.0, 14.0),
+            Self::ArrowRight | Self::ArrowLeft | Self::CapsLock => Size::new(14.0, 14.0),
         }
     }
 
@@ -67,7 +68,7 @@ impl Kind {
             Self::Monitor => 1.3,
             Self::Power => 2.0,
             Self::Check => 1.7,
-            Self::ArrowRight | Self::ArrowLeft => 2.2,
+            Self::ArrowRight | Self::ArrowLeft | Self::CapsLock => 2.2,
         }
     }
 
@@ -118,6 +119,18 @@ impl Kind {
                 builder.move_to(6.4, 3.4);
                 builder.line_to(3.0, 7.0);
                 builder.line_to(6.4, 10.6);
+            }
+            Self::CapsLock => {
+                builder.move_to(2.0, 6.0);
+                builder.line_to(7.0, 1.0);
+                builder.line_to(12.0, 6.0);
+                builder.line_to(9.0, 6.0);
+                builder.line_to(9.0, 9.0);
+                builder.line_to(5.0, 9.0);
+                builder.line_to(5.0, 6.0);
+                builder.close();
+                builder.move_to(5.0, 12.0);
+                builder.line_to(9.0, 12.0);
             }
         }
         builder.finish()

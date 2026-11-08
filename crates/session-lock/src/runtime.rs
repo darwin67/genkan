@@ -70,7 +70,7 @@ struct Surface {
     role_generation: u64,
     buffers: Vec<SurfaceBuffer>,
     /// The top and bottom overlays scaled to their places on this surface.
-    overlay_cache: [Option<CachedOverlay>; 2],
+    overlay_cache: [Option<CachedOverlay>; 3],
     authentication: bool,
     redraw: RedrawState,
     first_presented: bool,
@@ -135,6 +135,7 @@ struct PlacedOverlay {
     region: Region,
     /// Exactly `region.width` by `region.height` pixels.
     pixels: RgbaFrame,
+    backdrop: Option<(super::material::Backdrop, (u32, u32))>,
 }
 
 impl Surface {
@@ -144,13 +145,13 @@ impl Surface {
         width: u32,
         height: u32,
         scale: u32,
-    ) -> [Option<PlacedOverlay>; 2] {
+    ) -> [Option<PlacedOverlay>; 3] {
         if !self.authentication {
-            self.overlay_cache = [None, None];
-            return [None, None];
+            self.overlay_cache = [None, None, None];
+            return [None, None, None];
         }
         let Some(frame) = frame else {
-            return [None, None];
+            return [None, None, None];
         };
         let regions = overlay_regions(frame, width, height, scale);
         let overlays = frame.overlays();
@@ -172,6 +173,9 @@ impl Surface {
             cache.as_ref().map(|cache| PlacedOverlay {
                 region,
                 pixels: cache.frame.clone(),
+                backdrop: anchored
+                    .backdrop
+                    .map(|backdrop| (backdrop, anchored.overlay.dimensions())),
             })
         })
     }
@@ -207,7 +211,7 @@ struct FrameGeometry {
     layout: OverlayLayout,
     dimming: Option<Dimming>,
     /// Width, height and edge offset of the top and bottom overlays.
-    overlays: [Option<(u32, u32, u32)>; 2],
+    overlays: [Option<(u32, u32, u32)>; 3],
 }
 
 #[derive(Default)]
@@ -346,6 +350,8 @@ struct Runtime {
     registry_state: RegistryState,
     seat_state: SeatState,
     keyboards: Vec<(wl_seat::WlSeat, wl_keyboard::WlKeyboard)>,
+    keyboard_layouts: std::collections::HashMap<wayland_client::backend::ObjectId, Vec<String>>,
+    keyboard_states: super::keyboard::KeyboardStates<wayland_client::backend::ObjectId>,
     #[cfg(feature = "lock-test")]
     pointers: Vec<(wl_seat::WlSeat, wl_pointer::WlPointer)>,
     shm: Shm,
@@ -399,6 +405,8 @@ pub(super) fn run(config: Config) -> Result<(), Error> {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         keyboards: Vec::new(),
+        keyboard_layouts: std::collections::HashMap::new(),
+        keyboard_states: Default::default(),
         #[cfg(feature = "lock-test")]
         pointers: Vec::new(),
         shm,
@@ -558,7 +566,7 @@ impl Runtime {
             geometry_generation: 0,
             role_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
-            overlay_cache: [None, None],
+            overlay_cache: [None, None, None],
             authentication: false,
             redraw: RedrawState {
                 redraw_pending: Some(RedrawKind::Full),
@@ -858,7 +866,7 @@ impl Runtime {
                         "genkan lock: cannot safely migrate authentication without presentation feedback: {error}"
                     );
                     surface.authentication = true;
-                    surface.overlay_cache = [None, None];
+                    surface.overlay_cache = [None, None, None];
                     surface.role_generation = surface.role_generation.wrapping_add(1);
                     surface.redraw.request_role_change();
                     self.retiring_authentication = None;
@@ -985,6 +993,13 @@ impl Runtime {
         }
     }
 
+    fn keyboard_status(&mut self, status: super::keyboard::KeyboardStatus) {
+        if self.presentation.input(Input::Keyboard(status)) {
+            let kind = self.classify_overlay_redraw();
+            self.redraw_all_surfaces(kind);
+        }
+    }
+
     fn refresh_authentication_output(&mut self) {
         let candidates = self
             .surfaces
@@ -1047,7 +1062,7 @@ impl Runtime {
             return;
         }
         surface.authentication = authentication;
-        surface.overlay_cache = [None, None];
+        surface.overlay_cache = [None, None, None];
         surface.role_generation = surface.role_generation.wrapping_add(1);
         if surface.size.is_some() {
             surface.redraw.request_role_change();
@@ -1064,7 +1079,9 @@ impl Runtime {
         kind
     }
 
-    fn handle_key(&mut self, event: KeyEvent) {
+    fn handle_key(&mut self, keyboard: &wl_keyboard::WlKeyboard, event: KeyEvent) {
+        self.keyboard_states.select(&keyboard.id());
+        self.keyboard_status(self.keyboard_states.status().cloned().unwrap_or_default());
         #[cfg(feature = "lock-test")]
         self.test_observer.record(TestEvent::Keyboard);
         let input = match event.keysym {
@@ -1436,9 +1453,12 @@ impl SeatHandler for Runtime {
                 #[cfg(feature = "lock-test")]
                 self.test_observer
                     .record(TestEvent::KeyboardReleased(keyboard.id().protocol_id()));
+                self.keyboard_layouts.remove(&keyboard.id());
+                self.keyboard_states.leave(&keyboard.id());
                 keyboard.release();
             }
             self.keyboards = retained;
+            self.keyboard_status(self.keyboard_states.status().cloned().unwrap_or_default());
         }
         #[cfg(feature = "lock-test")]
         if capability == Capability::Pointer {
@@ -1454,7 +1474,8 @@ impl SeatHandler for Runtime {
         }
     }
 
-    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
+    fn remove_seat(&mut self, conn: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.remove_capability(conn, qh, seat, Capability::Keyboard);
     }
 }
 
@@ -1472,6 +1493,8 @@ impl KeyboardHandler for Runtime {
         #[cfg(feature = "lock-test")]
         self.test_observer
             .record(TestEvent::KeyboardEnter(_keyboard.id().protocol_id()));
+        self.keyboard_states.enter(_keyboard.id());
+        self.keyboard_status(self.keyboard_states.status().cloned().unwrap_or_default());
     }
     fn leave(
         &mut self,
@@ -1484,26 +1507,28 @@ impl KeyboardHandler for Runtime {
         #[cfg(feature = "lock-test")]
         self.test_observer
             .record(TestEvent::KeyboardLeave(_keyboard.id().protocol_id()));
+        self.keyboard_states.leave(&_keyboard.id());
+        self.keyboard_status(self.keyboard_states.status().cloned().unwrap_or_default());
     }
     fn press_key(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
-        self.handle_key(event);
+        self.handle_key(keyboard, event);
     }
     fn repeat_key(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
-        self.handle_key(event);
+        self.handle_key(keyboard, event);
     }
     fn release_key(
         &mut self,
@@ -1518,20 +1543,37 @@ impl KeyboardHandler for Runtime {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: Modifiers,
+        modifiers: Modifiers,
         _: RawModifiers,
-        _: u32,
+        group: u32,
     ) {
+        let status = super::keyboard::KeyboardStatus {
+            caps_lock: modifiers.caps_lock,
+            layout: self
+                .keyboard_layouts
+                .get(&keyboard.id())
+                .and_then(|names| names.get(group as usize))
+                .filter(|name| !name.trim().is_empty())
+                .cloned(),
+        };
+        self.keyboard_states.update(&keyboard.id(), Some(status));
+        self.keyboard_status(self.keyboard_states.status().cloned().unwrap_or_default());
     }
     fn update_keymap(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _: Keymap<'_>,
+        keymap: Keymap<'_>,
     ) {
+        self.keyboard_layouts.insert(
+            _keyboard.id(),
+            super::keyboard::layout_names(keymap.as_string()),
+        );
+        self.keyboard_states.update(&_keyboard.id(), None);
+        self.keyboard_status(self.keyboard_states.status().cloned().unwrap_or_default());
         // SCTK only calls this after it compiled a usable xkb state for the
         // keyboard. A resource that is acquired but never keymapped silently
         // drops every key event, so the fixture needs this to tell the two
@@ -1681,9 +1723,9 @@ fn place_overlays(
     width: u32,
     height: u32,
     scale: u32,
-) -> [Option<PlacedOverlay>; 2] {
+) -> [Option<PlacedOverlay>; 3] {
     let Some(frame) = frame else {
-        return [None, None];
+        return [None, None, None];
     };
     let regions = overlay_regions(frame, width, height, scale);
     let overlays = frame.overlays();
@@ -1692,6 +1734,9 @@ fn place_overlays(
         Some(PlacedOverlay {
             region,
             pixels: scale_overlay(&anchored.overlay, region.width, region.height),
+            backdrop: anchored
+                .backdrop
+                .map(|backdrop| (backdrop, anchored.overlay.dimensions())),
         })
     })
 }
@@ -1701,7 +1746,7 @@ fn draw_opaque_placed(
     width: u32,
     height: u32,
     frame: Option<&PresentationFrame>,
-    placed: &[Option<PlacedOverlay>; 2],
+    placed: &[Option<PlacedOverlay>; 3],
     authentication: bool,
 ) {
     draw_opaque_region(
@@ -1722,7 +1767,7 @@ fn draw_opaque_region(
     width: u32,
     height: u32,
     frame: Option<&PresentationFrame>,
-    placed: &[Option<PlacedOverlay>; 2],
+    placed: &[Option<PlacedOverlay>; 3],
     authentication: bool,
     region: Region,
 ) {
@@ -1749,6 +1794,18 @@ fn draw_opaque_region(
     if !authentication {
         return;
     }
+    let blur = frame
+        .and_then(|frame| frame.background.as_ref())
+        .filter(|_| placed.iter().flatten().any(|p| p.backdrop.is_some()))
+        .map(super::material::blurred);
+    let blurred = BackgroundSampler::with_aspect(
+        blur.as_ref(),
+        width,
+        height,
+        frame
+            .and_then(|frame| frame.background.as_ref())
+            .map(RgbaFrame::dimensions),
+    );
     // The bottom overlay is drawn last, over the top overlay where they meet.
     for overlay in placed.iter().flatten() {
         let Some(area) = intersect(region, overlay.region) else {
@@ -1757,8 +1814,21 @@ fn draw_opaque_region(
         let stride = overlay.pixels.width as usize;
         for y in area.y..area.y + area.height {
             let overlay_y = (y - overlay.region.y) as usize;
+            let blur_row = blurred.source_row(y);
             for x in area.x..area.x + area.width {
                 let overlay_x = (x - overlay.region.x) as usize;
+                let offset = ((y as usize * width as usize) + x as usize) * 4;
+                if blur.is_some()
+                    && overlay.backdrop.is_some_and(|(backdrop, (sw, sh))| {
+                        backdrop.contains(
+                            (overlay_x as f32 + 0.5) * sw as f32 / overlay.region.width as f32,
+                            (overlay_y as f32 + 0.5) * sh as f32 / overlay.region.height as f32,
+                        )
+                    })
+                {
+                    let [red, green, blue] = blurred.pixel(blur_row, x);
+                    target[offset..offset + 4].copy_from_slice(&[blue, green, red, 255]);
+                }
                 let source = (overlay_y * stride + overlay_x) * 4;
                 let pixel =
                     <[u8; 4]>::try_from(&overlay.pixels.pixels[source..source + 4]).unwrap();
@@ -1783,6 +1853,15 @@ struct BackgroundSampler<'a> {
 
 impl<'a> BackgroundSampler<'a> {
     fn new(frame: Option<&'a RgbaFrame>, width: u32, height: u32) -> Self {
+        Self::with_aspect(frame, width, height, frame.map(RgbaFrame::dimensions))
+    }
+
+    fn with_aspect(
+        frame: Option<&'a RgbaFrame>,
+        width: u32,
+        height: u32,
+        dimensions: Option<(u32, u32)>,
+    ) -> Self {
         let Some(frame) = frame else {
             return Self {
                 frame: None,
@@ -1791,8 +1870,9 @@ impl<'a> BackgroundSampler<'a> {
                 scaled_height: 1,
             };
         };
+        let (source_width, source_height) = dimensions.unwrap_or(frame.dimensions());
         let Some((crop_x, crop_y, scaled_width, scaled_height)) =
-            cover_geometry(frame.width, frame.height, width, height)
+            cover_geometry(source_width, source_height, width, height)
         else {
             return Self {
                 frame: None,
@@ -1998,7 +2078,7 @@ fn overlay_regions(
     width: u32,
     height: u32,
     scale: u32,
-) -> [Option<Region>; 2] {
+) -> [Option<Region>; 3] {
     let layout = frame.layout;
     let density = u128::from(layout.density);
     let scale = u128::from(scale.max(1));
@@ -2061,7 +2141,17 @@ fn overlay_regions(
             .min(fit_within(anchored, surface_width, surface_height));
         place(anchored, fit, false)
     });
-    [top, bottom]
+    let status = frame.status.as_ref().and_then(|anchored| {
+        let mut region = place(
+            anchored,
+            fit_within(anchored, surface_width, surface_height),
+            false,
+        )?;
+        let margin = (u128::from(layout.margin) * scale).min(u128::from(width)) as u32;
+        region.x = width.saturating_sub(region.width).saturating_sub(margin);
+        Some(region)
+    });
+    [top, bottom, status]
 }
 
 /// The buffer regions an overlay-only redraw repaints: every placed overlay,
@@ -2070,7 +2160,7 @@ fn redraw_regions(
     kind: RedrawKind,
     rendered_background: u64,
     current_background: u64,
-    placed: &[Option<PlacedOverlay>; 2],
+    placed: &[Option<PlacedOverlay>; 3],
     width: u32,
     height: u32,
 ) -> Vec<Region> {
@@ -2866,7 +2956,7 @@ mod tests {
             [Region::full(8, 4)]
         );
         assert_eq!(
-            redraw_regions(RedrawKind::Overlay, 7, 7, &[None, None], 8, 4),
+            redraw_regions(RedrawKind::Overlay, 7, 7, &[None, None, None], 8, 4),
             [Region::full(8, 4)]
         );
 
@@ -2923,7 +3013,7 @@ mod tests {
             (1280, 800, 1),
             (2560, 1600, 2),
         ] {
-            let [top, bottom] = overlay_regions(&frame, width, height, scale);
+            let [top, bottom, _] = overlay_regions(&frame, width, height, scale);
             let (top, bottom) = (top.unwrap(), bottom.unwrap());
             for region in [top, bottom] {
                 assert!(region.width > 0 && region.height > 0, "{width}x{height}");
@@ -2948,7 +3038,7 @@ mod tests {
     #[test]
     fn the_top_overlay_keeps_its_point_size_unless_the_output_is_too_small() {
         let frame = lock_like_frame();
-        let [top, _] = overlay_regions(&frame, 1280, 800, 1);
+        let [top, _, _] = overlay_regions(&frame, 1280, 800, 1);
         assert_eq!(
             top.unwrap(),
             Region {
@@ -2958,13 +3048,13 @@ mod tests {
                 height: 294
             }
         );
-        let [top, bottom] = overlay_regions(&frame, 2560, 1600, 2);
+        let [top, bottom, _] = overlay_regions(&frame, 2560, 1600, 2);
         assert_eq!(
             (top.unwrap().y, top.unwrap().height, bottom.unwrap().y),
             (366, 588, 1076)
         );
         // Too narrow for the clock between the margins: it shrinks with its offset.
-        let [top, _] = overlay_regions(&frame, 480, 600, 1);
+        let [top, _, _] = overlay_regions(&frame, 480, 600, 1);
         let top = top.unwrap();
         assert_eq!(top.width, 384);
         assert!(top.y < 183);

@@ -24,6 +24,7 @@ pub(crate) enum Fixture {
     Securing,
     #[default]
     Prompt,
+    CapsLock,
     Challenge,
     Submitting,
     Failure,
@@ -220,10 +221,20 @@ fn presentation(settings: wallpaper::Settings, fixture: Fixture) -> Presentation
     };
     let (conversation, confirmed) = fixture.conversation();
     let mut renderer = render::Renderer::new();
+    if fixture == Fixture::CapsLock {
+        renderer.keyboard = genkan_session_lock::keyboard::KeyboardStatus {
+            caps_lock: true,
+            layout: Some("English (US)".into()),
+        };
+    }
     // The login preview's fixed time keeps both previews deterministic.
     let clock = renderer.clock(crate::app::preview::preview_now());
     let overlay = renderer.identity(&identity, &conversation, confirmed, 0);
-    render::frame(wallpaper, Some(clock), Some(overlay))
+    render::frame(wallpaper, Some(clock), Some(overlay), 0.0).with_status(
+        renderer
+            .status(None)
+            .and_then(|frame| genkan_session_lock::AnchoredOverlay::new(frame, 8)),
+    )
 }
 
 /// Renders the presentation as an authentication output `width`×`height`
@@ -275,7 +286,7 @@ impl Fixture {
     fn conversation(self) -> (Conversation, bool) {
         match self {
             Self::Securing => (Conversation::new(), false),
-            Self::Prompt => (
+            Self::Prompt | Self::CapsLock => (
                 Conversation::for_preview(
                     "preview".into(),
                     "Password".into(),
@@ -352,7 +363,7 @@ mod tests {
     #[test]
     fn oversized_dimension_pairs_return_an_error_instead_of_panicking() {
         let overlay = genkan_session_lock::RgbaFrame::new(1, 1, vec![0; 4].into()).unwrap();
-        let presentation = render::frame(None, None, Some(overlay));
+        let presentation = render::frame(None, None, Some(overlay), 0.0);
 
         assert!(matches!(
             render_frame(&presentation, 16_384, 16_384, 1),

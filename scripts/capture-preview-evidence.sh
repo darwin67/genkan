@@ -177,6 +177,8 @@ EOF
 capture account-selection 1280 800 users
 capture session-menu 1280 800 session-menu
 capture secret-prompt 1280 800 secret-prompt
+capture caps-lock 1280 800 caps-lock
+capture status-bar 1280 800 status-bar
 capture visible-prompt 1280 800 visible-prompt
 capture authentication-failure 1280 800 authentication-failure
 capture power-confirmation 1280 800 power-confirmation
@@ -191,6 +193,7 @@ capture narrow-long-authentication 480 600 long-authentication
 # Exact software-rendered lock states without acquiring a compositor lock.
 capture lock-securing 1280 800 securing lock
 capture lock-prompt 1280 800 prompt lock
+capture lock-caps-lock 1280 800 caps-lock lock
 capture lock-challenge 1280 800 challenge lock
 capture lock-submitting 1280 800 submitting lock
 capture lock-failure 1280 800 failure lock

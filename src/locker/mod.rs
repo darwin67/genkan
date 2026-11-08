@@ -83,6 +83,10 @@ struct LockerPresentation {
     frame: Option<PresentationFrame>,
     renderer: render::Renderer,
     instruction_page: usize,
+    reduced_motion: bool,
+    shake_started: Option<std::time::Instant>,
+    status_checked: std::time::Instant,
+    network: Option<&'static str>,
     #[cfg(feature = "lock-test")]
     fail_worker_after_ready: bool,
     #[cfg(feature = "lock-test")]
@@ -120,6 +124,7 @@ impl LockerPresentation {
     ) -> Self {
         let conversation = Conversation::new();
         let attempt = conversation.attempt();
+        let reduced_motion = wallpaper.reduced_motion;
         let mut presentation = Self {
             wallpaper: wallpaper::State::start(wallpaper),
             identity,
@@ -135,6 +140,10 @@ impl LockerPresentation {
             frame: None,
             renderer: render::Renderer::new(),
             instruction_page: 0,
+            reduced_motion,
+            shake_started: None,
+            status_checked: std::time::Instant::now(),
+            network: None,
             #[cfg(feature = "lock-test")]
             fail_worker_after_ready,
             #[cfg(feature = "lock-test")]
@@ -151,6 +160,7 @@ impl LockerPresentation {
     /// not depend on the overlays, and shaping them would only slow it down.
     #[cfg(test)]
     fn for_test(identity: identity::Identity, wallpaper: wallpaper::Settings) -> Self {
+        let reduced_motion = wallpaper.reduced_motion;
         Self {
             wallpaper: wallpaper::State::start(wallpaper),
             identity,
@@ -166,6 +176,10 @@ impl LockerPresentation {
             frame: None,
             renderer: render::Renderer::new(),
             instruction_page: 0,
+            reduced_motion,
+            shake_started: None,
+            status_checked: std::time::Instant::now(),
+            network: None,
             #[cfg(feature = "lock-test")]
             fail_worker_after_ready: false,
             #[cfg(feature = "lock-test")]
@@ -173,11 +187,12 @@ impl LockerPresentation {
         }
     }
 
-    fn receive_auth(&mut self) -> bool {
+    fn receive_auth(&mut self) -> (bool, bool) {
         if !self.confirmed {
-            return false;
+            return (false, false);
         }
         let mut changed = false;
+        let mut rejected = false;
         for _ in 0..MAX_AUTH_EVENTS_PER_REFRESH {
             let event = self
                 .auth
@@ -227,6 +242,7 @@ impl LockerPresentation {
                 }
                 auth::Event::Failure => {
                     self.prompt_id = None;
+                    rejected = true;
                     let _ = self
                         .conversation
                         .receive(attempt, Response::Failure("Authentication failed".into()));
@@ -238,7 +254,7 @@ impl LockerPresentation {
         if changed {
             self.instruction_page = 0;
         }
-        changed
+        (changed, rejected)
     }
 
     fn retry(&mut self) -> bool {
@@ -323,12 +339,20 @@ impl LockerPresentation {
     }
 
     fn rebuild_frame(&mut self) {
+        let status = self.renderer.status(self.network);
         self.frame = self.identity_overlay.clone().map(|identity| {
             render::frame(
                 self.background.clone(),
                 self.clock_overlay.clone(),
                 Some(identity),
+                self.renderer.shake,
             )
+            .with_status(status.and_then(|frame| {
+                genkan_session_lock::AnchoredOverlay::new(
+                    frame,
+                    crate::design::tokens::spacing::BAR_INSET_TOP as u32,
+                )
+            }))
         });
     }
 
@@ -343,7 +367,31 @@ impl LockerPresentation {
 
 impl Presentation for LockerPresentation {
     fn receive_latest(&mut self) -> Refresh {
-        let authentication = self.receive_auth();
+        let (mut authentication, rejected) = self.receive_auth();
+        if rejected {
+            self.shake_started = None;
+            self.renderer.shake = 0.0;
+        }
+        if let Some(started) = self.shake_started {
+            let elapsed = started.elapsed();
+            if elapsed >= crate::design::tokens::motion::SHAKE_DURATION {
+                self.shake_started = None;
+            }
+            // Runtime dispatch can happen faster than its 16ms frame cadence.
+            // Do not reshape the identity overlay on every keyboard event.
+            let elapsed = std::time::Duration::from_millis(elapsed.as_millis() as u64 / 16 * 16);
+            let offset = self
+                .shake_started
+                .map_or(0.0, |_| crate::app::shake_offset(elapsed));
+            authentication |= self.renderer.shake != offset;
+            self.renderer.shake = offset;
+        }
+        if self.status_checked.elapsed() >= std::time::Duration::from_secs(5) {
+            self.status_checked = std::time::Instant::now();
+            let network = crate::status::network();
+            authentication |= self.network != network;
+            self.network = network;
+        }
         if authentication {
             self.rebuild_overlay();
         }
@@ -351,6 +399,12 @@ impl Presentation for LockerPresentation {
             self.rebuild_frame();
         } else if !authentication {
             return Refresh::Unchanged;
+        }
+        // Cold failure text and clock rasterization can exceed the entire
+        // animation on a software renderer. Arm it only after preparing that
+        // first failed-state frame, not while its pixels are still being built.
+        if rejected && !self.reduced_motion {
+            self.shake_started = Some(std::time::Instant::now());
         }
         Refresh::Overlay
     }
@@ -392,10 +446,18 @@ impl Presentation for LockerPresentation {
     }
 
     fn input(&mut self, input: Input) -> bool {
-        if !authentication_input_enabled(self.confirmed) {
+        if !authentication_input_enabled(self.confirmed) && !matches!(input, Input::Keyboard(_)) {
             return false;
         }
         let changed = match input {
+            Input::Keyboard(status) => {
+                if self.renderer.keyboard == status {
+                    false
+                } else {
+                    self.renderer.keyboard = status;
+                    true
+                }
+            }
             Input::Text(text) => self.conversation.push_input(&text),
             Input::Backspace => self.conversation.pop_input(),
             Input::Submit if self.conversation.status() == Status::Failed => self.retry(),
@@ -732,6 +794,57 @@ mod tests {
     fn authentication_input_is_disabled_before_compositor_confirmation() {
         assert!(!authentication_input_enabled(false));
         assert!(authentication_input_enabled(true));
+    }
+
+    #[test]
+    fn metadata_and_shake_refreshes_never_authorize_unlock_and_stop_at_rest() {
+        let identity = identity::Identity {
+            uid: 1000,
+            username: "preview".into(),
+            display_name: "Preview User".into(),
+        };
+        let settings = wallpaper::Settings {
+            catalog: wallpaper::Catalog::TahoeBeach,
+            override_path: Some(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/dynamic-heic/synthetic-all-properties.heic"),
+            ),
+            animate: false,
+            reduced_motion: false,
+            appearance: genkan::dynamic_wallpaper::AppearancePreference::Automatic,
+        };
+        let mut presentation = LockerPresentation::for_test(identity, settings);
+        assert!(!presentation.input(Input::Text(zeroize::Zeroizing::new(
+            "not accepted before confirmation".into()
+        ))));
+        assert!(presentation.input(Input::Keyboard(
+            genkan_session_lock::keyboard::KeyboardStatus {
+                caps_lock: true,
+                layout: Some("French".into()),
+            }
+        )));
+        presentation.confirmed = true;
+        presentation.conversation = Conversation::for_preview(
+            String::new(),
+            "Password".into(),
+            None,
+            false,
+            true,
+            Status::Waiting,
+        );
+        presentation.rebuild();
+        let rest = presentation.frame();
+        presentation.shake_started =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(80));
+        assert_eq!(presentation.receive_latest(), Refresh::Overlay);
+        assert_ne!(presentation.frame(), rest);
+        assert!(!presentation.authorized);
+        presentation.shake_started =
+            Some(std::time::Instant::now() - crate::design::tokens::motion::SHAKE_DURATION);
+        assert_eq!(presentation.receive_latest(), Refresh::Overlay);
+        assert_eq!(presentation.frame(), rest);
+        assert_eq!(presentation.receive_latest(), Refresh::Unchanged);
+        assert!(!presentation.authorized);
     }
 
     #[test]

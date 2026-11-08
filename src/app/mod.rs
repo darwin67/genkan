@@ -4,6 +4,7 @@ mod focus;
 mod modal;
 pub(crate) mod preview;
 mod view;
+pub(crate) use view::shake_offset;
 
 use std::time::{Duration, Instant};
 
@@ -120,6 +121,8 @@ pub(crate) struct App {
     /// The keyboard or pointer highlight in whichever menu is open.
     menu_highlight: usize,
     shake: Option<Shake>,
+    keyboard: Option<genkan_session_lock::keyboard::KeyboardStatus>,
+    network: Option<&'static str>,
     reduced_motion: bool,
     wallpaper: wallpaper::State,
     /// A dynamic HEIC source that waits for the iced renderer backend.
@@ -141,6 +144,8 @@ pub(crate) struct App {
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Tick,
+    PollStatus,
+    KeyboardStatus(Option<genkan_session_lock::keyboard::KeyboardStatus>),
     WallpaperFrameReady,
     WallpaperAllocated(Result<iced_runtime::image::Allocation, iced_runtime::image::Error>),
     /// The selected iced renderer backend, used to decide whether a dynamic
@@ -244,6 +249,8 @@ impl App {
             power_menu_open: false,
             menu_highlight: 0,
             shake: None,
+            keyboard: None,
+            network: None,
             reduced_motion: config.wallpaper.reduced_motion,
             wallpaper: wallpaper::State::start_deferred(&config.wallpaper),
             pending_heic: wallpaper::selects_dynamic_heic(&config.wallpaper)
@@ -284,6 +291,11 @@ impl App {
     pub(crate) fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             time::every(self.tick_interval()).map(|_| Message::Tick),
+            if self.preview {
+                Subscription::none()
+            } else {
+                time::every(Duration::from_millis(500)).map(|_| Message::PollStatus)
+            },
             self.wallpaper
                 .subscription()
                 .map(|()| Message::WallpaperFrameReady),
@@ -372,6 +384,18 @@ impl App {
                 Task::none()
             }
             Message::Tick if self.preview => Task::none(),
+            Message::PollStatus => {
+                self.network = crate::status::network();
+                window::oldest().then(|id| {
+                    id.map_or_else(Task::none, |id| {
+                        window::run(id, crate::status::keyboard).map(Message::KeyboardStatus)
+                    })
+                })
+            }
+            Message::KeyboardStatus(status) => {
+                self.keyboard = status;
+                Task::none()
+            }
             Message::Tick => {
                 self.now = Local::now();
                 Task::none()
@@ -1065,6 +1089,8 @@ mod tests {
             power_menu_open: false,
             menu_highlight: 0,
             shake: None,
+            keyboard: None,
+            network: None,
             reduced_motion: false,
             wallpaper: wallpaper::State::disabled(),
             pending_heic: None,
