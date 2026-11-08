@@ -41,6 +41,11 @@ let
   ];
   niriConfigSource = pkgs.writeText "genkan-greeter-niri.kdl" ''
     ${outputConfig}
+    ${lib.optionalString (greeter.niri.renderDevice != null) ''
+      debug {
+          render-drm-device ${quote greeter.niri.renderDevice}
+      }
+    ''}
     binds {}
     hotkey-overlay { skip-at-startup; }
     screenshot-path null
@@ -134,6 +139,18 @@ in
           default = pkgs.niri;
           defaultText = lib.literalExpression "pkgs.niri";
           description = "niri used both to validate and run the greeter configuration.";
+        };
+        renderDevice = lib.mkOption {
+          type = lib.types.nullOr (lib.types.strMatching "/dev/dri/[^\"\\]+");
+          default = null;
+          example = "/dev/dri/by-path/pci-0000:c2:00.0-render";
+          description = ''
+            DRM render node niri renders with. On hybrid-GPU machines whose
+            displays are all wired to one GPU, set this to that GPU's render
+            node so the greeter does not render on the other GPU and copy every
+            frame across. This replaces wlroots' `WLR_DRM_DEVICES`, which niri
+            ignores.
+          '';
         };
         outputs = lib.mkOption {
           default = { };

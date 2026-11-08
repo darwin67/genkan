@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: published
+:state: committed
 :discussion: https://github.com/darwin67/genkan/pull/60
 :labels: visual-design, design-system, greeter, lock, accessibility
 

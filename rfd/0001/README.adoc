@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: published
+:state: committed
 :discussion: https://github.com/darwin67/genkan/pull/5
 :labels: greeter, authentication, interaction, visual-design, accessibility
 
@@ -341,4 +341,4 @@ link:IMPLEMENTATION.adoc[RFD 1 implementation checklist].
   The layout, sketches, material rules, power controls, and the rejected
   "reproduce Tahoe" alternative were updated, and the state returned from
   `committed` to `published` until the new presentation is implemented under
-  RFD 5.
+  RFD 5. It returned to `committed` once RFD 5 and RFD 6 were implemented.

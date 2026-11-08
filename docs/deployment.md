@@ -367,9 +367,11 @@ entry and portals. Genkan discovers `niri.desktop` like any other
 `wayland-sessions` entry, starts `niri-session`, and passes
 `XDG_SESSION_DESKTOP=niri` and `XDG_CURRENT_DESKTOP=niri`.
 
-The greeter does not read niri's `input` configuration, so set the greeter's
-keyboard layout and cursor on greetd when they differ from the defaults, for
-example:
+The niri greeter's configuration sets no `input` block, so niri takes the
+keyboard layout from `org.freedesktop.locale1`, which follows the system's
+`services.xserver.xkb` settings, and draws its default cursor. Under Cage, set
+the greeter's keyboard layout and cursor on greetd instead when they differ
+from the defaults, for example:
 
 ```nix
 systemd.services.greetd.environment = {
@@ -377,6 +379,15 @@ systemd.services.greetd.environment = {
   XCURSOR_THEME = "Adwaita";
   XCURSOR_SIZE = "24";
 };
+```
+
+On hybrid-GPU machines whose displays are all wired to one GPU, point the niri
+greeter at that GPU's render node so it does not render on the other GPU and
+copy every frame across. niri ignores wlroots' `WLR_DRM_DEVICES`, so a Cage-era
+setting on greetd has no effect:
+
+```nix
+programs.genkan.greeter.niri.renderDevice = "/dev/dri/by-path/pci-0000:c2:00.0-render";
 ```
 
 ### Desktop wallpaper
