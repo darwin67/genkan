@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+<defs>
+  <linearGradient id="g-pebble" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e3ecf1"/><stop offset="1" stop-color="#a7bac8"/></linearGradient>
+</defs>
+  <rect width="100" height="100" fill="url(#g-pebble)"/>
+  <ellipse cx="50" cy="86" rx="34" ry="5" fill="#93a6b5"/>
+  <ellipse cx="50" cy="73" rx="26" ry="11" fill="#6c7f90"/>
+  <ellipse cx="51" cy="57" rx="19" ry="8.5" fill="#8d9eae"/>
+  <ellipse cx="50" cy="44" rx="12" ry="6.5" fill="#bac6d1"/>
+</svg>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+<defs>
+  <linearGradient id="g-wave" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0b5fa8"/><stop offset="1" stop-color="#4fc0ea"/></linearGradient>
+</defs>
+  <rect width="100" height="100" fill="url(#g-wave)"/>
+  <path d="M0 58 C14 46 30 46 40 57 C50 68 63 66 71 54 C79 42 92 44 100 52 V100 H0Z" fill="#f4fbff"/>
+  <path d="M0 70 C20 62 35 68 49 75 C65 83 81 74 100 69 V100 H0Z" fill="#1f86c6"/>
+</svg>

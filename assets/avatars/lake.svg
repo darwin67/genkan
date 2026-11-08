@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+<defs>
+  <linearGradient id="g-lake-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f7fd0"/><stop offset="1" stop-color="#8cc8f4"/></linearGradient>
+  <linearGradient id="g-lake-water" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2bb3c4"/><stop offset="1" stop-color="#6fe0c8"/></linearGradient>
+</defs>
+  <rect width="100" height="100" fill="url(#g-lake-sky)"/>
+  <path d="M0 60 L16 46 L28 53 L44 36 L58 50 L70 41 L100 58 V100 H0Z" fill="#eef3f9"/>
+  <path d="M0 66 L18 54 L32 60 L47 49 L61 59 L76 52 L100 64 V100 H0Z" fill="#56739a"/>
+  <rect y="66" width="100" height="34" fill="url(#g-lake-water)"/>
+  <ellipse cx="32" cy="84" rx="15" ry="6.5" fill="#d3d9de"/><ellipse cx="68" cy="78" rx="8" ry="3.5" fill="#bfc8cf"/>
+</svg>

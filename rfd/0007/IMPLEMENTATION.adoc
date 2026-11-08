@@ -4,11 +4,12 @@ Implements link:README.adoc[RFD 7: Account pictures].
 
 == Phase 1: Built-in pictures
 
-* [ ] Add the twelve approved SVG sources to `assets/avatars/`.
-* [ ] Rasterize them to 512 by 512 PNGs with resvg in the Nix build and install
+* [x] Add the twelve approved SVG sources to `assets/avatars/`.
+* [x] Rasterize them to 512 by 512 PNGs with resvg in the Nix build and install
   sources and PNGs under `share/genkan/avatars/`.
-* [ ] Pin every source and output by SHA-256 in a manifest checked by the
-  build.
+* [x] Pin every source and output by SHA-256 in a manifest checked by the
+  build, and reject text, scripts, styles and external references in the
+  sources (`scripts/check-avatars.py`).
 
 == Phase 2: Sandboxed decoder
 

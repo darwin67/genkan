@@ -557,6 +557,62 @@ expect_wallpaper_manifest_failure() {
     env WALLPAPER_MANIFEST="$fixture" "$repo_root/scripts/check-wallpaper-manifest.py"
 }
 
+expect_avatar_failure() {
+  local fixture=$1 expected=$2
+  expect_failure "$expected" "$repo_root/scripts/check-avatars.py" "$fixture"
+}
+
+test_avatar_check_rejects_unsafe_sources() {
+  "$repo_root/scripts/check-avatars.py" > /dev/null
+
+  local fixture="$tmp_dir/avatars"
+  reset_avatar_fixture() {
+    rm -rf "$fixture"
+    cp -r "$repo_root/assets/avatars" "$fixture"
+    chmod -R u+w "$fixture"
+  }
+  # Rewrites lake.svg and records its new hash, so only the rule under test
+  # can fail.
+  edit_lake() {
+    sed -i "$1" "$fixture/lake.svg"
+    local digest
+    digest=$(sha256sum "$fixture/lake.svg" | cut -d' ' -f1)
+    sed -i "/^name = \"lake\"$/,/^svg_sha256/ s/^svg_sha256 = .*/svg_sha256 = \"$digest\"/" \
+      "$fixture/manifest.toml"
+  }
+
+  reset_avatar_fixture
+  "$repo_root/scripts/check-avatars.py" "$fixture" > /dev/null ||
+    fail "a copy of the avatar set must pass"
+
+  edit_lake 's|</svg>|<text x="1" y="1">x</text></svg>|'
+  expect_avatar_failure "$fixture" "element <text> is not allowed"
+
+  reset_avatar_fixture
+  edit_lake 's|fill="#eef3f9"|fill="url(https://example.com/x)"|'
+  expect_avatar_failure "$fixture" "may only reference a local gradient"
+
+  reset_avatar_fixture
+  edit_lake 's|fill="#eef3f9"|style="fill:red"|'
+  expect_avatar_failure "$fixture" "attribute style on <path> is not allowed"
+
+  reset_avatar_fixture
+  edit_lake 's|fill="url(#g-lake-sky)"|fill="url(#missing)"|'
+  expect_avatar_failure "$fixture" "undefined gradients"
+
+  reset_avatar_fixture
+  sed -i 's|#eef3f9|#eef3fa|' "$fixture/lake.svg"
+  expect_avatar_failure "$fixture" "svg_sha256 does not match lake.svg"
+
+  reset_avatar_fixture
+  rm "$fixture/moon.svg"
+  expect_avatar_failure "$fixture" "missing moon.svg"
+
+  reset_avatar_fixture
+  cp "$fixture/lake.svg" "$fixture/extra.svg"
+  expect_avatar_failure "$fixture" "unlisted files"
+}
+
 test_wallpaper_manifest_accepts_the_catalog() {
   "$repo_root/scripts/check-wallpaper-manifest.py" > /dev/null
 
@@ -1101,6 +1157,7 @@ test_representative_selection_placement_and_cleanup
 test_no_tracked_nix_result_links
 test_ci_watches_all_scripts
 test_ci_watches_the_wallpaper_catalog
+test_avatar_check_rejects_unsafe_sources
 test_ci_scopes_cargo_caches_to_the_flake_lock
 test_ci_serializes_software_graphics_checks
 test_ci_runs_geoclue_solar_vm
