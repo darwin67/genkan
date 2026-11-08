@@ -45,7 +45,7 @@ pub(crate) fn scaled_label<'a>(
         .wrapping(Wrapping::None)
 }
 
-/// Wallpaper text has a small dark outline; it never dims the wallpaper.
+/// Wallpaper text sits on a soft shadow; it never dims the wallpaper.
 /// Both layers shape and wrap identically, including long PAM notices.
 pub(crate) fn wallpaper_label<'a, M: 'a>(
     content: impl Into<String>,
@@ -55,7 +55,7 @@ pub(crate) fn wallpaper_label<'a, M: 'a>(
     wrapping: Wrapping,
 ) -> iced::Element<'a, M> {
     let content = content.into();
-    iced::Element::new(OutlinedLabel {
+    iced::Element::new(ShadowedLabel {
         shadow: scaled_label(
             content.clone(),
             style,
@@ -72,12 +72,12 @@ pub(crate) fn wallpaper_label<'a, M: 'a>(
     })
 }
 
-struct OutlinedLabel<'a, M> {
+struct ShadowedLabel<'a, M> {
     foreground: iced::Element<'a, M>,
     shadow: iced::Element<'a, M>,
 }
 
-impl<M> iced::advanced::Widget<M, iced::Theme, iced::Renderer> for OutlinedLabel<'_, M> {
+impl<M> iced::advanced::Widget<M, iced::Theme, iced::Renderer> for ShadowedLabel<'_, M> {
     fn children(&self) -> Vec<iced::advanced::widget::Tree> {
         vec![
             iced::advanced::widget::Tree::new(&self.foreground),
@@ -122,7 +122,7 @@ impl<M> iced::advanced::Widget<M, iced::Theme, iced::Renderer> for OutlinedLabel
         let shadow = children.next().expect("shadow layout");
         // These are ordinary renderer translations, not Float overlays:
         // shadow first, foreground last, and all below menus and alerts.
-        for (x, y) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+        for (x, y) in super::tokens::component::TEXT_SHADOW_TAPS {
             renderer.with_translation(iced::Vector::new(x, y), |renderer| {
                 self.shadow.as_widget().draw(
                     &tree.children[1],

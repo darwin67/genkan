@@ -424,23 +424,15 @@ mod tests {
         }
     }
 
+    /// Wallpaper text has a soft shadow, never an outline: every tap is faint
+    /// and falls on or below the glyphs. Over the brightest parts of a
+    /// photograph, such as snow, this does not guarantee WCAG contrast; the
+    /// generated background keeps its contrast-tested treatment.
     #[test]
-    fn wallpaper_text_with_its_outline_meets_contrast_over_packaged_posters() {
-        for poster in posters() {
-            for pixel in poster.pixels().step_by(997) {
-                let background = Color::from_rgb8(pixel[0], pixel[1], pixel[2]);
-                for space in [BlendSpace::LinearSrgb, BlendSpace::EncodedSrgb] {
-                    let outlined = composite(color(palette::TEXT_SHADOW), background, space);
-                    for (role, token) in [
-                        ("name and status", palette::TEXT_PRIMARY),
-                        ("date", palette::TEXT_DATE),
-                        ("clock", palette::CLOCK_GLASS),
-                        ("secondary name", palette::TEXT_SECONDARY),
-                    ] {
-                        assert_text(color(token), outlined, space, role);
-                    }
-                }
-            }
+    fn wallpaper_text_shadow_is_soft_and_falls_below_the_text() {
+        const { assert!(palette::TEXT_SHADOW.alpha <= 0.1) };
+        for (x, y) in crate::design::tokens::component::TEXT_SHADOW_TAPS {
+            assert!(x.abs() <= 1.0 && (0.0..=2.0).contains(&y), "tap ({x}, {y})");
         }
     }
 

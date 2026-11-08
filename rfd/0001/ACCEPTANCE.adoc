@@ -135,7 +135,7 @@ The November 2026 shared-design refresh adds wallpaper-sampled rounded material,
 Caps Lock fixtures, and synthetic layout/link metadata to the durable captures.
 Live metadata is compositor-derived XKB state and sysfs link state, not Internet
 reachability. Unknown or conflicting keyboard metadata and unknown link state
-are omitted. Numeric acceptance includes the actual filtered material and
-outlined wallpaper text; screenshots alone do not establish contrast or
+are omitted. Numeric acceptance includes the actual filtered material; wallpaper
+text uses a soft shadow and is checked visually over photographs. Screenshots alone do not establish contrast or
 authentication correctness. Lock rejection motion is separately covered by
 the presentation tests, including reduced motion and the final idle frame.

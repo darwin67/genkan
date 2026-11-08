@@ -222,9 +222,12 @@ clock, closer to the macOS lock-screen clock, is a separate open question.
 == Verification
 
 * The existing WCAG contrast tests in `src/theme.rs` move to the design module
-  and are written against color roles. Text over the undimmed wallpaper is
-  checked with its text shadow against samples of the packaged posters, not
-  only the generated background.
+  and are written against color roles. Text over the generated background
+  is contrast-checked. Amended 2026-11-08: wallpaper text uses a soft shadow
+  below the glyphs, as in the component mocks, instead of a hard one-point
+  outline. A soft shadow cannot guarantee WCAG contrast over bright
+  photographic regions such as snow, so legibility over the packaged posters
+  is a visual check, and a test keeps the shadow faint and below the text.
 * A unit test fails when `src/design/tokens.rs` and
   `docs/design-system/tokens.json` disagree.
 * A repository check, run by `make verify`, rejects numeric literals in iced
