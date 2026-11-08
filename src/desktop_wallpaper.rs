@@ -14,6 +14,10 @@ use genkan::dynamic_wallpaper::solar;
 use genkan::dynamic_wallpaper::{
     AppearancePreference, CivilDate, ClockSnapshot, ImageReference, Location, Metadata, TimePoint,
 };
+use genkan_session_lock::scaling::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1, wp_viewport, wp_viewporter, Scaling,
+    SurfaceScale,
+};
 
 use crate::geoclue::{self, GeoClueError, GeoLocation};
 use crate::wallpaper::{suspend_clock_offset, SuspendDetector};
@@ -37,7 +41,7 @@ use smithay_client_toolkit::shm::{
 use thiserror::Error;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_callback, wl_output, wl_region, wl_shm, wl_surface};
-use wayland_client::{Connection, Proxy, QueueHandle};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 
 const BUFFER_COUNT: usize = 2;
 const MAX_BUFFER_BYTES: usize = 256 * 1024 * 1024;
@@ -389,10 +393,10 @@ fn buffer_decision(released: &[bool], count: usize) -> BufferDecision {
 }
 
 pub struct Config {
-    pub file: PathBuf,
-    pub appearance: AppearancePreference,
-    pub reduced_motion: bool,
+    pub file: Option<PathBuf>,
+    pub wallpaper: crate::wallpaper::Settings,
     pub solar: bool,
+    pub skip_output: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -640,7 +644,7 @@ struct Surface {
     layer: LayerSurface,
     configure_hints: Option<(u32, u32)>,
     size: Option<(u32, u32)>,
-    scale: i32,
+    scale: SurfaceScale,
     geometry_generation: u64,
     buffers: Vec<SurfaceBuffer>,
     presentation: PresentationState,
@@ -666,13 +670,20 @@ impl Drop for Surface {
 
 struct Runtime {
     compositor: CompositorState,
+    scaling: Scaling,
     layer_shell: LayerShell,
     output_state: OutputState,
+    output_names: genkan_output_selection::names::OutputNames,
     registry_state: RegistryState,
     shm: Shm,
     surfaces: Vec<Surface>,
     scheduler: Option<Scheduler>,
     decoder: Option<Decoder>,
+    media: crate::wallpaper::State,
+    media_started: bool,
+    media_settings: crate::wallpaper::Settings,
+    file: Option<PathBuf>,
+    skip_output: Option<String>,
     appearance: AppearancePreference,
     reduced_motion: bool,
     started_at: Instant,
@@ -706,15 +717,26 @@ pub fn run(config: Config) -> Result<(), Error> {
         .map_err(|error| Error::MissingProtocol(format!("wl_shm ({error})")))?;
     let mut runtime = Runtime {
         compositor,
+        scaling: Scaling::bind(&globals, &qh),
         layer_shell,
         output_state: OutputState::new(&globals, &qh),
+        output_names: genkan_output_selection::names::OutputNames::new(
+            &conn,
+            &globals,
+            config.skip_output.is_some(),
+        ),
         registry_state: RegistryState::new(&globals),
         shm,
         surfaces: Vec::new(),
         scheduler: None,
         decoder: None,
-        appearance: config.appearance,
-        reduced_motion: config.reduced_motion,
+        appearance: config.wallpaper.appearance,
+        reduced_motion: config.wallpaper.reduced_motion,
+        media: crate::wallpaper::State::disabled(),
+        media_started: false,
+        media_settings: config.wallpaper,
+        file: config.file,
+        skip_output: config.skip_output,
         started_at: Instant::now(),
         suspend_detector: SuspendDetector::new(suspend_clock_offset()),
         check_clock: false,
@@ -735,11 +757,11 @@ pub fn run(config: Config) -> Result<(), Error> {
     if !runtime.shm.formats().contains(&wl_shm::Format::Argb8888) {
         return Err(Error::MissingProtocol("wl_shm ARGB8888 format".into()));
     }
+    runtime.output_names.update();
     let outputs = runtime.output_state.outputs().collect::<Vec<_>>();
     for output in outputs {
         runtime.add_surface(output, &qh);
     }
-    runtime.decoder = Some(Decoder::spawn(config.file)?);
     let mut event_loop: EventLoop<'static, Runtime> =
         EventLoop::try_new().map_err(|error| Error::Runtime(error.to_string()))?;
     WaylandSource::new(conn, event_queue)
@@ -780,6 +802,16 @@ pub fn run(config: Config) -> Result<(), Error> {
 
 impl Runtime {
     fn add_surface(&mut self, output: wl_output::WlOutput, qh: &QueueHandle<Self>) {
+        let skip = self.output_names.resolve(self.skip_output.as_deref());
+        if skip.as_ref().is_some_and(|skip| {
+            self.output_state
+                .info(&output)
+                .and_then(|info| info.name)
+                .is_some_and(|name| name.eq_ignore_ascii_case(skip))
+        }) {
+            self.surfaces.retain(|surface| surface.output != output);
+            return;
+        }
         if let Some(index) = self
             .surfaces
             .iter()
@@ -789,6 +821,7 @@ impl Runtime {
             return;
         }
         let wl_surface = self.compositor.create_surface(qh);
+        let scale = self.scaling.create(&wl_surface, qh);
         let layer = self.layer_shell.create_layer_surface(
             qh,
             wl_surface,
@@ -809,7 +842,7 @@ impl Runtime {
             layer,
             configure_hints: None,
             size: None,
-            scale: 1,
+            scale,
             geometry_generation: 0,
             buffers: Vec::with_capacity(BUFFER_COUNT),
             presentation: PresentationState::new(),
@@ -844,26 +877,50 @@ impl Runtime {
     }
 
     fn maintain(&mut self, qh: &QueueHandle<Self>) -> Result<(), Error> {
+        if self.output_names.update() {
+            for output in self.output_state.outputs().collect::<Vec<_>>() {
+                self.add_surface(output, qh);
+            }
+        }
+        // In a single-output greeter the only output can be skipped. Do not
+        // initialize a decoder (or keep one alive after unplug) for no surfaces.
+        if self.surfaces.is_empty() {
+            if self.media_started {
+                self.media = crate::wallpaper::State::disabled();
+                self.decoder = None;
+                self.scheduler = None;
+                self.media_started = false;
+            }
+            return Ok(());
+        }
+        if !self.media_started {
+            self.media = crate::wallpaper::State::start(self.media_settings.clone());
+            self.decoder = self.file.clone().map(Decoder::spawn).transpose()?;
+            self.media_started = true;
+        }
+        if self.media.receive_latest() != crate::wallpaper::Refresh::Unchanged {
+            self.redraw_all();
+        }
         if std::mem::take(&mut self.check_clock) {
             let discontinuity = self.suspend_detector.sample();
             self.synchronize_now(discontinuity)?;
         } else {
             self.synchronize_due()?;
         }
-        if let Some(result) = self
+        let decoded = self
             .decoder
             .as_mut()
-            .expect("decoder is installed before event dispatch")
-            .receive()?
-        {
+            .map(Decoder::receive)
+            .transpose()?
+            .flatten();
+        if let Some(result) = decoded {
             match result {
                 WorkerResult::Initialized { metadata, primary } => {
                     let clock = current_clock()?;
                     let monotonic = self.started_at.elapsed();
-                    // Location is never known before initialization because
-                    // the GeoClue worker only starts once a solar schedule is
-                    // available and the first frame is on screen. A later fix
-                    // is adopted through `install_solar_mapping`.
+                    // First initialization has no location yet. A replacement
+                    // after unplug must reapply the retained location even on
+                    // the same day: its new playback has no solar mapping.
                     let playback = Playback::new(
                         &metadata,
                         primary,
@@ -874,6 +931,7 @@ impl Runtime {
                     );
                     self.metadata = Some(metadata);
                     self.scheduler = Some(Scheduler::new(playback, clock, monotonic));
+                    self.install_solar_mapping()?;
                     self.dispatch_decode()?;
                 }
                 WorkerResult::InitializationFailed => {
@@ -1011,10 +1069,9 @@ impl Runtime {
     }
 
     fn dispatch_decode(&mut self) -> Result<(), Error> {
-        let decoder = self
-            .decoder
-            .as_mut()
-            .expect("decoder is installed before event dispatch");
+        let Some(decoder) = self.decoder.as_mut() else {
+            return Ok(());
+        };
         if decoder.in_flight {
             return Ok(());
         }
@@ -1044,7 +1101,13 @@ impl Runtime {
             .as_ref()
             .and_then(|scheduler| scheduler.next_synchronize)
             .map(|deadline| deadline.saturating_sub(self.started_at.elapsed()));
-        worker.into_iter().chain(solar).chain(synchronization).min()
+        let media = (!self.media.decoder_is_stopped()).then_some(WORKER_POLL_INTERVAL);
+        worker
+            .into_iter()
+            .chain(solar)
+            .chain(synchronization)
+            .chain(media)
+            .min()
     }
 
     fn frame_available(&self) -> bool {
@@ -1194,19 +1257,30 @@ impl Runtime {
     }
 
     fn render(&mut self, index: usize, qh: &QueueHandle<Self>) -> Result<(), String> {
+        let media = self.media.rgba_frame();
         let frame = self
             .scheduler
             .as_ref()
-            .and_then(|scheduler| scheduler.playback.frame());
+            .and_then(|scheduler| scheduler.playback.frame())
+            .map(|frame| (frame.width, frame.height, frame.pixels.as_slice()))
+            .or_else(|| {
+                media.as_ref().map(|frame| {
+                    let (width, height) = frame.dimensions();
+                    (width, height, frame.pixels())
+                })
+            });
         let surface = &mut self.surfaces[index];
         let (width, height) = surface
             .size
             .ok_or_else(|| "attempted to render an unconfigured surface".to_owned())?;
-        let geometry = buffer_geometry((width, height), surface.scale).map_err(str::to_owned)?;
+        let pixels = surface
+            .scale
+            .buffer_size((width, height))
+            .ok_or_else(|| "wallpaper scale dimensions overflow".to_owned())?;
+        let geometry = buffer_geometry(pixels, 1).map_err(str::to_owned)?;
         let buffer_width = geometry.width;
         let buffer_height = geometry.height;
         let bytes = geometry.bytes;
-        let scale = surface.scale.max(1) as u32;
         let size = (buffer_width, buffer_height);
         surface.buffers.retain_mut(|buffer| {
             (buffer.size == size && buffer.generation == surface.geometry_generation)
@@ -1262,7 +1336,7 @@ impl Runtime {
         opaque.add(0, 0, width as i32, height as i32);
         wl_surface.set_opaque_region(Some(&opaque));
         opaque.destroy();
-        wl_surface.set_buffer_scale(scale as i32);
+        surface.scale.apply(wl_surface, (width, height));
         wl_surface.set_buffer_transform(wl_output::Transform::Normal);
         wl_surface.damage_buffer(0, 0, buffer_width as i32, buffer_height as i32);
         let transitioning = self
@@ -1324,9 +1398,7 @@ impl CompositorHandler for Runtime {
             .iter_mut()
             .find(|surface| surface.layer.wl_surface() == wl_surface)
         {
-            let scale = scale.max(1);
-            if surface.scale != scale {
-                surface.scale = scale;
+            if surface.scale.set_integer(scale) {
                 surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
                 surface.presentation.geometry_changed();
                 surface.last_error = None;
@@ -1397,19 +1469,19 @@ impl OutputHandler for Runtime {
     fn new_output(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
     ) {
-        self.add_surface(output, qh);
+        self.output_names.invalidate();
     }
 
     fn update_output(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
     ) {
-        self.add_surface(output, qh);
+        self.output_names.invalidate();
     }
 
     fn output_destroyed(
@@ -1418,6 +1490,7 @@ impl OutputHandler for Runtime {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        self.output_names.invalidate();
         self.surfaces.retain(|surface| surface.output != output);
     }
 }
@@ -1428,6 +1501,38 @@ impl ShmHandler for Runtime {
     }
 }
 
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, wl_surface::WlSurface> for Runtime {
+    fn event(
+        state: &mut Self,
+        _: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        surface: &wl_surface::WlSurface,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            if scale == 0 {
+                state.failure = Some(Error::Runtime("invalid fractional output scale".into()));
+                return;
+            }
+            if let Some(surface) = state
+                .surfaces
+                .iter_mut()
+                .find(|item| item.layer.wl_surface() == surface)
+            {
+                if surface.scale.set_preferred(scale) {
+                    surface.geometry_generation = surface.geometry_generation.wrapping_add(1);
+                    surface.presentation.geometry_changed();
+                    surface.last_error = None;
+                }
+            }
+        }
+    }
+}
+
+wayland_client::delegate_noop!(Runtime: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+wayland_client::delegate_noop!(Runtime: ignore wp_viewporter::WpViewporter);
+wayland_client::delegate_noop!(Runtime: ignore wp_viewport::WpViewport);
 smithay_client_toolkit::delegate_compositor!(Runtime);
 smithay_client_toolkit::delegate_layer!(Runtime);
 smithay_client_toolkit::delegate_output!(Runtime);
@@ -1487,40 +1592,40 @@ fn map_solar(
     solar::map_schedule(schedule, location, clock).ok()
 }
 
-fn render_cover_argb(target: &mut [u8], width: u32, height: u32, frame: Option<&RgbaFrame>) {
-    let Some(frame) = frame else {
+fn render_cover_argb(target: &mut [u8], width: u32, height: u32, frame: Option<(u32, u32, &[u8])>) {
+    let Some((frame_width, frame_height, pixels)) = frame else {
         for pixel in target.chunks_exact_mut(4) {
             pixel.copy_from_slice(&[FALLBACK_RGB[2], FALLBACK_RGB[1], FALLBACK_RGB[0], 255]);
         }
         return;
     };
     let source_wider =
-        u128::from(frame.width) * u128::from(height) > u128::from(width) * u128::from(frame.height);
+        u128::from(frame_width) * u128::from(height) > u128::from(width) * u128::from(frame_height);
     let (scaled_width, scaled_height) = if source_wider {
         (
-            u128::from(frame.width) * u128::from(height) / u128::from(frame.height),
+            u128::from(frame_width) * u128::from(height) / u128::from(frame_height),
             u128::from(height),
         )
     } else {
         (
             u128::from(width),
-            u128::from(frame.height) * u128::from(width) / u128::from(frame.width),
+            u128::from(frame_height) * u128::from(width) / u128::from(frame_width),
         )
     };
     let crop_x = scaled_width.saturating_sub(u128::from(width)) / 2;
     let crop_y = scaled_height.saturating_sub(u128::from(height)) / 2;
     for y in 0..height {
-        let source_y = (((u128::from(y) + crop_y) * u128::from(frame.height) / scaled_height)
-            .min(u128::from(frame.height - 1))) as usize;
+        let source_y = (((u128::from(y) + crop_y) * u128::from(frame_height) / scaled_height)
+            .min(u128::from(frame_height - 1))) as usize;
         for x in 0..width {
-            let source_x = (((u128::from(x) + crop_x) * u128::from(frame.width) / scaled_width)
-                .min(u128::from(frame.width - 1))) as usize;
-            let source = (source_y * frame.width as usize + source_x) * 4;
+            let source_x = (((u128::from(x) + crop_x) * u128::from(frame_width) / scaled_width)
+                .min(u128::from(frame_width - 1))) as usize;
+            let source = (source_y * frame_width as usize + source_x) * 4;
             let target_offset = (y as usize * width as usize + x as usize) * 4;
             target[target_offset..target_offset + 4].copy_from_slice(&[
-                frame.pixels[source + 2],
-                frame.pixels[source + 1],
-                frame.pixels[source],
+                pixels[source + 2],
+                pixels[source + 1],
+                pixels[source],
                 255,
             ]);
         }
@@ -1987,7 +2092,12 @@ mod tests {
             .concat(),
         };
         let mut target = vec![0; 2 * 2 * 4];
-        render_cover_argb(&mut target, 2, 2, Some(&frame));
+        render_cover_argb(
+            &mut target,
+            2,
+            2,
+            Some((frame.width, frame.height, &frame.pixels)),
+        );
         assert_eq!(&target[..4], &[0, 255, 0, 255]);
         assert_eq!(&target[4..8], &[255, 0, 0, 255]);
 
@@ -1996,7 +2106,12 @@ mod tests {
             height: 4,
             pixels: frame.pixels.clone(),
         };
-        render_cover_argb(&mut target, 2, 2, Some(&tall));
+        render_cover_argb(
+            &mut target,
+            2,
+            2,
+            Some((tall.width, tall.height, &tall.pixels)),
+        );
         assert_eq!(&target[..4], &[0, 255, 0, 255]);
         assert_eq!(&target[8..12], &[255, 0, 0, 255]);
     }

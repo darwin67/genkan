@@ -76,7 +76,9 @@ impl Monitor {
     pub(crate) fn connect(requested: Option<String>) -> Result<Self, Box<dyn std::error::Error>> {
         let (connection, mut queue, mut state) = connect()?;
         queue.roundtrip(&mut state)?;
-        let region = select_region(&state.outputs(), requested.as_deref());
+        state.names.update();
+        let resolved = state.names.resolve(requested.as_deref());
+        let region = select_region(&state.outputs(), resolved.as_deref());
         eprintln!("genkan login: selected authentication region {region:?}");
         let shared = Arc::new(Shared {
             region: Mutex::new(region),
@@ -162,6 +164,7 @@ fn connect() -> Result<
     let state = Discovery {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &handle),
+        names: genkan_output_selection::names::OutputNames::new(&connection, &globals, true),
         changed: false,
     };
     Ok((connection, queue, state))
@@ -201,9 +204,11 @@ fn monitor_outputs(
         if queue.dispatch_pending(state).is_err() {
             return;
         }
+        state.changed |= state.names.update();
         if state.changed {
             state.changed = false;
-            publish_region(&state.outputs(), requested, shared, signal);
+            let resolved = state.names.resolve(requested);
+            publish_region(&state.outputs(), resolved.as_deref(), shared, signal);
         }
         let flush_pending = match queue.flush() {
             Ok(()) => false,
@@ -314,6 +319,7 @@ fn select_region(outputs: &[Output], requested: Option<&str>) -> Option<Region> 
 struct Discovery {
     registry_state: RegistryState,
     output_state: OutputState,
+    names: genkan_output_selection::names::OutputNames,
     changed: bool,
 }
 
@@ -323,12 +329,15 @@ impl OutputHandler for Discovery {
     }
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.names.invalidate();
         self.changed = true;
     }
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.names.invalidate();
         self.changed = true;
     }
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.names.invalidate();
         self.changed = true;
     }
 }

@@ -7,43 +7,45 @@ every phase.
 
 == Phase 1: Answer the open questions
 
-* [ ] Record niri's behavior when the configuration fails to parse at startup
+Evidence and decisions: link:INVESTIGATION.adoc[niri 26.04 investigation].
+
+* [x] Record niri's behavior when the configuration fails to parse at startup
   and during a live reload.
-* [ ] Confirm that `open-on-output` accepts make, model, and serial names in the
+* [x] Confirm that `open-on-output` accepts make, model, and serial names in the
   pinned niri release, and record the fallback when the output is absent.
-* [ ] Choose between the `niri-ipc` crate and a raw JSON quit request.
-* [ ] Measure greeter startup time under niri and under Cage on the same host.
+* [x] Choose between the `niri-ipc` crate and a raw JSON quit request.
+* [x] Measure greeter startup time under niri and under Cage on the same host.
 
 == Phase 2: Placement mode
 
-* [ ] Add a `--placement` option to `genkan login` with `spanning` (default) and
+* [x] Add a `--placement` option to `genkan login` with `spanning` (default) and
   `compositor` modes.
-* [ ] In `compositor` mode, make the whole window the authentication region and
+* [x] In `compositor` mode, make the whole window the authentication region and
   skip `src/outputs.rs` region selection.
-* [ ] Set a stable application ID for the login window.
-* [ ] Test both modes in the deterministic preview harness.
+* [x] Set a stable application ID for the login window.
+* [x] Test both modes in the deterministic preview harness.
 
 == Phase 3: Background client for the greeter
 
-* [ ] Extend `genkan wallpaper` to show MOV catalog entries, their posters under
+* [x] Extend `genkan wallpaper` to show MOV catalog entries, their posters under
   reduced motion, and HEIC overrides, selected by the same arguments as login.
-* [ ] Add an output to skip.
-* [ ] Add `wp_fractional_scale_v1` and `wp_viewporter` support with an integer
+* [x] Add an output to skip.
+* [x] Add `wp_fractional_scale_v1` and `wp_viewporter` support with an integer
   fallback.
 
 == Phase 4: Supervisor
 
-* [ ] Add `genkan greeter-session`, which starts the wallpaper and login
+* [x] Add `genkan greeter-session`, which starts the wallpaper and login
   children without a shell, waits for login to exit, stops the wallpaper, and
   quits niri through its IPC socket.
-* [ ] Quit niri on every login exit path, including a crash and a signal.
-* [ ] Never start a desktop session from the supervisor.
+* [x] Quit niri on every login exit path, including a crash and a signal.
+* [x] Never start a desktop session from the supervisor.
 
 == Phase 5: Output naming and lock scaling
 
-* [ ] Accept make, model, and serial names in `--authentication-output` for
+* [x] Accept make, model, and serial names in `--authentication-output` for
   login and lock.
-* [ ] Add `wp_fractional_scale_v1` and `wp_viewporter` support to the session
+* [x] Add `wp_fractional_scale_v1` and `wp_viewporter` support to the session
   lock with an integer fallback.
 
 == Phase 6: NixOS module and documentation

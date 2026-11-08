@@ -5,6 +5,7 @@ mod conversation;
 mod design;
 mod desktop_wallpaper;
 mod geoclue;
+mod greeter_session;
 mod locker;
 mod outputs;
 mod power;
@@ -34,8 +35,10 @@ enum Command {
     Login(LoginArguments),
     /// Securely cover and lock the current Wayland session.
     Lock(LockArguments),
-    /// Display a dynamic HEIC wallpaper on a supported Wayland desktop.
+    /// Display a login or dynamic HEIC wallpaper on a Wayland desktop.
     Wallpaper(WallpaperArguments),
+    /// Supervise the login clients and end the niri greeter when login exits.
+    GreeterSession(greeter_session::Arguments),
     /// Parse and decode a dynamic HEIC in a resource-bounded child process.
     #[command(hide = true)]
     HeicWorker(HeicWorkerArguments),
@@ -81,9 +84,18 @@ struct HeicWorkerArguments {
 
 #[derive(Debug, Args)]
 struct WallpaperArguments {
-    /// Absolute local dynamic HEIC file.
-    #[arg(long, value_parser = parse_heic_wallpaper_file)]
-    file: PathBuf,
+    /// Absolute local dynamic HEIC file (desktop solar scheduling is opt-in).
+    #[arg(long, value_parser = parse_heic_wallpaper_file, conflicts_with_all = ["wallpaper", "wallpaper_file"])]
+    file: Option<PathBuf>,
+    /// Select the same packaged wallpaper as login.
+    #[arg(long, value_enum, default_value = "tahoe-beach")]
+    wallpaper: wallpaper::Catalog,
+    /// Replace the catalog entry with an absolute local MOV or HEIC file.
+    #[arg(long, value_parser = parse_wallpaper_file)]
+    wallpaper_file: Option<PathBuf>,
+    /// Do not create a background surface on this output.
+    #[arg(long, value_parser = parse_output_name)]
+    skip_output: Option<String>,
     /// Disable dissolves while retaining time-of-day frame changes.
     #[arg(long)]
     reduce_motion: bool,
@@ -91,7 +103,7 @@ struct WallpaperArguments {
     #[arg(long, value_enum, default_value = "automatic")]
     appearance: WallpaperAppearance,
     /// Opt into GeoClue-backed solar scheduling when the file provides it.
-    #[arg(long)]
+    #[arg(long, requires = "file")]
     solar: bool,
 }
 
@@ -101,6 +113,13 @@ enum WallpaperAppearance {
     Automatic,
     Light,
     Dark,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum Placement {
+    #[default]
+    Spanning,
+    Compositor,
 }
 
 #[derive(Debug, Args)]
@@ -116,6 +135,9 @@ struct LoginArguments {
     display_name: Option<String>,
     #[arg(long)]
     windowed: bool,
+    /// Let the compositor select the output and use the whole window for authentication.
+    #[arg(long, value_enum, default_value = "spanning")]
+    placement: Placement,
     #[arg(
         long,
         value_enum,
@@ -334,6 +356,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Login(arguments) => run_login(arguments)?,
         Command::Lock(arguments) => run_lock(arguments)?,
         Command::Wallpaper(arguments) => run_wallpaper(arguments)?,
+        Command::GreeterSession(arguments) => greeter_session::run(arguments)?,
         Command::HeicWorker(arguments) => wallpaper::run_heic_worker(
             &arguments.file,
             appearance_preference(arguments.appearance),
@@ -390,11 +413,19 @@ fn appearance_preference(
 
 fn run_wallpaper(arguments: WallpaperArguments) -> Result<(), Box<dyn std::error::Error>> {
     let appearance = appearance_preference(arguments.appearance);
+    let file = arguments.file.or(arguments.wallpaper_file);
+    let is_heic = file.as_deref().is_some_and(wallpaper::is_heic_path);
     desktop_wallpaper::run(desktop_wallpaper::Config {
-        file: arguments.file,
-        appearance,
-        reduced_motion: arguments.reduce_motion,
+        file: file.clone().filter(|_| is_heic),
+        wallpaper: wallpaper::Settings {
+            catalog: arguments.wallpaper,
+            override_path: file.filter(|_| !is_heic),
+            animate: !is_heic && !arguments.reduce_motion,
+            reduced_motion: arguments.reduce_motion,
+            appearance,
+        },
         solar: arguments.solar,
+        skip_output: arguments.skip_output,
     })?;
     Ok(())
 }
@@ -413,7 +444,7 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         return Ok(());
     }
     let windowed = arguments.windowed;
-    let output_monitor = if windowed {
+    let output_monitor = if windowed || arguments.placement == Placement::Compositor {
         None
     } else {
         outputs::Monitor::connect(arguments.authentication_output)
@@ -460,6 +491,10 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
         .window(window::Settings {
             size: window_size,
             decorations: windowed,
+            platform_specific: window::settings::PlatformSpecific {
+                application_id: "genkan".into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .exit_on_close_request(false)
@@ -602,6 +637,7 @@ mod tests {
             Command::Login(arguments) => Ok(arguments),
             Command::Lock(_)
             | Command::Wallpaper(_)
+            | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects login")
@@ -618,6 +654,7 @@ mod tests {
             Command::Lock(arguments) => Ok(arguments),
             Command::Login(_)
             | Command::Wallpaper(_)
+            | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects lock")
@@ -636,6 +673,7 @@ mod tests {
             Command::Wallpaper(arguments) => Ok(arguments),
             Command::Login(_)
             | Command::Lock(_)
+            | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_) => {
                 unreachable!("the helper always selects wallpaper")
@@ -674,11 +712,23 @@ mod tests {
         ])
         .unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(arguments.file, path);
+        assert_eq!(arguments.file, Some(path));
         assert!(matches!(arguments.appearance, WallpaperAppearance::Dark));
         assert!(arguments.reduce_motion);
         assert!(arguments.solar);
-        assert!(try_parse_wallpaper(["genkan"]).is_err());
+        assert!(try_parse_wallpaper(["genkan"]).is_ok());
+        assert!(try_parse_wallpaper(["genkan", "--solar"]).is_err());
+        let catalog = try_parse_wallpaper([
+            "genkan",
+            "--wallpaper",
+            "golden-gate",
+            "--reduce-motion",
+            "--skip-output",
+            "DP-2",
+        ])
+        .unwrap();
+        assert_eq!(catalog.wallpaper, wallpaper::Catalog::GoldenGate);
+        assert_eq!(catalog.skip_output.as_deref(), Some("DP-2"));
         assert!(Arguments::try_parse_from(["genkan", "login", "--solar"]).is_err());
         assert!(Arguments::try_parse_from(["genkan", "lock", "--solar"]).is_err());
         for invalid in [
@@ -847,6 +897,7 @@ mod tests {
     #[test]
     fn identity_overrides_are_optional() {
         let arguments = try_parse_login(["genkan"]).unwrap();
+        assert_eq!(arguments.placement, Placement::Spanning);
         assert!(!arguments.list_preview_fixtures);
         assert_eq!(arguments.username, None);
         assert_eq!(arguments.display_name, None);
@@ -857,6 +908,22 @@ mod tests {
         assert_eq!(arguments.wallpaper_file, None);
         assert!(!arguments.reduce_motion);
         assert!(!arguments.animated_preview);
+    }
+
+    #[test]
+    fn compositor_placement_is_available_in_deterministic_previews() {
+        let arguments = try_parse_login([
+            "genkan",
+            "--windowed",
+            "--preview",
+            "selected",
+            "--placement",
+            "compositor",
+        ])
+        .unwrap();
+        assert_eq!(arguments.placement, Placement::Compositor);
+        assert!(try_parse_login(["genkan", "--placement", "unknown"]).is_err());
+        assert!(try_parse_lock(["genkan", "--placement", "compositor"]).is_err());
     }
 
     #[test]

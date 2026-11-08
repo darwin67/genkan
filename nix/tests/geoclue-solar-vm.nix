@@ -84,6 +84,17 @@
             timeout=timedelta(seconds=90),
         )
         machine.fail("grep -F 'solar location' /tmp/solar.log")
+
+        # Recreate playback without changing location, date or UTC offset.
+        # A cached mapping marker must not suppress mapping the new scheduler.
+        sway = "runuser -u alice -- swaymsg -s $(find %s -maxdepth 1 -name 'sway-ipc.*.sock' -print -quit)" % runtime
+        machine.succeed(sway + " output HEADLESS-1 disable")
+        machine.sleep(timedelta(seconds=2))
+        machine.succeed(sway + " output HEADLESS-1 enable")
+        machine.wait_until_succeeds(
+            "test $(grep -cF 'solar schedule applied' /tmp/solar.log) -ge 2",
+            timeout=timedelta(seconds=30),
+        )
         machine.succeed("kill $(cat /tmp/solar.pid)")
 
     with subtest("ordinary h24 wallpaper never requests location"):
