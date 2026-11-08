@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+<defs>
+  <linearGradient id="g-dune" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd9a3"/><stop offset="1" stop-color="#f09a6a"/></linearGradient>
+</defs>
+  <rect width="100" height="100" fill="url(#g-dune)"/>
+  <circle cx="70" cy="30" r="9" fill="#fff3dc"/>
+  <path d="M0 58 C24 44 48 70 100 50 V100 H0Z" fill="#e8a066"/>
+  <path d="M0 74 C30 60 60 88 100 70 V100 H0Z" fill="#c6703f"/>
+</svg>

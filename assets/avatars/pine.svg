@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+<defs>
+  <linearGradient id="g-pine" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d4ece0"/><stop offset="1" stop-color="#7cbfa3"/></linearGradient>
+</defs>
+  <rect width="100" height="100" fill="url(#g-pine)"/>
+  <path d="M0 70 C30 62 70 64 100 70 V100 H0Z" fill="#5c9f84"/>
+  <path d="M30 30 L42 54 H36 L46 74 H14 L24 54 H18Z" fill="#2c6b55"/>
+  <path d="M62 20 L76 48 H69 L80 72 H44 L55 48 H48Z" fill="#1d5644"/>
+  <path d="M84 44 L92 60 H88 L95 74 H73 L80 60 H76Z" fill="#2f7a5f"/>
+</svg>

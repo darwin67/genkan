@@ -128,6 +128,41 @@ let
         '') dynamicHeicAssets}
       '';
 
+  # Built-in account pictures (RFD 7): each source is pinned by its committed
+  # bytes, rendered once with the pinned resvg, and the PNG pinned too, so the
+  # greeter never parses SVG at runtime and the shipped pixels cannot drift.
+  avatarManifest = builtins.fromTOML (builtins.readFile ../assets/avatars/manifest.toml);
+  avatarSize = toString avatarManifest.png_size;
+  avatars = map (
+    avatar:
+    let
+      source = ../assets/avatars + "/${avatar.name}.svg";
+    in
+    assert builtins.hashFile "sha256" source == avatar.svg_sha256;
+    avatar // { inherit source; }
+  ) avatarManifest.avatar;
+  avatarDirectory =
+    pkgs.runCommand "genkan-avatars"
+      {
+        nativeBuildInputs = [
+          pkgs.coreutils
+          pkgs.resvg
+        ];
+      }
+      ''
+        mkdir -p $out
+        install -m 0444 ${../assets/avatars/manifest.toml} $out/manifest.toml
+        ${pkgs.lib.concatMapStringsSep "\n" (avatar: ''
+          install -m 0444 ${avatar.source} $out/${avatar.name}.svg
+          resvg --width ${avatarSize} --height ${avatarSize} ${avatar.source} $out/${avatar.name}.png
+          chmod 0444 $out/${avatar.name}.png
+          test "$(sha256sum $out/${avatar.name}.png | cut -d' ' -f1)" = "${avatar.png_sha256}" || {
+            echo "${avatar.name}.png does not match png_sha256 in assets/avatars/manifest.toml" >&2
+            exit 1
+          }
+        '') avatars}
+      '';
+
   package = rustPlatform.buildRustPackage {
     pname = "genkan";
     version = packageVersion;
@@ -149,6 +184,7 @@ let
       install -m 0444 ${../assets/wallpapers/manifest.toml} "$wallpaperDirectory/manifest.toml"
       ${pkgs.lib.concatMapStringsSep "\n" installWallpaper wallpapers}
       ${pkgs.lib.concatMapStringsSep "\n" installHeicAsset dynamicHeicAssets}
+      ln -s ${avatarDirectory} $out/share/genkan/avatars
 
       wrapProgram $out/bin/genkan \
         --set FONTCONFIG_FILE ${fontConfig} \
@@ -431,6 +467,7 @@ in
     module = moduleCheck;
     greeter-module = greeterModuleCheck;
     heic-assets = heicAssetCheck;
+    avatars = avatarDirectory;
     heic-decode = heicDecodeCheck;
     graphics-smoke = import ./tests/graphics-smoke.nix {
       inherit pkgs;

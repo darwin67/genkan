@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+<defs>
+  <linearGradient id="g-citrus" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff4cc"/><stop offset="1" stop-color="#ffcf5c"/></linearGradient>
+</defs>
+  <rect width="100" height="100" fill="url(#g-citrus)"/>
+  <circle cx="50" cy="50" r="30" fill="#ff9a1f"/><circle cx="50" cy="50" r="25" fill="#ffc35c"/>
+  <g stroke="#ff9a1f" stroke-width="2.6" stroke-linecap="round"><path d="M50 27 V73 M27 50 H73 M34 34 L66 66 M66 34 L34 66"/></g>
+  <circle cx="50" cy="50" r="3.5" fill="#fff1c9"/>
+</svg>

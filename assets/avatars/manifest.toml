@@ -1,0 +1,79 @@
+# Built-in account pictures (RFD 7). Each is an original vector illustration
+# drawn for Genkan, under the repository's MIT license. The package build
+# renders every SVG to a PNG with resvg and fails unless both match the
+# hashes below; a change to a source or to the pinned resvg needs new hashes.
+schema_version = 1
+png_size = 512
+renderer = "resvg 0.48.1"
+
+[[avatar]]
+name = "lake"
+title = "Lake"
+svg_sha256 = "a4f8c3ca9acb07115aeaa6fff14f3824fcd6e2d78110652d85677873bd4e2f10"
+png_sha256 = "80157c444905eda845d8de813d5db606d96dc21129aad4ab3f7d56c2e1f969c7"
+
+[[avatar]]
+name = "sunrise"
+title = "Sunrise"
+svg_sha256 = "d44f3a825041895f1b67d83464c3024fbb76a78c98ac1c183e29542c2273f548"
+png_sha256 = "874dff2a6fa6a4fc0c29217c9015bc7363dcac7959b0efa2f087289d4b1da6c7"
+
+[[avatar]]
+name = "dune"
+title = "Dune"
+svg_sha256 = "5fff7ee9294f1c069dbb823c1f3f876e745d3927368bd9bc92a48c5e1ce5e43a"
+png_sha256 = "4a93751cae70371ee3136112da4a78aca8eb72e3f897d907fc77d48ab18580f5"
+
+[[avatar]]
+name = "leaf"
+title = "Leaf"
+svg_sha256 = "ea6a7061d3e007b036db113470954b91aecb55f02d56a24fc78ab67084ba52d0"
+png_sha256 = "41fcc6f09485d6e824842ca4660a569998997815546c86f98f93bd35a429f77b"
+
+[[avatar]]
+name = "wave"
+title = "Wave"
+svg_sha256 = "aba8b6ac7e489db5a8f3c14b44111735688c3e2efcfeddd1f0ce0fed4c253208"
+png_sha256 = "73e8a19edd2daac93bd7700895a4908dc19dad30282aeddbfa7ce5051b250703"
+
+[[avatar]]
+name = "moon"
+title = "Moon"
+svg_sha256 = "7cf571e62d62052d2460d58b0e5a4c08be1a75d6ff413ab4f99bd6364f42549e"
+png_sha256 = "98b3b0f370eac6e65dddf96fcb04c0c13ed6689b65868b0782b59d76f716b3bc"
+
+[[avatar]]
+name = "pine"
+title = "Pine"
+svg_sha256 = "1b15660a5ca0d8ebd936dfa2883a411834ad8fa0671d832dab8dfad8dc8157be"
+png_sha256 = "0cd6bef5c7b028bbd35aa1bef1f2814977bd8ef8d0f3991f03f270b54401dd96"
+
+[[avatar]]
+name = "bloom"
+title = "Bloom"
+svg_sha256 = "2fb207f174ce7a0b6fd0ba879f8332be09b8235e3bfb21f6c6b142341ff8c9d7"
+png_sha256 = "4cd3dd824c12972c9be35b2f786e28eed5c223d5b0b5405cd07c4fd26e9983e8"
+
+[[avatar]]
+name = "orbit"
+title = "Orbit"
+svg_sha256 = "2ee0f35cf058782fe699ba9939104d8ef476e828550935fdc50f59407affc957"
+png_sha256 = "4635cf375592778bc7b1e805f351b900af355692e1ae74787154896a60871324"
+
+[[avatar]]
+name = "pebbles"
+title = "Pebbles"
+svg_sha256 = "100621dbdd38f9207cb7ccfa6355f8efc6cb592d408b5ad075d9ad9958d4b05b"
+png_sha256 = "00d57c670d2f7e88519aa45840ed3b1412116f976262c95b0be43555f45285a3"
+
+[[avatar]]
+name = "aurora"
+title = "Aurora"
+svg_sha256 = "c32ff98d86bc4de3ebbf47e7de058d113f9f8aa5e97815301d2e16ea3e4598ad"
+png_sha256 = "8d3d9e2a564b85af387e372cd6f4d512d60c6fb9974ae396e0262d708eec45eb"
+
+[[avatar]]
+name = "citrus"
+title = "Citrus"
+svg_sha256 = "aad12a5041ec0663227d3cfd84fd42f0703189fe577203a082eecf8b3961503f"
+png_sha256 = "2fadb881cf264c01aceea2b47e5eda750240ab74e7fb06acf45565b33683ad2e"

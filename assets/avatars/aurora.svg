@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+<defs>
+  <linearGradient id="g-aurora" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#4dffae" stop-opacity=".1"/><stop offset=".5" stop-color="#5dffb0"/><stop offset="1" stop-color="#3fc8ff" stop-opacity=".3"/></linearGradient>
+  <linearGradient id="g-aurora-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#040c1d"/><stop offset="1" stop-color="#103457"/></linearGradient>
+</defs>
+  <rect width="100" height="100" fill="url(#g-aurora-sky)"/>
+  <path d="M-6 44 C20 24 44 54 70 32 C82 22 94 26 106 30" fill="none" stroke="url(#g-aurora)" stroke-width="11" stroke-linecap="round"/>
+  <path d="M-6 58 C24 44 48 64 74 48 C86 41 96 44 106 46" fill="none" stroke="url(#g-aurora)" stroke-width="6" stroke-linecap="round" opacity=".7"/>
+  <path d="M0 82 L18 70 L30 76 L46 64 L62 76 L80 68 L100 80 V100 H0Z" fill="#06101f"/>
+</svg>
