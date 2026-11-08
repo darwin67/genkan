@@ -153,6 +153,14 @@ jobs:
       - uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
       - run: nix build .#checks.x86_64-linux.session-lock-vm --print-build-logs
 
+  niri-greeter-vm:
+    name: niri greeter VM
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
+      - run: nix build .#checks.x86_64-linux.niri-greeter-vm --print-build-logs
+
   geoclue-solar-vm:
     name: GeoClue solar VM
     runs-on: ubuntu-24.04
@@ -188,5 +196,7 @@ jobs:
         run: nix build .#checks.${{ matrix.system }}.desktop-wallpaper-smoke --print-build-logs
       - name: Session-lock smoke
         run: nix build .#checks.${{ matrix.system }}.session-lock-smoke --print-build-logs
+      - name: niri scaling, lifecycle and generated configuration
+        run: nix build .#checks.${{ matrix.system }}.niri-smoke .#checks.${{ matrix.system }}.greeter-module --print-build-logs
       - name: Preview evidence
         run: nix build .#checks.${{ matrix.system }}.preview-evidence --print-build-logs

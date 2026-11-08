@@ -87,7 +87,8 @@ let
           repositorySource;
     in
     assert asset.delivery == "r2" || asset.delivery == "repository";
-    assert asset.delivery != "repository" || builtins.hashFile "sha256" repositorySource == asset.sha256;
+    assert
+      asset.delivery != "repository" || builtins.hashFile "sha256" repositorySource == asset.sha256;
     asset
     // {
       inherit source;
@@ -309,9 +310,53 @@ let
   modulePamPolicy = pkgs.writeText "genkan-lock-pam-policy" (
     moduleSystem.config.security.pam.services.genkan-lock.text
   );
+  cageGreeterSystem = moduleSystem.extendModules {
+    modules = [ { programs.genkan.greeter.enable = true; } ];
+  };
+  niriGreeterSystem = moduleSystem.extendModules {
+    modules = [
+      ({ lib, ... }: {
+        programs.genkan.package = lib.mkForce (pkgs.writeShellScriptBin "genkan" "exit 1");
+        programs.genkan.greeter = {
+          enable = true;
+          compositor = "niri";
+          authenticationOutput = "Dell Inc. DELL U3223QE 42";
+          niri.outputs = {
+            "Dell Inc. DELL U3223QE 42" = {
+              scale = 1.275;
+              position = {
+                x = 1920;
+                y = 0;
+              };
+            };
+            "DP-10" = {
+              mode = "1920x1080@144";
+              scale = 1;
+            };
+            "DP-11" = {
+              scale = 1.3;
+              transform = "90";
+            };
+            "eDP-1".scale = 1.2;
+          };
+        };
+      })
+    ];
+  };
+  greeterModuleCheck =
+    assert !moduleSystem.config.services.greetd.enable;
+    assert cageGreeterSystem.config.programs.genkan.greeter.compositor == "cage";
+    assert !cageGreeterSystem.config.systemd.services.greetd.restartIfChanged;
+    assert !niriGreeterSystem.config.systemd.services.greetd.restartIfChanged;
+    assert pkgs.lib.hasInfix "cage"
+      cageGreeterSystem.config.services.greetd.settings.default_session.command;
+    pkgs.runCommand "genkan-greeter-module-check" { } ''
+      cp ${niriGreeterSystem.config.programs.genkan.greeter.niri.configFile} "$out"
+    '';
   solarAppConfig = solarModuleSystem.config.services.geoclue2.appConfig."genkan-wallpaper";
-  solarGeoclueConfig = pkgs.writeText "genkan-geoclue-config"
-    solarModuleSystem.config.environment.etc."geoclue/geoclue.conf".text;
+  solarGeoclueConfig =
+    pkgs.writeText "genkan-geoclue-config"
+      solarModuleSystem.config.environment.etc."geoclue/geoclue.conf".text;
   moduleCheck =
     assert builtins.elem package moduleSystem.config.environment.systemPackages;
     assert !(builtins.elem package disabledModuleSystem.config.environment.systemPackages);
@@ -322,7 +367,8 @@ let
     assert !disabledModuleSystem.config.services.geoclue2.enable;
     assert !moduleSystem.config.services.geoclue2.enable;
     # Provisioning must not rewrite the host-wide agent whitelist.
-    assert solarModuleSystem.config.services.geoclue2.whitelistedAgents
+    assert
+      solarModuleSystem.config.services.geoclue2.whitelistedAgents
       == moduleSystem.config.services.geoclue2.whitelistedAgents;
     assert builtins.length moduleSystem.config.services.geoclue2.whitelistedAgents > 0;
     pkgs.runCommand "genkan-module-check" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
@@ -344,7 +390,9 @@ let
   # `decode_verified = false` fails the check instead of dropping out of it, so
   # re-introducing an exception has to change this check and the manifest entry
   # together rather than silently reducing what is verified.
-  heicDecodeExcludedAssets = builtins.filter (asset: !(asset.decode_verified or true)) dynamicHeicAssets;
+  heicDecodeExcludedAssets = builtins.filter (
+    asset: !(asset.decode_verified or true)
+  ) dynamicHeicAssets;
   heicDecodeCheck =
     assert builtins.length dynamicHeicAssets > 0;
     assert builtins.length heicDecodeExcludedAssets == 0;
@@ -372,6 +420,7 @@ in
   checks = {
     inherit package;
     module = moduleCheck;
+    greeter-module = greeterModuleCheck;
     heic-assets = heicAssetCheck;
     heic-decode = heicDecodeCheck;
     graphics-smoke = import ./tests/graphics-smoke.nix {
@@ -396,9 +445,20 @@ in
       genkan = sessionLockTestPackage;
       productionGenkan = package;
     };
+    niri-smoke = import ./tests/niri-smoke.nix {
+      inherit pkgs;
+      genkan = package;
+      lockTestGenkan = sessionLockTestPackage;
+    };
   }
   // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
     greetd-e2e = pkgs.testers.runNixOSTest (import ./tests/greetd.nix { genkanE2e = e2ePackage; });
+    niri-greeter-vm = pkgs.testers.runNixOSTest (
+      import ./tests/niri-greeter.nix {
+        inherit pkgs;
+        genkan = package;
+      }
+    );
     session-lock-vm = pkgs.testers.runNixOSTest (
       import ./tests/session-lock-vm.nix {
         genkan = sessionLockTestPackage;

@@ -175,8 +175,14 @@ Repository samples are pinned by their committed bytes; a catalog asset
 delivered from the R2 host records its delivery URL and is fetched by Nix as a
 hash-pinned fixed-output source. A wallpaper process never downloads media.
 
-`--file` remains the only way to select a local wallpaper, and it accepts an
-existing absolute regular `.heic` or `.heif` file. URIs, FIFOs, devices, and
+`--wallpaper` selects the same MOV catalog as login; `--reduce-motion` shows
+its poster. `--wallpaper-file` accepts an absolute MOV or HEIC override, with
+the same appearance and reduced-motion arguments as login. `--skip-output`
+omits a connector or persistent monitor name. No decoder starts when every
+output is skipped.
+
+`--file` retains the desktop HEIC interface and is required with `--solar`.
+It accepts an existing absolute regular `.heic` or `.heif` file. URIs, FIFOs, devices, and
 pipeline descriptions are rejected, and the file is bound by descriptor so a
 later pathname replacement cannot substitute another object. The container is
 validated against the resource ceilings and copied to an anonymous descriptor
@@ -249,9 +255,110 @@ choice, and login and lock never request location.
 
 ## niri
 
-These notes were checked against niri 26.04. The greeter itself still runs
-under Cage; running it under niri is planned in
-[RFD 6](../rfd/0006/README.adoc).
+These notes were checked against niri 26.04. Cage remains the default greeter
+compositor; the opt-in niri greeter implements [RFD 6](../rfd/0006/README.adoc).
+
+### Greeter
+
+Import the module and select niri. Output blocks are structured options, not
+arbitrary KDL, so they cannot introduce includes or launch bindings:
+
+```nix
+{ config, genkan, ... }:
+{
+  imports = [ genkan.nixosModules.default ];
+  programs.genkan = {
+    enable = true;
+    greeter = {
+      enable = true;
+      compositor = "niri"; # omit this to retain Cage
+      authenticationOutput = "Dell Inc. DELL U3223QE YOUR-SERIAL";
+      wallpaper = "tahoe-beach";
+      niri.outputs = {
+        "Dell Inc. DELL U3223QE YOUR-SERIAL" = {
+          mode = "3840x2160@60";
+          scale = 1.275;
+          position = { x = 1920; y = 0; };
+        };
+        "DP-10" = {
+          mode = "1920x1080@144";
+          scale = 1;
+          position = { x = 0; y = 0; };
+        };
+        "DP-11" = { scale = 1.3; transform = "90"; };
+        "eDP-1" = { scale = 1.2; };
+      };
+    };
+  };
+  programs.niri.enable = true; # the user's session, separate from the greeter
+}
+```
+
+Use `niri msg outputs` to get connector and make/model/serial names. Matching
+is case-insensitive, with `Unknown` for missing fields, just like niri. Login
+in spanning mode and `genkan lock --authentication-output "…"` accept the same
+names: wlroots output-management metadata supplies serials under Cage, and
+niri's read-only IPC supplies them under niri. A compositor exposing neither
+source still supports connector selection; descriptions are not parsed as
+identities. If the monitor is absent, spanning login and lock use their normal
+fallback; niri places compositor-mode login on the focused available output.
+
+The module generates this output block, for example:
+
+```kdl
+output "Dell Inc. DELL U3223QE YOUR-SERIAL" {
+    mode "3840x2160@60"
+    scale 1.275
+    transform "normal"
+    position x=1920 y=0
+}
+```
+
+`config.programs.genkan.greeter.niri.outputConfig` exposes exactly those
+generated blocks for reuse in the host's desktop niri configuration. Do not
+reuse the entire greeter config as a desktop config. Its window rule is:
+
+```kdl
+window-rule {
+    match app-id="^genkan$"
+    open-on-output "Dell Inc. DELL U3223QE YOUR-SERIAL"
+    open-fullscreen true
+}
+```
+
+The ordinary login window has stable app ID `genkan`; `--placement compositor`
+treats its whole window as the authentication region. The module starts only
+`genkan greeter-session`, which starts login and background children without a
+shell, excludes the authentication output from the background client, and asks
+niri to quit on every login exit, including a crash. Wallpaper failure and
+SIGINT/SIGTERM also tear down the greeter. The supervisor never starts a user's
+desktop: greetd alone owns authentication and `StartSession`, and waits for
+niri to release the displays before starting the session.
+
+The generated configuration has empty `binds`, no startup hotkey overlay,
+`screenshot-path null`, Xwayland disabled, and no includes. It is validated
+with the configured niri package at build time **and immediately before
+launch**: niri 26.04 otherwise falls back to built-in launch bindings on a
+startup parse error. See the [investigation](../rfd/0006/INVESTIGATION.adoc)
+for the actual fallback and startup measurements. Never point greetd directly
+at a user-writable niri config.
+
+When it configures either greeter, the module sets
+`systemd.services.greetd.restartIfChanged = false`, enables AccountsService and
+graphics, and passes the host's Wayland session directory. A generation switch
+does not kill an active session or replace the on-screen greeter. greetd keeps
+its generation-specific command in memory, including after logout. Changes to
+the immutable greeter config or binary therefore require a **greetd daemon
+restart or reboot**. Do not restart greetd while a desktop session is active;
+that would terminate the session this setting protects. This is not the
+desktop's live-reloaded config. Desktop output configuration and graphics/VRAM
+limits remain host policy.
+
+Wallpaper and lock negotiate fractional-scale plus viewporter support and
+render at the compositor's preferred size (in 1/120 increments), with logical
+viewport destinations. Compositors without both protocols retain integer
+buffers. This reduces allocation and avoids integer-scale downsampling at
+1.275, 1.3, and 1.2 without changing lock ownership or unlock authorization.
 
 ### Session
 

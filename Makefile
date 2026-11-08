@@ -49,6 +49,13 @@ smoke:
 wallpaper-smoke:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).desktop-wallpaper-smoke --print-build-logs
 
+.PHONY: niri-smoke niri-vm
+niri-smoke:
+	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).niri-smoke .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).greeter-module --print-build-logs
+
+niri-vm:
+	nix build .#checks.x86_64-linux.niri-greeter-vm --print-build-logs
+
 lock-smoke:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).session-lock-smoke --print-build-logs
 
@@ -79,7 +86,7 @@ build:
 package:
 	nix build
 
-verify: fmt lint test check-rfds package heic-assets heic-decode smoke wallpaper-smoke lock-smoke evidence
+verify: fmt lint test check-rfds package heic-assets heic-decode smoke wallpaper-smoke lock-smoke niri-smoke evidence
 
 verify: check-design
 
