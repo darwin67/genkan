@@ -14,7 +14,7 @@ proptest! {
         let mut accounts: Vec<_> = times.iter().enumerate().map(|(id, time)| {
             Account::from_properties(Properties {
                 username: format!("synthetic-{id}"), real_name: String::new(),
-                system_account: false, locked: false, last_login: *time,
+                system_account: false, locked: false, last_login: *time, icon_file: None,
             }).unwrap()
         }).collect();
         let expected = if accounts.len() == 1 { Some(0) }

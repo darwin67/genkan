@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use thiserror::Error;
 use unicode_general_category::{get_general_category, GeneralCategory};
@@ -10,6 +11,9 @@ const MAX_LABEL_CHARS: usize = 80;
 pub struct Account {
     pub username: String,
     pub display_name: String,
+    /// The AccountsService `IconFile`, when it is an absolute path. Its bytes
+    /// are user-controlled and decoded only by `genkan::avatar` (RFD 7).
+    pub picture: Option<PathBuf>,
     last_login: Option<i64>,
 }
 
@@ -19,6 +23,7 @@ impl Account {
             display_name: presentation_label(display_name.as_deref().unwrap_or(&username))
                 .unwrap_or_else(|| username.clone()),
             username,
+            picture: None,
             last_login: None,
         }
     }
@@ -32,9 +37,14 @@ impl Account {
         } else {
             presentation_label(&properties.real_name).unwrap_or_else(|| properties.username.clone())
         };
+        let picture = properties
+            .icon_file
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
         Some(Self {
             username: properties.username,
             display_name,
+            picture,
             last_login: properties.last_login.filter(|time| *time > 0),
         })
     }
@@ -57,6 +67,7 @@ struct Properties {
     system_account: bool,
     locked: bool,
     last_login: Option<i64>,
+    icon_file: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -123,12 +134,15 @@ async fn load_properties(
     let system_account = user.get_property("SystemAccount").await?;
     let locked = user.get_property("Locked").await?;
     let last_login = user.get_property("LoginTime").await.ok();
+    // A missing or unreadable picture never hides an account.
+    let icon_file = user.get_property("IconFile").await.ok();
     Ok(Properties {
         username,
         real_name,
         system_account,
         locked,
         last_login,
+        icon_file,
     })
 }
 
@@ -188,7 +202,27 @@ mod tests {
             system_account: false,
             locked: false,
             last_login: None,
+            icon_file: None,
         }
+    }
+
+    #[test]
+    fn keeps_only_an_absolute_picture_path() {
+        let picture = |icon_file: Option<&str>| {
+            Account::from_properties(Properties {
+                icon_file: icon_file.map(Into::into),
+                ..properties()
+            })
+            .unwrap()
+            .picture
+        };
+        assert_eq!(
+            picture(Some("/var/lib/AccountsService/icons/alice")),
+            Some(PathBuf::from("/var/lib/AccountsService/icons/alice"))
+        );
+        assert_eq!(picture(Some("")), None);
+        assert_eq!(picture(Some("relative/face.png")), None);
+        assert_eq!(picture(None), None);
     }
 
     #[test]

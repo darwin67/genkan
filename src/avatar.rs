@@ -45,6 +45,12 @@ const MAX_CPU_SECONDS: u64 = 2;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 const JPEG_SIGNATURE: &[u8] = &[0xff, 0xd8, 0xff];
 
+/// Where the package installs the built-in pictures: `share/genkan/avatars`
+/// beside the directory that holds `executable`.
+pub fn builtin_directory(executable: &Path) -> Option<std::path::PathBuf> {
+    Some(executable.parent()?.parent()?.join("share/genkan/avatars"))
+}
+
 /// A decoded account picture: [`SIZE`] by [`SIZE`] premultiplied RGBA.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Picture {
@@ -52,6 +58,18 @@ pub struct Picture {
 }
 
 impl Picture {
+    /// A picture from [`PIXEL_BYTES`] bytes of premultiplied RGBA, or `None`
+    /// when the length is wrong or a color channel exceeds its alpha.
+    pub fn from_premultiplied(pixels: Vec<u8>) -> Option<Self> {
+        let valid = pixels.len() == PIXEL_BYTES
+            && pixels
+                .chunks_exact(4)
+                .all(|pixel| pixel[..3].iter().all(|channel| *channel <= pixel[3]));
+        valid.then(|| Self {
+            pixels: pixels.into(),
+        })
+    }
+
     /// The picture's [`PIXEL_BYTES`] bytes.
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
@@ -145,9 +163,9 @@ pub fn decode_file(executable: &Path, path: &Path) -> Result<Picture, Error> {
         }
     };
     match wait_until(&mut child, started + TIMEOUT) {
-        Some(status) if status.success() => Ok(Picture {
-            pixels: output.into(),
-        }),
+        Some(status) if status.success() => {
+            Picture::from_premultiplied(output).ok_or(Error::Rejected)
+        }
         Some(_) => Err(Error::Rejected),
         None => Err(Error::Timeout),
     }

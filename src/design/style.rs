@@ -177,6 +177,14 @@ pub(crate) fn avatar(diameter: f32) -> container::Style {
     }
 }
 
+/// The avatar ring alone, drawn over an account picture.
+pub(crate) fn avatar_ring(diameter: f32) -> container::Style {
+    container::Style {
+        background: None,
+        ..avatar(diameter)
+    }
+}
+
 /// The ring around a keyboard-focused avatar of the given outer diameter.
 pub(crate) fn avatar_focus(diameter: f32, focused: bool) -> container::Style {
     container::Style {

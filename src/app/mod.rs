@@ -6,6 +6,8 @@ pub(crate) mod preview;
 mod view;
 pub(crate) use view::shake_offset;
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use auth_flow::Phase;
@@ -131,6 +133,12 @@ pub(crate) struct App {
     /// software backend must never receive a child-decoded frame. The poster is
     /// displayed until the backend is known.
     pending_heic: Option<wallpaper::Settings>,
+    /// Decoded account pictures by username, masked for the avatar circle.
+    /// An account without an entry shows its initials.
+    pictures: HashMap<String, iced::widget::image::Handle>,
+    /// Picture files already handed to the decoder, so a repeated account
+    /// discovery decodes each file at most once per run.
+    pictures_requested: HashSet<PathBuf>,
     started_at: Instant,
     now: chrono::DateTime<Local>,
     power_state: PowerState,
@@ -160,6 +168,12 @@ pub(crate) enum Message {
         result: Result<(Option<Client>, auth::Response), String>,
     },
     AccountsResult(Result<Vec<Account>, String>),
+    /// A picture file shared by these accounts was decoded, or `None` when it
+    /// could not be.
+    PictureDecoded {
+        usernames: Vec<String>,
+        picture: Option<iced::widget::image::Handle>,
+    },
     ChangeUser,
     UserSelectionCancelled {
         attempt: Attempt,
@@ -255,6 +269,8 @@ impl App {
             wallpaper: wallpaper::State::start_deferred(&config.wallpaper),
             pending_heic: wallpaper::selects_dynamic_heic(&config.wallpaper)
                 .then(|| config.wallpaper.clone()),
+            pictures: HashMap::new(),
+            pictures_requested: HashSet::new(),
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,
@@ -410,13 +426,24 @@ impl App {
             }
             Message::AccountsResult(Ok(accounts)) => {
                 self.accounts = accounts;
-                if let Some(account) = accounts::preferred_account(&self.accounts).cloned() {
-                    self.select_account(account)
-                } else {
-                    self.phase = Phase::SelectingUser;
-                    self.conversation.set_notice("Select a user".into(), false);
-                    self.set_focus(FocusTarget::Account(0))
+                let pictures = self.decode_pictures();
+                let next =
+                    if let Some(account) = accounts::preferred_account(&self.accounts).cloned() {
+                        self.select_account(account)
+                    } else {
+                        self.phase = Phase::SelectingUser;
+                        self.conversation.set_notice("Select a user".into(), false);
+                        self.set_focus(FocusTarget::Account(0))
+                    };
+                Task::batch([next, pictures])
+            }
+            Message::PictureDecoded { usernames, picture } => {
+                if let Some(picture) = picture {
+                    for username in usernames {
+                        self.pictures.insert(username, picture.clone());
+                    }
                 }
+                Task::none()
             }
             Message::AccountsResult(Err(error)) => self.fail(error),
             Message::ChangeUser if self.can_change_user() => self.change_user(),
@@ -1035,6 +1062,57 @@ fn cancel_shortcut_key(key: keyboard::Key) -> Option<Message> {
     .then_some(Message::Escape)
 }
 
+impl App {
+    /// The decoded picture for `username`, if it has one.
+    pub(crate) fn picture(&self, username: &str) -> Option<&iced::widget::image::Handle> {
+        self.pictures.get(username)
+    }
+
+    /// Decodes each account picture not yet requested, one at a time and off
+    /// the UI thread, publishing each as it finishes. Prompts never wait for
+    /// pictures; accounts show initials until theirs arrives.
+    fn decode_pictures(&mut self) -> Task<Message> {
+        let mut files: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+        for account in &self.accounts {
+            if let Some(path) = &account.picture {
+                if !self.pictures_requested.contains(path) {
+                    files
+                        .entry(path.clone())
+                        .or_default()
+                        .push(account.username.clone());
+                }
+            }
+        }
+        if files.is_empty() {
+            return Task::none();
+        }
+        self.pictures_requested.extend(files.keys().cloned());
+        Task::run(
+            iced::stream::channel(1, async move |mut output| {
+                use iced::futures::SinkExt;
+                let Ok(executable) = std::env::current_exe() else {
+                    return;
+                };
+                for (path, usernames) in files {
+                    let executable = executable.clone();
+                    let picture = tokio::task::spawn_blocking(move || {
+                        genkan::avatar::decode_file(&executable, &path)
+                            .ok()
+                            .and_then(|picture| crate::design::picture::circle(&picture))
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if output.send((usernames, picture)).await.is_err() {
+                        return;
+                    }
+                }
+            }),
+            |(usernames, picture)| Message::PictureDecoded { usernames, picture },
+        )
+    }
+}
+
 fn discover_accounts() -> Task<Message> {
     Task::perform(accounts::discover(), |result| {
         Message::AccountsResult(result.map_err(|error| error.to_string()))
@@ -1094,6 +1172,8 @@ mod tests {
             reduced_motion: false,
             wallpaper: wallpaper::State::disabled(),
             pending_heic: None,
+            pictures: HashMap::new(),
+            pictures_requested: HashSet::new(),
             started_at: Instant::now(),
             now: Local::now(),
             power_state: PowerState::Idle,

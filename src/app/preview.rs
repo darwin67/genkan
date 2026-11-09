@@ -24,6 +24,7 @@ pub(crate) enum Fixture {
     CapsLock,
     StatusBar,
     Users,
+    AccountPictures,
     DuplicateNames,
     LargeAccountSet,
     LongAccounts,
@@ -137,6 +138,8 @@ pub(super) fn build(
         wallpaper: wallpaper::State::start_deferred(&wallpaper_settings),
         pending_heic: wallpaper::selects_dynamic_heic(&wallpaper_settings)
             .then(|| wallpaper_settings.clone()),
+        pictures: std::collections::HashMap::new(),
+        pictures_requested: std::collections::HashSet::new(),
         started_at: Instant::now(),
         now: preview_now(),
         power_state: PowerState::Idle,
@@ -160,6 +163,7 @@ pub(super) fn build(
     } else {
         app.focus_first()
     };
+    let task = Task::batch([task, app.decode_pictures()]);
     // A preview of a dynamic HEIC waits for the same renderer-backend answer
     // the production login path waits for.
     let task = if app.pending_heic.is_some() {
@@ -215,6 +219,29 @@ impl State {
                 ));
             }
             Fixture::Users => state.select_accounts(accounts([("alice", "Alice"), ("bob", "Bob")])),
+            Fixture::AccountPictures => {
+                // The approved RFD 7 sheet: built-in pictures decoded by the
+                // real sandboxed decoder, and one account keeping initials.
+                let directory = std::env::var_os("GENKAN_AVATAR_DIR")
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        std::env::current_exe()
+                            .ok()
+                            .and_then(|executable| genkan::avatar::builtin_directory(&executable))
+                    });
+                let mut accounts = accounts([
+                    ("darwin", "Darwin Wu"),
+                    ("alice", "Alice Chen"),
+                    ("bob", "Bob Ito"),
+                    ("dana", "Dana Wells"),
+                ]);
+                if let Some(directory) = directory {
+                    for (account, picture) in accounts.iter_mut().zip(["pine", "bloom", "orbit"]) {
+                        account.picture = Some(directory.join(format!("{picture}.png")));
+                    }
+                }
+                state.select_accounts(accounts);
+            }
             Fixture::DuplicateNames => state.select_accounts(accounts([
                 ("alex", "Alex Morgan"),
                 ("amorgan", "Alex Morgan"),

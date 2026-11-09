@@ -265,6 +265,7 @@ let
     LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;
     GST_PLUGIN_SYSTEM_PATH_1_0 = gstreamerPluginPath;
     GENKAN_WALLPAPER_DIR = devWallpaperDirectory;
+    GENKAN_AVATAR_DIR = avatarDirectory;
   };
 
   hardwareSmoke = pkgs.writeShellApplication {
