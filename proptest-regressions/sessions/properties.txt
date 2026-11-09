@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 873e9361cb50041a6d68cdb0306fff657eeb311b8b359c1b6fabe24dd78edfdb # shrinks to c = '\\', suffix = "r"
+cc 3f2aefe34b130a70722618b1e545ebd5a3bfc7cbe56269e62aab324ee8898392 # shrinks to raw = "\u{b}+"

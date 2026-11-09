@@ -20,10 +20,23 @@ fn quote(argument: &str) -> String {
     exec.replace('\\', "\\\\")
 }
 
+fn source(raw: &str) -> String {
+    format!("[Desktop Entry]\nType=Application\nName=Synthetic\nExec={raw}\n")
+}
+
 fn expand(raw: &str) -> Option<Vec<String>> {
-    let source = format!("[Desktop Entry]\nType=Application\nName=Synthetic\nExec={raw}\n");
+    let source = source(raw);
     let file = parse(source.as_bytes()).ok()?;
     expand_exec(&file, Path::new("/synthetic/session.desktop"), "Synthetic")
+}
+
+/// The Exec value as the Desktop Entry parser reads it: trimmed of the
+/// whitespace around `=` and the line end, which may be any Unicode
+/// whitespace, not only spaces.
+fn parsed_exec(raw: &str) -> Option<String> {
+    let source = source(raw);
+    let file = parse(source.as_bytes()).ok()?;
+    Some(file.exec()?.raw().to_owned())
 }
 
 proptest! {
@@ -40,9 +53,12 @@ proptest! {
 
     #[test]
     fn arbitrary_exec_never_panics(raw in prop::collection::vec(any::<char>(), 0..1024).prop_map(|chars| chars.into_iter().collect::<String>())) {
-        let strict = strict_exec(&raw);
         if let Some(command) = expand(&raw) {
-            prop_assert!(strict.is_some());
+            // The strict check sees the parsed value, so `Exec=<VT>+` is the
+            // command "+", not a rejected control character.
+            let value = parsed_exec(&raw).unwrap();
+            prop_assert!(raw.contains(&value));
+            prop_assert!(strict_exec(&value).is_some());
             prop_assert!(!command.is_empty());
             prop_assert!(!command[0].contains('='));
         }
