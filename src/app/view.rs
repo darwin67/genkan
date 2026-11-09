@@ -156,10 +156,13 @@ impl App {
                 palette::TEXT_SECONDARY,
             ));
         }
-        let mut items = column![avatar(&self.display_name), name]
-            .width(Fill)
-            .align_x(Alignment::Center)
-            .spacing(spacing::IDENTITY_GAP);
+        let mut items = column![
+            avatar(&self.display_name, self.picture(&self.username)),
+            name
+        ]
+        .width(Fill)
+        .align_x(Alignment::Center)
+        .spacing(spacing::IDENTITY_GAP);
         if self.phase == Phase::WaitingForInput {
             if let PromptPlacement::Above(prompt) = self.prompt_placement() {
                 items = items.push(message(prompt));
@@ -444,6 +447,7 @@ impl App {
             .map(|(index, (((account, name), username), ambiguous))| {
                 account_item(
                     account,
+                    self.picture(&account.username),
                     name,
                     ambiguous.then_some(username),
                     interactive,
@@ -1014,29 +1018,47 @@ fn wallpaper_label<'a>(
     wallpaper_text(content, style, tone, 1.0, Wrapping::None)
 }
 
-fn avatar<'a>(name: &str) -> Element<'a, Message> {
-    container(label(
-        initials(name),
-        text_style::INITIALS,
-        palette::TEXT_PRIMARY,
-    ))
+/// The 75-point avatar: the account's picture when one has been decoded,
+/// otherwise its initials on the grey gradient (RFD 7).
+fn avatar<'a>(name: &str, picture: Option<&iced::widget::image::Handle>) -> Element<'a, Message> {
+    let Some(picture) = picture else {
+        return container(label(
+            initials(name),
+            text_style::INITIALS,
+            palette::TEXT_PRIMARY,
+        ))
+        .width(size::AVATAR)
+        .height(size::AVATAR)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(|_| style::avatar(size::AVATAR))
+        .into();
+    };
+    stack![
+        iced::widget::image(picture.clone())
+            .width(size::AVATAR)
+            .height(size::AVATAR)
+            .filter_method(iced::widget::image::FilterMethod::Linear),
+        container(Space::new())
+            .width(size::AVATAR)
+            .height(size::AVATAR)
+            .style(|_| style::avatar_ring(size::AVATAR)),
+    ]
     .width(size::AVATAR)
     .height(size::AVATAR)
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .style(|_| style::avatar(size::AVATAR))
     .into()
 }
 
 fn account_item<'a>(
     account: &'a Account,
+    picture: Option<&iced::widget::image::Handle>,
     name: String,
     username: Option<String>,
     interactive: bool,
     focused: bool,
 ) -> Element<'a, Message> {
     let ring = size::AVATAR + 2.0 * component::FOCUS_RING_WIDTH;
-    let avatar = container(avatar(&account.display_name))
+    let avatar = container(avatar(&account.display_name, picture))
         .width(ring)
         .height(ring)
         .align_x(Alignment::Center)

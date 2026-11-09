@@ -26,9 +26,11 @@ Implements link:README.adoc[RFD 7: Account pictures].
 
 == Phase 3: Showing pictures
 
-* [ ] Read `IconFile` with the other AccountsService properties.
-* [ ] Draw decoded pictures in the login avatar and account tiles, loading
-  after the accounts appear and decoding each file once per run.
+* [x] Read `IconFile` with the other AccountsService properties.
+* [x] Draw decoded pictures in the login avatar and account tiles, loading
+  after the accounts appear and decoding each file once per run. The
+  `account-pictures` preview fixture shows built-in pictures through the real
+  decoder beside an account that keeps its initials.
 * [ ] Draw the locked user's picture in the lock's CPU renderer.
 
 == Phase 4: Choosing pictures

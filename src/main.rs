@@ -1008,7 +1008,8 @@ mod tests {
                     .to_owned()
             })
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 22);
+        assert_eq!(names.len(), 23);
+        assert!(names.contains(&"account-pictures".to_owned()));
         assert!(names.contains(&"caps-lock".to_owned()));
         assert!(names.contains(&"status-bar".to_owned()));
         assert!(names.contains(&"power-menu".to_owned()));
