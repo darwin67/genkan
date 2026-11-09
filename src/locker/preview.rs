@@ -25,6 +25,9 @@ pub(crate) enum Fixture {
     #[default]
     Prompt,
     CapsLock,
+    /// The prompt with the built-in Pine picture, decoded by the real
+    /// sandboxed decoder (RFD 7).
+    AccountPicture,
     Challenge,
     Submitting,
     Failure,
@@ -221,6 +224,9 @@ fn presentation(settings: wallpaper::Settings, fixture: Fixture) -> Presentation
     };
     let (conversation, confirmed) = fixture.conversation();
     let mut renderer = render::Renderer::new();
+    if fixture == Fixture::AccountPicture {
+        renderer.picture = builtin_picture("pine");
+    }
     if fixture == Fixture::CapsLock {
         renderer.keyboard = genkan_session_lock::keyboard::KeyboardStatus {
             caps_lock: true,
@@ -235,6 +241,18 @@ fn presentation(settings: wallpaper::Settings, fixture: Fixture) -> Presentation
             .status(None)
             .and_then(|frame| genkan_session_lock::AnchoredOverlay::new(frame, 8)),
     )
+}
+
+/// A built-in picture decoded as the lock decodes the user's own: from
+/// `GENKAN_AVATAR_DIR` in the dev shell, otherwise the packaged set.
+fn builtin_picture(name: &str) -> Option<tiny_skia::Pixmap> {
+    let executable = std::env::current_exe().ok()?;
+    let directory = std::env::var_os("GENKAN_AVATAR_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| genkan::avatar::builtin_directory(&executable))?;
+    let picture =
+        genkan::avatar::decode_file(&executable, &directory.join(format!("{name}.png"))).ok()?;
+    crate::design::picture::pixmap(&picture)
 }
 
 /// Renders the presentation as an authentication output `width`×`height`
@@ -286,7 +304,7 @@ impl Fixture {
     fn conversation(self) -> (Conversation, bool) {
         match self {
             Self::Securing => (Conversation::new(), false),
-            Self::Prompt | Self::CapsLock => (
+            Self::Prompt | Self::CapsLock | Self::AccountPicture => (
                 Conversation::for_preview(
                     "preview".into(),
                     "Password".into(),

@@ -52,6 +52,7 @@ gui = [
     "dep:tiny-skia",
     "tokio/macros",
     "tokio/process",
+    "tokio/rt",
     "tokio/signal",
     "dep:unicode-general-category",
     "dep:wayland-client",

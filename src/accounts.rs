@@ -171,6 +171,29 @@ fn collect_accounts<E>(
     Ok(accounts)
 }
 
+/// The AccountsService picture path of the account with `uid`, when it has an
+/// absolute one. The lock uses this for the locked user (RFD 7).
+pub(crate) async fn picture_for_uid(uid: u32) -> Result<Option<PathBuf>, AccountError> {
+    let connection = zbus::Connection::system().await?;
+    let manager = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.Accounts",
+        "/org/freedesktop/Accounts",
+        "org.freedesktop.Accounts",
+    )
+    .await?;
+    let path: OwnedObjectPath = manager.call("FindUserById", &(i64::from(uid),)).await?;
+    let user = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.Accounts",
+        path.as_str(),
+        "org.freedesktop.Accounts.User",
+    )
+    .await?;
+    let icon_file: String = user.get_property("IconFile").await?;
+    Ok(Some(PathBuf::from(icon_file)).filter(|path| path.is_absolute()))
+}
+
 pub async fn discover() -> Result<Vec<Account>, AccountError> {
     let connection = zbus::Connection::system().await?;
     let manager = zbus::Proxy::new(

@@ -106,6 +106,8 @@ pub(super) struct Renderer {
     glyphs: SwashCache,
     pub(super) keyboard: genkan_session_lock::keyboard::KeyboardStatus,
     pub(super) shake: f32,
+    /// The account picture, which replaces the initials once decoded.
+    pub(super) picture: Option<tiny_skia::Pixmap>,
 }
 
 impl Renderer {
@@ -115,6 +117,7 @@ impl Renderer {
             glyphs: SwashCache::new(),
             keyboard: Default::default(),
             shake: 0.0,
+            picture: None,
         }
     }
 
@@ -253,21 +256,23 @@ impl Renderer {
             center_y: pill.y + pill.height / 2.0,
             diameter: px(size::SUBMIT),
         });
-        canvas.draw_shapes(avatar, pill, submit);
+        canvas.draw_shapes(avatar, pill, submit, self.picture.as_ref());
 
-        self.draw_line(
-            &mut canvas,
-            &initials(&identity.display_name),
-            text_style::INITIALS,
-            palette::TEXT_PRIMARY,
-            TextBox {
-                x: avatar.center_x - avatar.diameter / 2.0,
-                y: avatar.center_y - px(text_style::INITIALS.line_height) / 2.0,
-                width: avatar.diameter,
-                height: px(text_style::INITIALS.line_height),
-            },
-            Align::Center,
-        );
+        if self.picture.is_none() {
+            self.draw_line(
+                &mut canvas,
+                &initials(&identity.display_name),
+                text_style::INITIALS,
+                palette::TEXT_PRIMARY,
+                TextBox {
+                    x: avatar.center_x - avatar.diameter / 2.0,
+                    y: avatar.center_y - px(text_style::INITIALS.line_height) / 2.0,
+                    width: avatar.diameter,
+                    height: px(text_style::INITIALS.line_height),
+                },
+                Align::Center,
+            );
+        }
         let name = self.fit(&identity.display_name, text_style::NAME, width);
         self.draw_line(
             &mut canvas,
@@ -671,7 +676,13 @@ impl Canvas {
     /// Draws the avatar, the pill and, when there is input, the submit
     /// circle, anti-aliased. They are drawn before any text, which is blended
     /// over them.
-    fn draw_shapes(&mut self, avatar: Circle, pill: TextBox, submit: Option<Circle>) {
+    fn draw_shapes(
+        &mut self,
+        avatar: Circle,
+        pill: TextBox,
+        submit: Option<Circle>,
+        picture: Option<&tiny_skia::Pixmap>,
+    ) {
         let Some(mut pixmap) = tiny_skia::Pixmap::new(self.width, self.height) else {
             return;
         };
@@ -692,6 +703,28 @@ impl Canvas {
             if let Some(shader) = gradient {
                 let paint = tiny_skia::Paint {
                     shader,
+                    anti_alias: true,
+                    ..tiny_skia::Paint::default()
+                };
+                pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, identity, None);
+            }
+            if let Some(picture) = picture {
+                let scale = avatar.diameter / picture.width() as f32;
+                let paint = tiny_skia::Paint {
+                    shader: tiny_skia::Pattern::new(
+                        picture.as_ref(),
+                        tiny_skia::SpreadMode::Pad,
+                        tiny_skia::FilterQuality::Bicubic,
+                        1.0,
+                        tiny_skia::Transform::from_row(
+                            scale,
+                            0.0,
+                            0.0,
+                            scale,
+                            avatar.center_x - avatar.diameter / 2.0,
+                            top,
+                        ),
+                    ),
                     anti_alias: true,
                     ..tiny_skia::Paint::default()
                 };
@@ -1027,6 +1060,35 @@ mod tests {
         );
         let ring = pixel(&frame, center, component::AVATAR_RING_WIDTH / 2.0);
         assert!(ring[0] > top[0], "the ring is lighter than the avatar fill");
+    }
+
+    #[test]
+    fn an_account_picture_replaces_the_initials_inside_the_ring() {
+        let mut renderer = Renderer::new();
+        let conversation = waiting("", "Password", true, None);
+        let initials = renderer.identity(&identity(), &conversation, true, 0);
+        let mut pixels = [24_u8, 160, 96, 255].repeat(256 * 256);
+        pixels.shrink_to_fit();
+        renderer.picture =
+            tiny_skia::Pixmap::from_vec(pixels, tiny_skia::IntSize::from_wh(256, 256).unwrap());
+        let picture = renderer.identity(&identity(), &conversation, true, 0);
+
+        let center = size::MESSAGE_WIDTH / 2.0;
+        let middle = size::AVATAR / 2.0;
+        // The initials sit on the avatar's center line; the picture covers it.
+        assert_eq!(pixel(&picture, center, middle), [24, 160, 96, 255]);
+        assert_ne!(pixel(&initials, center, middle), [24, 160, 96, 255]);
+        let inset = component::AVATAR_RING_WIDTH + 4.0;
+        assert_eq!(pixel(&picture, center, inset), [24, 160, 96, 255]);
+        // The ring is still drawn over the picture, and nothing outside the
+        // circle changes.
+        let ring = pixel(&picture, center, component::AVATAR_RING_WIDTH / 2.0);
+        assert!(ring[0] > 24 && ring[2] > 96, "{ring:?}");
+        let corner = (center - size::AVATAR / 2.0 + 2.0, 2.0);
+        assert_eq!(
+            pixel(&picture, corner.0, corner.1),
+            pixel(&initials, corner.0, corner.1)
+        );
     }
 
     #[test]

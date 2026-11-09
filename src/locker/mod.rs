@@ -87,6 +87,9 @@ struct LockerPresentation {
     shake_started: Option<std::time::Instant>,
     status_checked: std::time::Instant,
     network: Option<&'static str>,
+    /// The locked user's picture, decoded on a background thread (RFD 7).
+    /// Locking never waits for it; the avatar shows initials until it arrives.
+    picture: Option<std::sync::mpsc::Receiver<tiny_skia::Pixmap>>,
     #[cfg(feature = "lock-test")]
     fail_worker_after_ready: bool,
     #[cfg(feature = "lock-test")]
@@ -125,6 +128,7 @@ impl LockerPresentation {
         let conversation = Conversation::new();
         let attempt = conversation.attempt();
         let reduced_motion = wallpaper.reduced_motion;
+        let identity_uid = identity.uid;
         let mut presentation = Self {
             wallpaper: wallpaper::State::start(wallpaper),
             identity,
@@ -144,6 +148,7 @@ impl LockerPresentation {
             shake_started: None,
             status_checked: std::time::Instant::now(),
             network: None,
+            picture: load_picture(identity_uid),
             #[cfg(feature = "lock-test")]
             fail_worker_after_ready,
             #[cfg(feature = "lock-test")]
@@ -180,6 +185,7 @@ impl LockerPresentation {
             shake_started: None,
             status_checked: std::time::Instant::now(),
             network: None,
+            picture: None,
             #[cfg(feature = "lock-test")]
             fail_worker_after_ready: false,
             #[cfg(feature = "lock-test")]
@@ -365,6 +371,28 @@ impl LockerPresentation {
     }
 }
 
+/// Looks up and decodes the locked user's AccountsService picture on a
+/// background thread, in the confined decoder. Any failure leaves the
+/// initials in place.
+fn load_picture(uid: u32) -> Option<std::sync::mpsc::Receiver<tiny_skia::Pixmap>> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("genkan-lock-picture".into())
+        .spawn(move || -> Option<()> {
+            let path = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?
+                .block_on(crate::accounts::picture_for_uid(uid))
+                .ok()??;
+            let executable = std::env::current_exe().ok()?;
+            let picture = genkan::avatar::decode_file(&executable, &path).ok()?;
+            sender.send(crate::design::picture::pixmap(&picture)?).ok()
+        })
+        .ok()?;
+    Some(receiver)
+}
+
 impl Presentation for LockerPresentation {
     fn receive_latest(&mut self) -> Refresh {
         let (mut authentication, rejected) = self.receive_auth();
@@ -391,6 +419,17 @@ impl Presentation for LockerPresentation {
             let network = crate::status::network();
             authentication |= self.network != network;
             self.network = network;
+        }
+        if let Some(receiver) = &self.picture {
+            match receiver.try_recv() {
+                Ok(picture) => {
+                    self.renderer.picture = Some(picture);
+                    self.picture = None;
+                    authentication = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.picture = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
         }
         if authentication {
             self.rebuild_overlay();
