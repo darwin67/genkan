@@ -31,7 +31,10 @@ Implements link:README.adoc[RFD 7: Account pictures].
   after the accounts appear and decoding each file once per run. The
   `account-pictures` preview fixture shows built-in pictures through the real
   decoder beside an account that keeps its initials.
-* [ ] Draw the locked user's picture in the lock's CPU renderer.
+* [x] Draw the locked user's picture in the lock's CPU renderer: looked up
+  through AccountsService `FindUserById` and decoded on a background thread,
+  so locking never waits for it. The `account-picture` lock preview fixture
+  shows it.
 
 == Phase 4: Choosing pictures
 
