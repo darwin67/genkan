@@ -1,5 +1,5 @@
 :authors: Darwin D. Wu <darwin67@users.noreply.github.com>
-:state: published
+:state: committed
 :discussion: https://github.com/darwin67/genkan/pull/79
 :labels: accounts, design, security, accountsservice, packaging
 
@@ -8,7 +8,7 @@
 == Goal
 
 Show each account's picture on the login and lock screens, as macOS does, in
-the 75-point avatar circle that currently holds initials. Ship a built-in set
+the 75-point avatar circle, with initials as the fallback. Ship a built-in set
 of original illustrations, let a user choose one or a photo of their own, and
 store the choice through AccountsService so every greeter and desktop tool sees
 the same picture.
@@ -21,13 +21,13 @@ link:IMPLEMENTATION.adoc[the implementation checklist].
 
 == Context
 
-Every avatar is generated initials today. Two earlier RFDs left pictures for
-later:
+Before this RFD, every avatar showed generated initials. Two earlier RFDs left
+pictures for later:
 
 * link:../0001/README.adoc[RFD 1] requires that the credential-handling process
-  not decode user-controlled avatar files, and leaves account artwork to a
+  not decode user-controlled avatar files, and left account artwork to a
   separate provenance and packaging review.
-* link:../0005/README.adoc[RFD 5] keeps initials "until a separate change adds
+* link:../0005/README.adoc[RFD 5] kept initials "until a separate change adds
   sandboxed photo decoding".
 
 AccountsService already stores one picture per account. Its
@@ -67,7 +67,7 @@ pixels identical on every host.
 
 === Choosing a picture
 
-A new `genkan avatar` command runs as the user, in their desktop session:
+The `genkan avatar` command runs as the user, in their desktop session:
 
 * `genkan avatar list` prints the built-in names.
 * `genkan avatar set <name>` passes the packaged PNG to `SetIconFile`.
@@ -97,7 +97,9 @@ public command. The parent:
 . starts the decoder from its own executable path with an empty environment,
   no other inherited descriptors, and standard output on a pipe;
 . reads exactly 256 by 256 premultiplied RGBA pixels (262,144 bytes) within two
-  seconds, and otherwise kills and reaps the decoder.
+  seconds for display, or 512 by 512 (1,048,576 bytes) for photo import, and
+  otherwise kills and reaps the decoder. The decoder is tied to its parent's
+  lifetime and cannot outlive it.
 
 Before it reads its input, the decoder sets `PR_SET_NO_NEW_PRIVS`, applies
 resource limits (256 MiB of address space, two seconds of CPU, no new files or
@@ -105,14 +107,19 @@ processes, no file writes), and installs a seccomp filter that allows only the
 system calls a memory-only decoder needs: reading and writing its standard
 descriptors, memory management, and exiting. It accepts PNG and JPEG only,
 rejects images larger than 4096 pixels on either side before decoding them,
-crops the image to a centered square, and scales it to 256 by 256. That covers
-the 75-point avatar at the lock's density of three pixels per point (225
-pixels).
+crops the image to a centered square, and scales it to 256 by 256 for display
+or 512 by 512 for import. The display size covers the 75-point avatar at the
+lock's density of three pixels per point (225 pixels). PNG uses the `image`
+crate; JPEG uses `zune-jpeg`, which decodes on the calling thread, because
+`image`'s JPEG decoder starts worker threads that the seccomp filter forbids.
 
 Pictures load after the accounts appear and never delay a prompt. An account
 shows initials until its picture arrives, and keeps them for good if the
 file is missing, oversized, malformed, slow, or anything else goes wrong. The
-login process decodes each distinct file at most once per run.
+login process decodes each distinct file at most once per run. The lock looks
+up its user through AccountsService `FindUserById` and decodes on a background
+thread, so locking never waits for a picture. Both renderers clip the picture
+to the avatar circle under the existing ring.
 
 == Non-goals
 
@@ -169,4 +176,7 @@ allowed to perform. The required containment is small enough to apply directly.
 
 RFD 1's rule that the credential-handling process does not decode avatar files
 still holds. RFD 5's "initials until sandboxed photo decoding" is resolved by
-this RFD; both will be updated when the implementation lands.
+this RFD. Amended 2026-11-10: both earlier RFDs and the design system's
+link:../../docs/design-system/components/Avatar/README.md[Avatar component]
+now describe pictures with initials as the fallback. All implementation
+checklist tasks are complete; this RFD is `committed`.

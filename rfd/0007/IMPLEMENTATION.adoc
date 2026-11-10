@@ -46,5 +46,5 @@ Implements link:README.adoc[RFD 7: Account pictures].
 
 == Phase 5: Records
 
-* [ ] Update RFD 1, RFD 5 and the design system's Avatar component.
+* [x] Update RFD 1, RFD 5 and the design system's Avatar component.
 * [x] Document `genkan avatar` in the deployment guide.

@@ -153,7 +153,7 @@ applies tokens to iced widgets. Each has guidelines and a preview in
 
 |`StatusBar` |The top-right row: session item and power item (login only), keyboard layout, and network status. An item whose menu is open is highlighted.
 |`Clock` |Short date above the large glass time, from one formatting source shared by login and lock.
-|`Avatar` |Initials over the avatar gradient with a ring; the focus ring when focused in an account row. Initials come from one shared, renderer-independent function.
+|`Avatar` |A picture clipped to the circle under the ring, or initials over the avatar gradient while loading or on any failure; the focus ring when focused in an account row. Initials come from one shared, renderer-independent function. Pictures are specified in link:../0007/README.adoc[RFD 7].
 |`PasswordField` |The grey glass pill that collects every PAM response. Placeholder when empty, dots for secret input, text for visible input, an outlined submit circle once there is input, a Caps Lock glyph while Caps Lock is on, and a horizontal shake that clears it on rejection.
 |`StatusMessage` |PAM text centered on the line under the pill, or above it for a prompt. Absent unless PAM sends text.
 |`AccountRow` |Avatars with names in a centered row for choosing an account; names truncate with an ellipsis.
@@ -248,8 +248,10 @@ clock, closer to the macOS lock-screen clock, is a separate open question.
 * No semantic accessibility tree. That remains deferred under RFD 1's
   accessibility criteria.
 * No Apple assets: no SF Pro, SF Symbols, Apple wallpapers, icons, or logo.
-* Account photos are out of scope here; the avatar shows initials until a
-  separate change adds sandboxed photo decoding.
+* Account photos are specified separately. Amended 2026-11-10:
+  link:../0007/README.adoc[RFD 7] adds built-in pictures and user photos through
+  sandboxed decoding outside the credential-handling process; initials remain
+  the fallback while loading or on any failure.
 
 [[alternatives-considered]]
 == Alternatives considered
