@@ -874,10 +874,12 @@ mod tests {
         presentation.rebuild();
         let rest = presentation.frame();
         // `receive_latest` reads the host's real network status every five
-        // seconds. A slow test run would otherwise cross that interval and
-        // draw the CI runner's link into a frame compared against `rest`.
+        // seconds and redraws the clock when the wall-clock minute changes. A
+        // slow test run would otherwise cross either and draw a new link or
+        // time into a frame compared against `rest`.
         let receive_latest = |presentation: &mut LockerPresentation| {
             presentation.status_checked = std::time::Instant::now();
+            presentation.clock_minute = Some(Local::now().timestamp().div_euclid(60));
             presentation.receive_latest()
         };
         presentation.shake_started =

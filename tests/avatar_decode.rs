@@ -89,6 +89,48 @@ fn the_process_decodes_png_and_jpeg_exactly_as_the_decoder_does() {
 }
 
 #[test]
+fn photo_import_is_a_metadata_free_512_pixel_centered_png_with_straight_alpha() {
+    let scratch = Scratch::new();
+    // Fine stripes in the centered square distinguish a genuine 512px
+    // decode from upscaling the 256px display picture. Outer thirds must go.
+    let image = ImageBuffer::<Rgba<u8>, _>::from_fn(1536, 512, |x, _| {
+        if !(512..1024).contains(&x) {
+            Rgba([255, 0, 0, 255])
+        } else if x % 2 == 0 {
+            Rgba([0, 128, 255, 128])
+        } else {
+            Rgba([0, 255, 0, 255])
+        }
+    });
+    let mut input = Cursor::new(Vec::new());
+    image.write_to(&mut input, ImageFormat::Png).unwrap();
+    let path = scratch.write("wide.png", input.get_ref());
+    let png = avatar::photo_png(genkan(), &path).unwrap();
+    assert!(png.len() as u64 <= avatar::MAX_FILE_BYTES);
+    assert_eq!(image::guess_format(&png).unwrap(), ImageFormat::Png);
+    let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
+    assert_eq!(decoded.dimensions(), (512, 512));
+    assert_eq!(decoded.get_pixel(0, 0).0, [0, 128, 255, 128]);
+    assert_eq!(decoded.get_pixel(1, 0).0, [0, 255, 0, 255]);
+    assert_eq!(decoded.get_pixel(511, 511).0, [0, 255, 0, 255]);
+    // No ancillary chunks: in particular no EXIF, text, timestamps or ICC.
+    let mut remaining = &png[8..];
+    while !remaining.is_empty() {
+        let length = u32::from_be_bytes(remaining[..4].try_into().unwrap()) as usize;
+        assert!(matches!(&remaining[4..8], b"IHDR" | b"IDAT" | b"IEND"));
+        remaining = &remaining[length + 12..];
+    }
+    let jpeg = scratch.write("photo.jpg", &photo(ImageFormat::Jpeg));
+    let imported = avatar::photo_png(genkan(), &jpeg).unwrap();
+    assert_eq!(image::load_from_memory(&imported).unwrap().width(), 512);
+    let malformed = scratch.write("broken", b"not an image");
+    assert_eq!(
+        avatar::photo_png(genkan(), &malformed),
+        Err(Error::Rejected)
+    );
+}
+
+#[test]
 fn unsafe_and_malformed_inputs_are_rejected() {
     let scratch = Scratch::new();
     let png = scratch.write("photo.png", &photo(ImageFormat::Png));
@@ -138,13 +180,49 @@ fn unsafe_and_malformed_inputs_are_rejected() {
     }
 }
 
+/// Runs a decode whose executable is a script written moments earlier.
+///
+/// Another test thread's fork can briefly inherit that script's write
+/// descriptor, and Linux refuses to execute a file open for writing
+/// (`ETXTBSY`), which the parent reports as `Spawn`. Retry only that.
+fn with_script<T: PartialEq + std::fmt::Debug>(
+    run: impl Fn() -> Result<T, Error>,
+) -> Result<T, Error> {
+    for _ in 0..100 {
+        match run() {
+            Err(Error::Spawn) => std::thread::sleep(Duration::from_millis(10)),
+            result => return result,
+        }
+    }
+    run()
+}
+
+/// A shell script, using only built-ins because the decoder runs with an
+/// empty environment and so no `PATH`, that writes `bytes` bytes of a
+/// valid premultiplied pixel value and exits successfully.
+fn writes(bytes: usize) -> String {
+    format!(
+        "i=0\nwhile [ $i -lt {} ]; do printf 0000000000000000; i=$((i+1)); done\nprintf '{}'",
+        bytes / 16,
+        "0".repeat(bytes % 16)
+    )
+}
+
 #[test]
 fn a_stuck_decoder_is_killed_at_the_timeout() {
     let scratch = Scratch::new();
     let png = scratch.write("photo.png", &photo(ImageFormat::Png));
     let stuck = scratch.script("stuck", "while :; do :; done");
     let started = Instant::now();
-    assert_eq!(avatar::decode_file(&stuck, &png), Err(Error::Timeout));
+    assert_eq!(
+        with_script(|| {
+            let attempt = Instant::now();
+            let result = avatar::decode_file(&stuck, &png);
+            assert!(result != Err(Error::Timeout) || attempt.elapsed() >= avatar::TIMEOUT);
+            result
+        }),
+        Err(Error::Timeout)
+    );
     let elapsed = started.elapsed();
     assert!(elapsed >= avatar::TIMEOUT, "{elapsed:?}");
     assert!(
@@ -158,11 +236,37 @@ fn a_decoder_that_answers_with_the_wrong_length_is_rejected() {
     let scratch = Scratch::new();
     let png = scratch.write("photo.png", &photo(ImageFormat::Png));
     let endless = scratch.script("endless", "while :; do printf xxxxxxxxxxxxxxxx; done");
-    assert_eq!(avatar::decode_file(&endless, &png), Err(Error::Rejected));
+    assert_eq!(
+        with_script(|| avatar::decode_file(&endless, &png)),
+        Err(Error::Rejected)
+    );
     let short = scratch.script("short", "printf xxxx");
-    assert_eq!(avatar::decode_file(&short, &png), Err(Error::Rejected));
+    assert_eq!(
+        with_script(|| avatar::decode_file(&short, &png)),
+        Err(Error::Rejected)
+    );
     let failing = scratch.script("failing", "exit 3");
-    assert_eq!(avatar::decode_file(&failing, &png), Err(Error::Rejected));
+    assert_eq!(
+        with_script(|| avatar::decode_file(&failing, &png)),
+        Err(Error::Rejected)
+    );
+    // A well-formed display-sized reply is accepted for display...
+    let display = scratch.script("display-sized", &writes(PIXEL_BYTES));
+    assert!(with_script(|| avatar::decode_file(&display, &png)).is_ok());
+    // ...but import must expect 512px, not accept a display-sized reply, and
+    // must reject one byte too many.
+    assert_eq!(
+        with_script(|| avatar::photo_png(&display, &png)),
+        Err(Error::Rejected)
+    );
+    let import = 512 * 512 * 4;
+    let exact = scratch.script("import-sized", &writes(import));
+    assert!(with_script(|| avatar::photo_png(&exact, &png)).is_ok());
+    let overlong = scratch.script("overlong", &writes(import + 1));
+    assert_eq!(
+        with_script(|| avatar::photo_png(&overlong, &png)),
+        Err(Error::Rejected)
+    );
 }
 
 #[test]

@@ -24,6 +24,8 @@ use image::ImageFormat;
 /// Width and height of a decoded picture, in pixels: the 75-point avatar at
 /// the lock's three pixels per point is 225 pixels.
 pub const SIZE: u32 = 256;
+/// Size used when importing a photo into AccountsService.
+pub const IMPORT_SIZE: u32 = 512;
 /// Byte length of a decoded picture: premultiplied RGBA rows, top to bottom.
 pub const PIXEL_BYTES: usize = (SIZE as usize) * (SIZE as usize) * 4;
 /// AccountsService's own limit for `SetIconFile`.
@@ -120,12 +122,49 @@ impl std::error::Error for Error {}
 ///
 /// This blocks for at most about [`TIMEOUT`]; call it off the UI thread.
 pub fn decode_file(executable: &Path, path: &Path) -> Result<Picture, Error> {
+    Picture::from_premultiplied(decode_file_pixels(executable, path, SIZE)?).ok_or(Error::Rejected)
+}
+
+/// Imports a photo through the same sandbox, returning a metadata-free,
+/// centered-square 512 by 512 PNG within AccountsService's size limit.
+pub fn photo_png(executable: &Path, path: &Path) -> Result<Vec<u8>, Error> {
+    let mut pixels = decode_file_pixels(executable, path, IMPORT_SIZE)?;
+    // The wire format is premultiplied; PNG stores straight alpha.
+    for pixel in pixels.chunks_exact_mut(4) {
+        let alpha = u32::from(pixel[3]);
+        for channel in &mut pixel[..3] {
+            *channel = if alpha == 0 {
+                0
+            } else {
+                ((u32::from(*channel) * 255 + alpha / 2) / alpha) as u8
+            };
+        }
+    }
+    let mut png = Vec::new();
+    image::ImageEncoder::write_image(
+        image::codecs::png::PngEncoder::new(&mut png),
+        &pixels,
+        IMPORT_SIZE,
+        IMPORT_SIZE,
+        image::ColorType::Rgba8,
+    )
+    .map_err(|_| Error::Rejected)?;
+    if png.len() as u64 > MAX_FILE_BYTES {
+        return Err(Error::Size);
+    }
+    Ok(png)
+}
+
+fn decode_file_pixels(executable: &Path, path: &Path, size: u32) -> Result<Vec<u8>, Error> {
     let file = open_picture(path)?;
+    let pixel_bytes = size as usize * size as usize * 4;
     let started = Instant::now();
     let mut child = Command::new(executable)
         .arg("avatar-decode")
         .arg("--parent-pid")
         .arg(std::process::id().to_string())
+        .arg("--size")
+        .arg(size.to_string())
         .env_clear()
         .stdin(Stdio::from(file))
         .stdout(Stdio::piped())
@@ -141,9 +180,9 @@ pub fn decode_file(executable: &Path, path: &Path) -> Result<Picture, Error> {
         .name("genkan-avatar-read".into())
         .spawn(move || {
             // One byte more than a picture shows an overlong answer.
-            let mut output = Vec::with_capacity(PIXEL_BYTES + 1);
+            let mut output = Vec::with_capacity(pixel_bytes + 1);
             let read = (&mut stdout)
-                .take(PIXEL_BYTES as u64 + 1)
+                .take(pixel_bytes as u64 + 1)
                 .read_to_end(&mut output);
             let _ = sender.send(read.map(|_| output));
         });
@@ -152,7 +191,7 @@ pub fn decode_file(executable: &Path, path: &Path) -> Result<Picture, Error> {
         return Err(Error::Spawn);
     }
     let output = match receiver.recv_timeout(TIMEOUT.saturating_sub(started.elapsed())) {
-        Ok(Ok(output)) if output.len() == PIXEL_BYTES => output,
+        Ok(Ok(output)) if output.len() == pixel_bytes => output,
         Err(mpsc::RecvTimeoutError::Timeout) => {
             reap(&mut child);
             return Err(Error::Timeout);
@@ -162,10 +201,11 @@ pub fn decode_file(executable: &Path, path: &Path) -> Result<Picture, Error> {
             return Err(Error::Rejected);
         }
     };
+    let valid = output
+        .chunks_exact(4)
+        .all(|pixel| pixel[..3].iter().all(|channel| *channel <= pixel[3]));
     match wait_until(&mut child, started + TIMEOUT) {
-        Some(status) if status.success() => {
-            Picture::from_premultiplied(output).ok_or(Error::Rejected)
-        }
+        Some(status) if status.success() && valid => Ok(output),
         Some(_) => Err(Error::Rejected),
         None => Err(Error::Timeout),
     }
@@ -213,10 +253,10 @@ fn reap(child: &mut Child) {
 /// The `genkan avatar-decode` process. Never returns.
 ///
 /// It confines itself before reading its input, decodes standard input with
-/// [`decode_bytes`], and writes exactly [`PIXEL_BYTES`] bytes to standard
-/// output, or exits with a failure status.
-pub fn run_decoder(parent_pid: i32) -> ! {
-    let decoded = bind_to_parent(parent_pid)
+/// [`decode_bytes_at_size`], and writes exactly `size * size * 4` bytes to
+/// standard output, or exits with a failure status. Only 256 and 512 are allowed.
+pub fn run_decoder(parent_pid: i32, size: u32) -> ! {
+    let decoded = (matches!(size, SIZE | IMPORT_SIZE) && bind_to_parent(parent_pid))
         .then(confine)
         .and_then(|confined| confined.ok())
         .and_then(|()| {
@@ -226,7 +266,7 @@ pub fn run_decoder(parent_pid: i32) -> ! {
                 .take(MAX_FILE_BYTES + 1)
                 .read_to_end(&mut input)
                 .ok()?;
-            decode_bytes(&input)
+            decode_bytes_at_size(&input, size)
         });
     let written = decoded.is_some_and(|pixels| {
         let mut stdout = std::io::stdout().lock();
@@ -341,6 +381,10 @@ fn seccomp_filter() -> Result<seccompiler::SeccompFilter, ()> {
 ///
 /// This parses untrusted bytes; only [`run_decoder`] calls it outside tests.
 pub fn decode_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    decode_bytes_at_size(data, SIZE)
+}
+
+fn decode_bytes_at_size(data: &[u8], size: u32) -> Option<Vec<u8>> {
     if data.len() as u64 > MAX_FILE_BYTES {
         return None;
     }
@@ -359,7 +403,7 @@ pub fn decode_bytes(data: &[u8]) -> Option<Vec<u8>> {
     let square =
         image::imageops::crop_imm(&image, (width - side) / 2, (height - side) / 2, side, side)
             .to_image();
-    let mut pixels = image::imageops::resize(&square, SIZE, SIZE, FilterType::Triangle).into_raw();
+    let mut pixels = image::imageops::resize(&square, size, size, FilterType::Triangle).into_raw();
     for pixel in pixels.chunks_exact_mut(4) {
         let alpha = u16::from(pixel[3]);
         for channel in &mut pixel[..3] {

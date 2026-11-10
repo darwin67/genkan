@@ -477,6 +477,29 @@ It presents account selection when recency is missing, zero, or tied.
 from bounded labels; user-controlled icon files are not decoded in the
 credential-handling process.
 
+### Account pictures
+
+Run these commands as yourself from your desktop session, without `sudo`:
+
+```sh
+genkan avatar list
+genkan avatar set lake
+genkan avatar set --file /home/alice/Pictures/photo.jpg
+genkan avatar clear
+```
+
+`list` reads the installed built-in manifest. `set` changes only the calling
+user's AccountsService picture, subject to its normal polkit
+`change-own-user-data` policy; it cannot select another account. Photo imports
+accept regular PNG/JPEG files up to 1 MiB and 4096 pixels per side. A sandboxed
+child crops the centered square and scales it to 512 by 512; the command
+re-encodes a metadata-free PNG, rejects output over 1 MiB, and removes its
+private temporary file after AccountsService copies it (also on failure).
+Login and lock load the picture on their next start; malformed or unavailable
+pictures keep initials. `clear` restores initials.
+
+### Wayland sessions
+
 Wayland sessions come exclusively from validated
 `wayland-sessions/*.desktop` entries in `XDG_DATA_DIRS`. Genkan honors directory
 precedence and hidden-entry masking; validates type, visibility, `TryExec`, and

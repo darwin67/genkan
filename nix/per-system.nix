@@ -499,7 +499,10 @@ in
     };
   }
   // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
-    greetd-e2e = pkgs.testers.runNixOSTest (import ./tests/greetd.nix { genkanE2e = e2ePackage; });
+    greetd-e2e = pkgs.testers.runNixOSTest (import ./tests/greetd.nix {
+      genkanE2e = e2ePackage;
+      genkan = package;
+    });
     niri-greeter-vm = pkgs.testers.runNixOSTest (
       import ./tests/niri-greeter.nix {
         inherit pkgs;

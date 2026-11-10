@@ -38,12 +38,12 @@ Implements link:README.adoc[RFD 7: Account pictures].
 
 == Phase 4: Choosing pictures
 
-* [ ] Add `genkan avatar list`, `set <name>`, `set --file <path>` and `clear`.
-* [ ] Re-encode photos as metadata-free 512 by 512 PNGs before `SetIconFile`.
-* [ ] Extend the greetd VM test: set a picture as the user, see it on the login
+* [x] Add `genkan avatar list`, `set <name>`, `set --file <path>` and `clear`.
+* [x] Re-encode photos as metadata-free 512 by 512 PNGs before `SetIconFile`.
+* [x] Extend the greetd VM test: set a picture as the user, see it on the login
   screen, and see initials for a malformed file.
 
 == Phase 5: Records
 
 * [ ] Update RFD 1, RFD 5 and the design system's Avatar component.
-* [ ] Document `genkan avatar` in the deployment guide.
+* [x] Document `genkan avatar` in the deployment guide.
