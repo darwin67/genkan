@@ -128,38 +128,33 @@ let
         '') dynamicHeicAssets}
       '';
 
-  # Built-in account pictures (RFD 7): each source is pinned by its committed
-  # bytes, rendered once with the pinned resvg, and the PNG pinned too, so the
-  # greeter never parses SVG at runtime and the shipped pixels cannot drift.
+  # Built-in account pictures (RFD 7). The SVG sources and their rendered
+  # PNGs are both committed and pinned by hash, so the installed pixels are
+  # the same whichever nixpkgs a host builds Genkan with (a renderer upgrade
+  # must not change them), and the greeter never parses SVG at runtime.
+  # `make update-avatars` re-renders the PNGs with this flake's resvg.
   avatarManifest = builtins.fromTOML (builtins.readFile ../assets/avatars/manifest.toml);
-  avatarSize = toString avatarManifest.png_size;
   avatars = map (
     avatar:
     let
       source = ../assets/avatars + "/${avatar.name}.svg";
+      png = ../assets/avatars + "/${avatar.name}.png";
     in
     assert builtins.hashFile "sha256" source == avatar.svg_sha256;
-    avatar // { inherit source; }
+    assert builtins.hashFile "sha256" png == avatar.png_sha256;
+    avatar // { inherit source png; }
   ) avatarManifest.avatar;
   avatarDirectory =
     pkgs.runCommand "genkan-avatars"
       {
-        nativeBuildInputs = [
-          pkgs.coreutils
-          pkgs.resvg
-        ];
+        nativeBuildInputs = [ pkgs.coreutils ];
       }
       ''
         mkdir -p $out
         install -m 0444 ${../assets/avatars/manifest.toml} $out/manifest.toml
         ${pkgs.lib.concatMapStringsSep "\n" (avatar: ''
           install -m 0444 ${avatar.source} $out/${avatar.name}.svg
-          resvg --width ${avatarSize} --height ${avatarSize} ${avatar.source} $out/${avatar.name}.png
-          chmod 0444 $out/${avatar.name}.png
-          test "$(sha256sum $out/${avatar.name}.png | cut -d' ' -f1)" = "${avatar.png_sha256}" || {
-            echo "${avatar.name}.png does not match png_sha256 in assets/avatars/manifest.toml" >&2
-            exit 1
-          }
+          install -m 0444 ${avatar.png} $out/${avatar.name}.png
         '') avatars}
       '';
 
@@ -499,10 +494,12 @@ in
     };
   }
   // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
-    greetd-e2e = pkgs.testers.runNixOSTest (import ./tests/greetd.nix {
-      genkanE2e = e2ePackage;
-      genkan = package;
-    });
+    greetd-e2e = pkgs.testers.runNixOSTest (
+      import ./tests/greetd.nix {
+        genkanE2e = e2ePackage;
+        genkan = package;
+      }
+    );
     niri-greeter-vm = pkgs.testers.runNixOSTest (
       import ./tests/niri-greeter.nix {
         inherit pkgs;

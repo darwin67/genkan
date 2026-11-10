@@ -605,6 +605,18 @@ test_avatar_check_rejects_unsafe_sources() {
   expect_avatar_failure "$fixture" "svg_sha256 does not match lake.svg"
 
   reset_avatar_fixture
+  printf 'x' >> "$fixture/lake.png"
+  expect_avatar_failure "$fixture" "png_sha256 does not match lake.png"
+
+  reset_avatar_fixture
+  cp "$fixture/lake.svg" "$fixture/lake.png"
+  expect_avatar_failure "$fixture" "lake.png must be a 512-pixel square PNG"
+
+  reset_avatar_fixture
+  rm "$fixture/moon.png"
+  expect_avatar_failure "$fixture" "missing moon.png"
+
+  reset_avatar_fixture
   rm "$fixture/moon.svg"
   expect_avatar_failure "$fixture" "missing moon.svg"
 
