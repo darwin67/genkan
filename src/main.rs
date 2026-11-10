@@ -1,5 +1,6 @@
 mod accounts;
 mod app;
+mod avatar_command;
 mod background;
 mod conversation;
 mod design;
@@ -45,6 +46,8 @@ enum Command {
     /// Decode every frame of an installed dynamic HEIC.
     #[command(hide = true)]
     VerifyWallpapers(VerifyWallpapersArguments),
+    /// Choose your account picture through AccountsService.
+    Avatar(avatar_command::Arguments),
     /// Decode one account picture from standard input in a confined process.
     #[command(hide = true)]
     AvatarDecode(AvatarDecodeArguments),
@@ -60,6 +63,17 @@ struct AvatarDecodeArguments {
     /// The process that started the decoder; it exits if that is not its parent.
     #[arg(long)]
     parent_pid: i32,
+    /// Fixed output dimensions; display defaults to 256, photo import uses 512.
+    #[arg(long, default_value = "256", value_parser = parse_avatar_size)]
+    size: u32,
+}
+
+fn parse_avatar_size(value: &str) -> Result<u32, String> {
+    match value {
+        "256" => Ok(256),
+        "512" => Ok(512),
+        _ => Err("picture size must be 256 or 512".into()),
+    }
 }
 
 /// Decodes a packaged dynamic HEIC end to end.
@@ -379,7 +393,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             arguments.parent_pid,
         ),
         Command::VerifyWallpapers(arguments) => run_verify_wallpapers(arguments)?,
-        Command::AvatarDecode(arguments) => genkan::avatar::run_decoder(arguments.parent_pid),
+        Command::Avatar(arguments) => avatar_command::run(arguments)?,
+        Command::AvatarDecode(arguments) => {
+            genkan::avatar::run_decoder(arguments.parent_pid, arguments.size)
+        }
     }
     Ok(())
 }
@@ -656,6 +673,7 @@ mod tests {
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_)
+            | Command::Avatar(_)
             | Command::AvatarDecode(_) => {
                 unreachable!("the helper always selects login")
             }
@@ -674,6 +692,7 @@ mod tests {
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_)
+            | Command::Avatar(_)
             | Command::AvatarDecode(_) => {
                 unreachable!("the helper always selects lock")
             }
@@ -694,9 +713,35 @@ mod tests {
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_)
+            | Command::Avatar(_)
             | Command::AvatarDecode(_) => {
                 unreachable!("the helper always selects wallpaper")
             }
+        }
+    }
+
+    #[test]
+    fn avatar_commands_require_exactly_one_picture_source_and_no_target_user() {
+        for args in [
+            vec!["avatar", "list"],
+            vec!["avatar", "set", "lake"],
+            vec!["avatar", "set", "--file", "a photo.jpg"],
+            vec!["avatar", "clear"],
+            vec!["avatar-decode", "--parent-pid", "42"],
+            vec!["avatar-decode", "--parent-pid", "42", "--size", "512"],
+        ] {
+            assert!(Arguments::try_parse_from(std::iter::once("genkan").chain(args)).is_ok());
+        }
+        for args in [
+            vec!["avatar"],
+            vec!["avatar", "set"],
+            vec!["avatar", "set", "lake", "--file", "photo.png"],
+            vec!["avatar", "set", "--file"],
+            vec!["avatar", "clear", "alice"],
+            vec!["avatar", "set", "lake", "--username", "alice"],
+            vec!["avatar-decode", "--parent-pid", "42", "--size", "4096"],
+        ] {
+            assert!(Arguments::try_parse_from(std::iter::once("genkan").chain(args)).is_err());
         }
     }
 

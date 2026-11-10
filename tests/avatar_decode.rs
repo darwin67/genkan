@@ -89,6 +89,48 @@ fn the_process_decodes_png_and_jpeg_exactly_as_the_decoder_does() {
 }
 
 #[test]
+fn photo_import_is_a_metadata_free_512_pixel_centered_png_with_straight_alpha() {
+    let scratch = Scratch::new();
+    // Fine stripes in the centered square distinguish a genuine 512px
+    // decode from upscaling the 256px display picture. Outer thirds must go.
+    let image = ImageBuffer::<Rgba<u8>, _>::from_fn(1536, 512, |x, _| {
+        if !(512..1024).contains(&x) {
+            Rgba([255, 0, 0, 255])
+        } else if x % 2 == 0 {
+            Rgba([0, 128, 255, 128])
+        } else {
+            Rgba([0, 255, 0, 255])
+        }
+    });
+    let mut input = Cursor::new(Vec::new());
+    image.write_to(&mut input, ImageFormat::Png).unwrap();
+    let path = scratch.write("wide.png", input.get_ref());
+    let png = avatar::photo_png(genkan(), &path).unwrap();
+    assert!(png.len() as u64 <= avatar::MAX_FILE_BYTES);
+    assert_eq!(image::guess_format(&png).unwrap(), ImageFormat::Png);
+    let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
+    assert_eq!(decoded.dimensions(), (512, 512));
+    assert_eq!(decoded.get_pixel(0, 0).0, [0, 128, 255, 128]);
+    assert_eq!(decoded.get_pixel(1, 0).0, [0, 255, 0, 255]);
+    assert_eq!(decoded.get_pixel(511, 511).0, [0, 255, 0, 255]);
+    // No ancillary chunks: in particular no EXIF, text, timestamps or ICC.
+    let mut remaining = &png[8..];
+    while !remaining.is_empty() {
+        let length = u32::from_be_bytes(remaining[..4].try_into().unwrap()) as usize;
+        assert!(matches!(&remaining[4..8], b"IHDR" | b"IDAT" | b"IEND"));
+        remaining = &remaining[length + 12..];
+    }
+    let jpeg = scratch.write("photo.jpg", &photo(ImageFormat::Jpeg));
+    let imported = avatar::photo_png(genkan(), &jpeg).unwrap();
+    assert_eq!(image::load_from_memory(&imported).unwrap().width(), 512);
+    let malformed = scratch.write("broken", b"not an image");
+    assert_eq!(
+        avatar::photo_png(genkan(), &malformed),
+        Err(Error::Rejected)
+    );
+}
+
+#[test]
 fn unsafe_and_malformed_inputs_are_rejected() {
     let scratch = Scratch::new();
     let png = scratch.write("photo.png", &photo(ImageFormat::Png));
@@ -163,6 +205,11 @@ fn a_decoder_that_answers_with_the_wrong_length_is_rejected() {
     assert_eq!(avatar::decode_file(&short, &png), Err(Error::Rejected));
     let failing = scratch.script("failing", "exit 3");
     assert_eq!(avatar::decode_file(&failing, &png), Err(Error::Rejected));
+    // Import must expect 512px, not accidentally accept a display-sized reply.
+    let display = scratch.script("display-sized", "head -c 262144 /dev/zero");
+    assert_eq!(avatar::photo_png(&display, &png), Err(Error::Rejected));
+    let overlong = scratch.script("overlong", "head -c 1048577 /dev/zero");
+    assert_eq!(avatar::photo_png(&overlong, &png), Err(Error::Rejected));
 }
 
 #[test]

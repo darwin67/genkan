@@ -194,6 +194,31 @@ pub(crate) async fn picture_for_uid(uid: u32) -> Result<Option<PathBuf>, Account
     Ok(Some(PathBuf::from(icon_file)).filter(|path| path.is_absolute()))
 }
 
+/// Change only the calling real UID's picture. AccountsService owns copying
+/// the file and authorizing change-own-user-data through polkit.
+pub(crate) async fn set_own_picture(icon_file: &str) -> Result<(), AccountError> {
+    let connection = zbus::Connection::system().await?;
+    let manager = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.Accounts",
+        "/org/freedesktop/Accounts",
+        "org.freedesktop.Accounts",
+    )
+    .await?;
+    // SAFETY: getuid has no preconditions and returns the real (not effective) UID.
+    let uid = unsafe { libc::getuid() };
+    let path: OwnedObjectPath = manager.call("FindUserById", &(i64::from(uid),)).await?;
+    let user = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.Accounts",
+        path.as_str(),
+        "org.freedesktop.Accounts.User",
+    )
+    .await?;
+    user.call::<_, _, ()>("SetIconFile", &(icon_file,)).await?;
+    Ok(())
+}
+
 pub async fn discover() -> Result<Vec<Account>, AccountError> {
     let connection = zbus::Connection::system().await?;
     let manager = zbus::Proxy::new(

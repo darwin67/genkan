@@ -50,6 +50,8 @@ gui = [
     "dep:seccompiler",
     "dep:smithay-client-toolkit",
     "dep:tiny-skia",
+    "dep:tempfile",
+    "dep:toml",
     "tokio/macros",
     "tokio/process",
     "tokio/rt",
@@ -104,6 +106,8 @@ rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true
 rustix = { version = "1.1.4", features = ["fs", "process", "time"], optional = true }
 seccompiler = { version = "0.5.0", optional = true }
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std"], optional = true }
+tempfile = { version = "3.27.0", optional = true }
+toml = { version = "1.1.4", optional = true }
 smithay-client-toolkit = { version = "=0.20.0", default-features = false, optional = true }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "time"] }
