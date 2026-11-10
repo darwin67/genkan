@@ -92,7 +92,8 @@ is neither locked nor a system account. Failure to load one object does not hide
 other valid accounts; when none remain, the first discovery error is reported,
 or the empty eligible-set error is reported when discovery itself succeeded.
 
-Accounts use bounded display names and generated initials; the
+Accounts use bounded display names and pictures with generated initials as the
+fallback, as specified in link:../0007/README.adoc[RFD 7]. The
 credential-handling process does not decode user-controlled avatar files. The
 username is shown as secondary text whenever display names would otherwise be
 ambiguous, preventing duplicate or truncated names and
@@ -303,8 +304,10 @@ hide required controls behind hover, introduce arbitrary shell commands, or
 move authentication ownership out of greetd/PAM.
 
 It also does not choose final wallpaper artwork or require account photographs.
-Those assets require a separate provenance and packaging review. Exact values,
-animation timing, and icon design live in the design system and RFD 5.
+Wallpaper assets require a separate provenance and packaging review.
+link:../0007/README.adoc[RFD 7] specifies optional account pictures, including
+the built-in artwork's provenance and packaging. Exact values, animation timing,
+and icon design live in the design system and RFD 5.
 
 == Alternatives considered
 
@@ -342,3 +345,7 @@ link:IMPLEMENTATION.adoc[RFD 1 implementation checklist].
   "reproduce Tahoe" alternative were updated, and the state returned from
   `committed` to `published` until the new presentation is implemented under
   RFD 5. It returned to `committed` once RFD 5 and RFD 6 were implemented.
+* *2026-11-10: Account pictures.* RFD 7 adds built-in pictures and user photos
+  with initials as the fallback. Account selection and the artwork boundary
+  now point to that record; the prohibition on decoding user-controlled avatar
+  files in the credential-handling process is unchanged.
