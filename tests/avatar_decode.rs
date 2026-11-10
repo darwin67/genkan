@@ -180,13 +180,49 @@ fn unsafe_and_malformed_inputs_are_rejected() {
     }
 }
 
+/// Runs a decode whose executable is a script written moments earlier.
+///
+/// Another test thread's fork can briefly inherit that script's write
+/// descriptor, and Linux refuses to execute a file open for writing
+/// (`ETXTBSY`), which the parent reports as `Spawn`. Retry only that.
+fn with_script<T: PartialEq + std::fmt::Debug>(
+    run: impl Fn() -> Result<T, Error>,
+) -> Result<T, Error> {
+    for _ in 0..100 {
+        match run() {
+            Err(Error::Spawn) => std::thread::sleep(Duration::from_millis(10)),
+            result => return result,
+        }
+    }
+    run()
+}
+
+/// A shell script, using only built-ins because the decoder runs with an
+/// empty environment and so no `PATH`, that writes `bytes` bytes of a
+/// valid premultiplied pixel value and exits successfully.
+fn writes(bytes: usize) -> String {
+    format!(
+        "i=0\nwhile [ $i -lt {} ]; do printf 0000000000000000; i=$((i+1)); done\nprintf '{}'",
+        bytes / 16,
+        "0".repeat(bytes % 16)
+    )
+}
+
 #[test]
 fn a_stuck_decoder_is_killed_at_the_timeout() {
     let scratch = Scratch::new();
     let png = scratch.write("photo.png", &photo(ImageFormat::Png));
     let stuck = scratch.script("stuck", "while :; do :; done");
     let started = Instant::now();
-    assert_eq!(avatar::decode_file(&stuck, &png), Err(Error::Timeout));
+    assert_eq!(
+        with_script(|| {
+            let attempt = Instant::now();
+            let result = avatar::decode_file(&stuck, &png);
+            assert!(result != Err(Error::Timeout) || attempt.elapsed() >= avatar::TIMEOUT);
+            result
+        }),
+        Err(Error::Timeout)
+    );
     let elapsed = started.elapsed();
     assert!(elapsed >= avatar::TIMEOUT, "{elapsed:?}");
     assert!(
@@ -200,16 +236,37 @@ fn a_decoder_that_answers_with_the_wrong_length_is_rejected() {
     let scratch = Scratch::new();
     let png = scratch.write("photo.png", &photo(ImageFormat::Png));
     let endless = scratch.script("endless", "while :; do printf xxxxxxxxxxxxxxxx; done");
-    assert_eq!(avatar::decode_file(&endless, &png), Err(Error::Rejected));
+    assert_eq!(
+        with_script(|| avatar::decode_file(&endless, &png)),
+        Err(Error::Rejected)
+    );
     let short = scratch.script("short", "printf xxxx");
-    assert_eq!(avatar::decode_file(&short, &png), Err(Error::Rejected));
+    assert_eq!(
+        with_script(|| avatar::decode_file(&short, &png)),
+        Err(Error::Rejected)
+    );
     let failing = scratch.script("failing", "exit 3");
-    assert_eq!(avatar::decode_file(&failing, &png), Err(Error::Rejected));
-    // Import must expect 512px, not accidentally accept a display-sized reply.
-    let display = scratch.script("display-sized", "head -c 262144 /dev/zero");
-    assert_eq!(avatar::photo_png(&display, &png), Err(Error::Rejected));
-    let overlong = scratch.script("overlong", "head -c 1048577 /dev/zero");
-    assert_eq!(avatar::photo_png(&overlong, &png), Err(Error::Rejected));
+    assert_eq!(
+        with_script(|| avatar::decode_file(&failing, &png)),
+        Err(Error::Rejected)
+    );
+    // A well-formed display-sized reply is accepted for display...
+    let display = scratch.script("display-sized", &writes(PIXEL_BYTES));
+    assert!(with_script(|| avatar::decode_file(&display, &png)).is_ok());
+    // ...but import must expect 512px, not accept a display-sized reply, and
+    // must reject one byte too many.
+    assert_eq!(
+        with_script(|| avatar::photo_png(&display, &png)),
+        Err(Error::Rejected)
+    );
+    let import = 512 * 512 * 4;
+    let exact = scratch.script("import-sized", &writes(import));
+    assert!(with_script(|| avatar::photo_png(&exact, &png)).is_ok());
+    let overlong = scratch.script("overlong", &writes(import + 1));
+    assert_eq!(
+        with_script(|| avatar::photo_png(&overlong, &png)),
+        Err(Error::Rejected)
+    );
 }
 
 #[test]
