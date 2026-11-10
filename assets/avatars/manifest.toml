@@ -1,7 +1,7 @@
 # Built-in account pictures (RFD 7). Each is an original vector illustration
-# drawn for Genkan, under the repository's MIT license. The package build
-# renders every SVG to a PNG with resvg and fails unless both match the
-# hashes below; a change to a source or to the pinned resvg needs new hashes.
+# drawn for Genkan, under the repository's MIT license, committed with the PNG
+# rendered from it. The package build installs both and fails unless they
+# match the hashes below; after changing a source, run `make update-avatars`.
 schema_version = 1
 png_size = 512
 renderer = "resvg 0.48.1"

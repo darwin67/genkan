@@ -53,10 +53,17 @@ Their SVG sources live in `assets/avatars/` under the repository's MIT license,
 each a 100-unit square without text, scripts, external references or embedded
 raster data.
 
-The package build rasterizes each source with resvg to a 512 by 512 PNG and
+Each source is committed with a 512 by 512 PNG rendered from it by
+`make update-avatars`, which uses this flake's pinned resvg. The package build
 installs both under `share/genkan/avatars/`. A manifest, like the wallpaper
-manifest, records the SHA-256 of every source and output, and the Nix build
-fails if either differs. The greeter never parses SVG at runtime.
+manifest, records the SHA-256 of every source and PNG, and the Nix build fails
+if either differs. The greeter never parses SVG at runtime.
+
+Amended 2026-11-10: the package build originally rendered the PNGs itself and
+pinned their hashes. A host that builds Genkan with its own nixpkgs, as a
+flake input that follows the host's, then rendered with another resvg release
+and failed the hash check. Committing the rendered PNGs keeps the installed
+pixels identical on every host.
 
 === Choosing a picture
 
@@ -111,7 +118,7 @@ login process decodes each distinct file at most once per run.
 
 * No picture picker, camera capture or editing in the greeter or the lock.
 * No SVG, HEIC, GIF, WebP or animated pictures from users. Built-in SVGs are
-  rasterized at build time.
+  rendered ahead of time and committed as PNGs.
 * No network pictures such as Gravatar, and no per-user files outside
   AccountsService.
 * No change to authentication, account eligibility or session start.
@@ -150,7 +157,7 @@ process's memory.
 === Store the SVG
 
 AccountsService would then hold user-controlled SVG, and the greeter would
-have to parse SVG at runtime. Rasterizing at build time keeps runtime decoding
+have to parse SVG at runtime. Rendering ahead of time keeps runtime decoding
 to PNG and JPEG.
 
 === An external sandbox such as bubblewrap or systemd-run

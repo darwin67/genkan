@@ -7,7 +7,8 @@ plain vector drawings: a fixed set of shape and gradient elements on a
 100-unit square, with no text, scripts, styles, images, or references other
 than to gradients defined in the same file.
 
-The PNG hashes are checked by the Nix build, which renders them.
+Each entry's PNG, rendered from the SVG by `make update-avatars`, must be a
+`png_size`-square PNG matching its recorded hash.
 
 Usage: check-avatars.py [AVATAR_DIRECTORY]
 The AVATAR_DIRECTORY environment variable is used when no path is given.
@@ -100,10 +101,19 @@ def check(directory):
         path = os.path.join(directory, f"{name}.svg")
         require(os.path.isfile(path) and not os.path.islink(path), f"{name}: missing {name}.svg")
         require(check_svg(path) == entry["svg_sha256"], f"{name}: svg_sha256 does not match {name}.svg")
-    extra = sorted(
-        file for file in os.listdir(directory)
-        if file != "manifest.toml" and file.removesuffix(".svg") not in names
-    )
+        png = os.path.join(directory, f"{name}.png")
+        require(os.path.isfile(png) and not os.path.islink(png), f"{name}: missing {name}.png")
+        with open(png, "rb") as source:
+            data = source.read()
+        require(
+            data[:16] == b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+            and int.from_bytes(data[16:20], "big") == manifest["png_size"]
+            and int.from_bytes(data[20:24], "big") == manifest["png_size"],
+            f"{name}.png must be a {manifest['png_size']}-pixel square PNG",
+        )
+        require(hashlib.sha256(data).hexdigest() == entry["png_sha256"], f"{name}: png_sha256 does not match {name}.png")
+    allowed = {"manifest.toml"} | {f"{name}.svg" for name in names} | {f"{name}.png" for name in names}
+    extra = sorted(file for file in os.listdir(directory) if file not in allowed)
     require(not extra, f"unlisted files in {directory}: {extra}")
 
 
