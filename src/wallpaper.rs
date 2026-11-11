@@ -48,7 +48,7 @@ const HEIC_FAILED_TAG: u8 = b'E';
 const HEIC_HEADER_BYTES: usize = 12;
 const MAX_HEIC_FRAME_DIMENSION: u32 = 16_384;
 const MAX_HEIC_FRAME_BYTES: usize = 256 * 1024 * 1024;
-static POSTERS: [OnceLock<Result<image::Handle, String>>; 5] = [const { OnceLock::new() }; 5];
+static POSTERS: [OnceLock<Result<image::Handle, String>>; 9] = [const { OnceLock::new() }; 9];
 
 #[derive(Debug, Clone, Copy)]
 struct PlaybackSpec {
@@ -58,7 +58,7 @@ struct PlaybackSpec {
     crossfade: Duration,
 }
 
-const WALLPAPERS: [PlaybackSpec; 5] = [
+const WALLPAPERS: [PlaybackSpec; 9] = [
     PlaybackSpec {
         install_name: "tahoe-beach.mov",
         poster_name: "tahoe-beach-poster.jpg",
@@ -89,6 +89,30 @@ const WALLPAPERS: [PlaybackSpec; 5] = [
         duration: Duration::from_micros(60_000_000),
         crossfade: Duration::from_millis(2_000),
     },
+    PlaybackSpec {
+        install_name: "iceland.mov",
+        poster_name: "iceland-poster.jpg",
+        duration: Duration::from_micros(502_368_533),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "greenland.mov",
+        poster_name: "greenland-poster.jpg",
+        duration: Duration::from_micros(600_600_000),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "patagonia.mov",
+        poster_name: "patagonia-poster.jpg",
+        duration: Duration::from_micros(296_829_867),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "palau-jellies.mov",
+        poster_name: "palau-jellies-poster.jpg",
+        duration: Duration::from_micros(428_694_933),
+        crossfade: Duration::from_millis(2_000),
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -99,6 +123,10 @@ pub(crate) enum Catalog {
     SequoiaMorning,
     SequoiaNight,
     GoldenGate,
+    Iceland,
+    Greenland,
+    Patagonia,
+    PalauJellies,
 }
 
 impl Catalog {
@@ -109,6 +137,10 @@ impl Catalog {
             Self::SequoiaMorning => 2,
             Self::SequoiaNight => 3,
             Self::GoldenGate => 4,
+            Self::Iceland => 5,
+            Self::Greenland => 6,
+            Self::Patagonia => 7,
+            Self::PalauJellies => 8,
         }
     }
 
@@ -2171,6 +2203,34 @@ mod tests {
                     "golden-gate.mov",
                     "golden-gate-poster.jpg",
                     60_000_000,
+                    2_000
+                ),
+                (
+                    "iceland".into(),
+                    "iceland.mov",
+                    "iceland-poster.jpg",
+                    502_368_533,
+                    2_000
+                ),
+                (
+                    "greenland".into(),
+                    "greenland.mov",
+                    "greenland-poster.jpg",
+                    600_600_000,
+                    2_000
+                ),
+                (
+                    "patagonia".into(),
+                    "patagonia.mov",
+                    "patagonia-poster.jpg",
+                    296_829_867,
+                    2_000
+                ),
+                (
+                    "palau-jellies".into(),
+                    "palau-jellies.mov",
+                    "palau-jellies-poster.jpg",
+                    428_694_933,
                     2_000
                 ),
             ]

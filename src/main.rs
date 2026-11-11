@@ -1,5 +1,6 @@
 mod accounts;
 mod app;
+mod asset_command;
 mod avatar_command;
 mod background;
 mod conversation;
@@ -38,6 +39,8 @@ enum Command {
     Lock(LockArguments),
     /// Display a login or dynamic HEIC wallpaper on a Wayland desktop.
     Wallpaper(WallpaperArguments),
+    /// List and safely preview packaged MOV and dynamic HEIC wallpapers.
+    Assets(asset_command::Arguments),
     /// Supervise the login clients and end the niri greeter when login exits.
     GreeterSession(greeter_session::Arguments),
     /// Parse and decode a dynamic HEIC in a resource-bounded child process.
@@ -385,6 +388,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Login(arguments) => run_login(arguments)?,
         Command::Lock(arguments) => run_lock(arguments)?,
         Command::Wallpaper(arguments) => run_wallpaper(arguments)?,
+        Command::Assets(arguments) => asset_command::run(arguments)?,
         Command::GreeterSession(arguments) => greeter_session::run(arguments)?,
         Command::HeicWorker(arguments) => wallpaper::run_heic_worker(
             &arguments.file,
@@ -670,6 +674,7 @@ mod tests {
             Command::Login(arguments) => Ok(arguments),
             Command::Lock(_)
             | Command::Wallpaper(_)
+            | Command::Assets(_)
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_)
@@ -689,6 +694,7 @@ mod tests {
             Command::Lock(arguments) => Ok(arguments),
             Command::Login(_)
             | Command::Wallpaper(_)
+            | Command::Assets(_)
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_)
@@ -710,6 +716,7 @@ mod tests {
             Command::Wallpaper(arguments) => Ok(arguments),
             Command::Login(_)
             | Command::Lock(_)
+            | Command::Assets(_)
             | Command::GreeterSession(_)
             | Command::HeicWorker(_)
             | Command::VerifyWallpapers(_)
@@ -756,6 +763,28 @@ mod tests {
         assert!(Arguments::try_parse_from(["genkan", "lock"]).is_ok());
         assert!(Arguments::try_parse_from(["genkan", "lock", "--username", "alice"]).is_err());
         assert!(Arguments::try_parse_from(["genkan", "wallpaper", "--username", "alice"]).is_err());
+    }
+
+    #[test]
+    fn asset_commands_are_read_only_and_keep_login_options_out() {
+        for args in [
+            vec!["assets", "list"],
+            vec!["assets", "preview", "iceland"],
+            vec!["assets", "preview", "big-sur-1", "--appearance", "dark"],
+            vec!["assets", "preview", "palau-jellies", "--reduce-motion"],
+        ] {
+            assert!(Arguments::try_parse_from(std::iter::once("genkan").chain(args)).is_ok());
+        }
+        for args in [
+            vec!["assets"],
+            vec!["assets", "preview"],
+            vec!["assets", "list", "--appearance", "dark"],
+            vec!["assets", "preview", "iceland", "--username", "alice"],
+            vec!["assets", "preview", "iceland", "--appearance", "invalid"],
+            vec!["assets", "set", "iceland"],
+        ] {
+            assert!(Arguments::try_parse_from(std::iter::once("genkan").chain(args)).is_err());
+        }
     }
 
     #[test]
