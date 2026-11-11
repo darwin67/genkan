@@ -170,13 +170,15 @@ carries no such guarantee and is not part of the delivery contract, so the catal
 publishes no separate index object; the manifest is the integrity record, and
 retiring an unversioned key is not a purge of versioned content.
 
-Cloudflare must cache both complete and byte-range requests without changing
-content length, range semantics, or object bytes. Verification checks repeated
-requests for a cache hit and confirms that every source remains below the
-account plan's maximum cacheable object size. R2 remains the origin of record,
-but routine Nix downloads should be served from Cloudflare's CDN after the first
-regional miss. Object integrity depends on the pinned hash rather than the CDN,
-transport, DNS, or account trust.
+The account plan's maximum cacheable object size describes CDN eligibility, not
+a Nix input limit. Larger original-resolution sources are accepted as
+hash-pinned fixed-output downloads even when Cloudflare bypasses its edge cache.
+The manifest records cacheability separately from byte size; the package checks
+that those fields agree instead of rejecting objects above the CDN limit.
+R2 remains the origin of record. Cache hits and byte-range behavior are measured
+delivery properties, not prerequisites for local playback: Nix fetches and
+verifies complete files before installation. Object integrity depends on the
+pinned hash rather than the CDN, transport, DNS, or account trust.
 
 Development builds accept an administrative wallpaper path so exact media can
 be tested without copying it into the repository. The packaged service selects
@@ -197,6 +199,13 @@ A separate animated-preview option enables real playback for local review. It
 does not unfreeze the fixture clock, contact AccountsService, greetd, or logind,
 or make simulated authentication and power actions real. The distinction must
 be visible in `--help` and documented next to `make dev`.
+
+`genkan assets list` prints the packaged MOV and HEIC catalog with dimensions,
+size, and local availability. `genkan assets preview <id>` opens the existing
+windowed animated login preview for an installed asset, with optional
+`--appearance light|dark` for HEIC and `--reduce-motion`. It downloads nothing,
+changes no configuration, and never acquires a session lock. Closing the window
+ends the preview; missing assets fail with their expected local path.
 
 The production default plays animation. An administrative reduced-motion or
 static setting shows the poster frame without initializing GStreamer. Decode
@@ -312,7 +321,7 @@ keeps compositor configuration independent.
 
 == Non-goals
 
-This RFD does not add audio, remote URLs, playlists, user-selectable wallpaper
-browsing, lock-screen behavior, per-account media, arbitrary GStreamer pipeline
+This RFD does not add audio, remote URLs, playlists, an in-greeter wallpaper
+browser, lock-screen behavior, per-account media, arbitrary GStreamer pipeline
 input, or desktop-session wallpaper configuration. It does not change greetd,
 PAM, AccountsService, session validation, or logind behavior.

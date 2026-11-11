@@ -91,6 +91,13 @@ echo \$\$ > "$case_dir/genkan.pid"
 exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
   "$GENKAN_BIN" login --windowed --preview "$fixture" --width "$width" --height "$height"
 EOF
+  elif [[ $mode == asset-* ]]; then
+    cat > "$case_dir/run-genkan" <<EOF
+#!${SHELL:-/bin/sh}
+echo \$\$ > "$case_dir/genkan.pid"
+exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
+  "$GENKAN_BIN" assets preview "$fixture" --appearance "${mode#asset-}"
+EOF
   else
     cat > "$case_dir/run-genkan" <<EOF
 #!${SHELL:-/bin/sh}
@@ -164,6 +171,21 @@ EOF
     exit 1
   fi
   mv "$screenshot" "$PREVIEW_OUTPUT_DIR/$name.png"
+  if [[ $mode == asset-* ]]; then
+    # The lossless fixture defines light=red and dark=white. Sample away from
+    # controls: a valid-looking Tahoe fallback must not count as a HEIC preview.
+    local pixel expected
+    pixel="p{0,$((height - 1))}"
+    if [[ $mode == asset-light ]]; then
+      expected="$pixel.r > 0.95 && $pixel.g < 0.05 && $pixel.b < 0.05"
+    else
+      expected="$pixel.r > 0.95 && $pixel.g > 0.95 && $pixel.b > 0.95"
+    fi
+    [[ $(identify -format "%[fx:$expected]" "$PREVIEW_OUTPUT_DIR/$name.png") == 1 ]] || {
+      echo "HEIC preview did not render its $mode fixture frame" >&2
+      exit 1
+    }
+  fi
   if [[ $mode == login ]]; then
     covered_fixtures["$fixture"]=1
   fi
@@ -189,6 +211,11 @@ capture widescreen-users 1920 1080 users
 capture ultrawide-selected 2560 1080 selected
 capture narrow-selected 480 600 selected
 capture narrow-long-authentication 480 600 long-authentication
+
+# Actual public asset previews must adopt decoded HEIC frames, not just paint
+# the initial MOV poster while decoding is still pending.
+capture asset-heic-light 1280 800 synthetic-all-properties asset-light
+capture asset-heic-dark 1280 800 synthetic-all-properties asset-dark
 
 # Exact software-rendered lock states without acquiring a compositor lock.
 capture lock-securing 1280 800 securing lock

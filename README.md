@@ -78,6 +78,21 @@ make animated-dev
 WALLPAPER=sequoia-night make animated-dev
 ```
 
+List available wallpapers and preview one before choosing it:
+
+```sh
+genkan assets list
+genkan assets preview iceland
+genkan assets preview big-sur-1 --appearance dark
+genkan assets preview palau-jellies --reduce-motion
+```
+
+The list includes format, original resolution, size in MiB, and whether the file
+is installed. Preview opens a normal window with simulated authentication and
+power actions; closing it changes no settings. Assets are installed by Nix,
+never downloaded by a running preview. For an uninstalled development build,
+use `cargo run --bin genkan -- assets list` inside `nix develop`.
+
 See the [development guide](docs/development.md) for all preview, wallpaper,
 test, VM, and hardware-smoke workflows.
 
@@ -99,8 +114,12 @@ services.greetd = {
 ```
 
 The packaged greeter animates Tahoe Beach by default. Operators can select
-`sequoia-sunrise`, `sequoia-morning`, `sequoia-night`, or `golden-gate`, or use
-`--reduce-motion` to retain the corresponding static poster.
+another MOV with `--wallpaper <id>` (see `genkan assets list`), or use
+`--reduce-motion` to retain its static poster. The catalog also includes the
+original 4K Iceland, Greenland, Patagonia, and Palau Jellies aerials and 5K
+Big Sur, Monterey Bay, and Earth from ISS dynamic HEICs. Original files above
+the CDN plan's 512 MiB cache limit remain hash-verified Nix inputs; they may be
+served directly from R2 rather than the edge cache.
 
 Logged-in users on a supported compositor can run a dynamic HEIC wallpaper as
 a dedicated non-interactive background client:
