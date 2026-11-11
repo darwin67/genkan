@@ -10,8 +10,7 @@ dev:
 	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)"
 
 animated-dev:
-	@test -n "$(GENKAN_WALLPAPER_DIR)" || { echo "GENKAN_WALLPAPER_DIR is unavailable; run this target inside nix develop" >&2; exit 1; }
-	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --animated-preview --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)" --wallpaper-file "$(GENKAN_WALLPAPER_DIR)/mov/$(WALLPAPER).mov"
+	cargo run --bin genkan -- login --windowed --preview "$(PREVIEW)" --animated-preview --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)"
 
 lock-dev:
 	cargo run --bin genkan -- lock --preview "$(LOCK_PREVIEW)" --width "$(WIDTH)" --height "$(HEIGHT)" --wallpaper "$(WALLPAPER)"
@@ -69,6 +68,13 @@ heic-assets:
 heic-decode:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).heic-decode --print-build-logs
 
+.PHONY: wallpaper-package wallpaper-empty-cache
+wallpaper-package:
+	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).wallpaper-package --print-build-logs
+
+wallpaper-empty-cache:
+	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).wallpaper-empty-cache --print-build-logs
+
 evidence:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).preview-evidence --print-build-logs
 
@@ -90,7 +96,7 @@ build:
 package:
 	nix build
 
-verify: fmt lint test check-rfds package heic-assets heic-decode smoke wallpaper-smoke lock-smoke niri-smoke evidence
+verify: fmt lint test check-rfds package wallpaper-package wallpaper-empty-cache heic-assets heic-decode smoke wallpaper-smoke lock-smoke niri-smoke evidence
 
 verify: check-design
 

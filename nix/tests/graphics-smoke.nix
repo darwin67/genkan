@@ -1,4 +1,8 @@
-{ pkgs, genkan }:
+{
+  pkgs,
+  genkan,
+  testWallpaperDirectory,
+}:
 
 pkgs.runCommand "genkan-graphics-smoke"
   {
@@ -168,6 +172,9 @@ pkgs.runCommand "genkan-graphics-smoke"
     stop_weston
     start_weston "$TMPDIR/weston-preview.log" "$output_width" "$output_height"
 
+    # Only the visual/playback portion uses reference artwork. The initial
+    # production launch above and wallpaper-empty-cache use no fixture cache.
+    export GENKAN_WALLPAPER_DIR=${testWallpaperDirectory}
     cat > "$TMPDIR/run-genkan-static" <<EOF
     #!${pkgs.runtimeShell}
     echo \$\$ > "$TMPDIR/genkan.pid"
@@ -238,7 +245,7 @@ pkgs.runCommand "genkan-graphics-smoke"
     cat > "$TMPDIR/run-genkan-animated" <<EOF
     #!${pkgs.runtimeShell}
     echo \$\$ > "$TMPDIR/genkan.pid"
-    exec ${genkan}/bin/genkan login --windowed --preview selected --animated-preview --width $output_width --height $output_height
+    exec ${genkan}/bin/genkan login --windowed --preview selected --animated-preview --width $output_width --height $output_height --wallpaper-file ${../../tests/fixtures/asset-preflight/hevc.mov}
     EOF
     chmod +x "$TMPDIR/run-genkan-animated"
 
@@ -266,9 +273,9 @@ pkgs.runCommand "genkan-graphics-smoke"
     test -s "$TMPDIR/genkan.pid"
     genkan_pid=$(cat "$TMPDIR/genkan.pid")
 
-    # Let 4K HEVC decoding start before screenshot capture competes for the
-    # software renderer on constrained CI runners.
-    sleep 20
+    # Start capture after the authored two-second clip's first loop boundary.
+    # Using the catalog's duration for an override freezes here at EOS.
+    sleep 4
     if ! kill -0 "$genkan_pid" 2>/dev/null; then
       cat "$TMPDIR/animated.log"
       echo "Genkan exited while animated playback was warming up" >&2

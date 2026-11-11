@@ -1,4 +1,8 @@
-{ pkgs, genkan }:
+{
+  pkgs,
+  genkan,
+  testWallpaperDirectory,
+}:
 
 let
   inheritedSocketTest = pkgs.writeText "genkan-inherited-socket-test.py" ''
@@ -52,6 +56,7 @@ in
 
 pkgs.runCommand "genkan-login-output-smoke"
   {
+    GENKAN_WALLPAPER_DIR = testWallpaperDirectory;
     nativeBuildInputs = with pkgs; [
       coreutils
       grim

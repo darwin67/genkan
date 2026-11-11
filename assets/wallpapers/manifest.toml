@@ -3,22 +3,9 @@ catalog_id = "genkan-wallpapers"
 default_wallpaper = "tahoe-beach"
 verified_at = "2026-11-11"
 
-[delivery]
-r2_bucket = "genkan-assets"
-base_url = "https://assets.genkan.dwu.sh/wallpapers/"
-# Objects are split by format under the base URL: `mov/` holds the MOV videos
-# and `heic/` holds the dynamic HEIC assets. The installed tree mirrors it, so
-# `share/genkan/wallpapers/mov` and `share/genkan/wallpapers/heic` name the
-# format rather than mixing both in one directory.
-content_type = "video/quicktime"
-cache_control = "public, max-age=31536000, immutable"
-cache_rule_id = "36ea271e0e884369ae43b5328d2c817f"
-cache_rule_expression = "(http.host eq \"assets.genkan.dwu.sh\" and starts_with(http.request.uri.path, \"/wallpapers/\"))"
-smart_tiered_cache = true
-# Informational CDN threshold, not a maximum permitted Nix input size.
-maximum_cacheable_object_bytes = 536870912
-maximum_cacheable_object_source = "Cloudflare Free plan 512 MB cacheable file-size limit"
-verification = "The original MOV catalog's complete and byte-range responses were SHA-256 checked with CDN HIT responses. The seven originals added on 2026-11-11 passed full S3 readback SHA-256 verification and public head/tail byte checks. Oversized MOVs returned BYPASS; some range requests returned complete 200 responses rather than 206, so consistent range delivery is not asserted. Nix verifies complete objects; playback is local."
+# Original-resolution files are downloaded explicitly from upstream sources.
+# SHA-256 and byte sizes describe the installed media; archive_* fields describe
+# the ZIP download when an author distributes a HEIC inside an archive.
 
 [loop_analysis]
 # The original five values were re-derived on 2026-09-21 with ffmpeg 8.1.2;
@@ -64,14 +51,12 @@ reproducible_for = "tahoe-beach, sequoia-sunrise, sequoia-morning, sequoia-night
 id = "tahoe-beach"
 name = "Tahoe Beach"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-tahoe-wallpaper-desktop-pictures-5k/"
-source_file_url = "https://drive.google.com/file/d/1uuApUmafIUDskzYPfNPDhsGhQ0eef6jx/view"
+source_file_url = "https://drive.usercontent.google.com/download?id=1uuApUmafIUDskzYPfNPDhsGhQ0eef6jx&export=download&confirm=t"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/tahoe-beach-5917a9d17ec32b6a4552c530c81515aff4517fa4cd3ebd712d69d0ab2e6618cc.mov"
 install_name = "tahoe-beach.mov"
 sha256 = "5917a9d17ec32b6a4552c530c81515aff4517fa4cd3ebd712d69d0ab2e6618cc"
 nix_hash = "sha256-WRep0X7DK2pFUsUwyBUVr/RRf6TNPr1xLWnQqy5mGMw="
 byte_size = 170198367
-cacheable_under_plan_limit = true
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -115,14 +100,12 @@ verification = "The decoded first and final frames are not seamless. ffmpeg ssim
 id = "sequoia-sunrise"
 name = "Sequoia Sunrise"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
-source_file_url = "https://drive.google.com/file/d/1qZg0jWnUwHKaB4F2xFzfBqFHEKgXeFoT/view"
+source_file_url = "https://drive.usercontent.google.com/download?id=1qZg0jWnUwHKaB4F2xFzfBqFHEKgXeFoT&export=download&confirm=t"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/sequoia-sunrise-40c8e66d5b1b90c078493355884bc75ee2ec2688003708a8decbd7c45c837435.mov"
 install_name = "sequoia-sunrise.mov"
 sha256 = "40c8e66d5b1b90c078493355884bc75ee2ec2688003708a8decbd7c45c837435"
 nix_hash = "sha256-QMjmbVsbkMB4STNViEvHXuLsJogANwio3svXxFyDdDU="
 byte_size = 179107597
-cacheable_under_plan_limit = true
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -166,14 +149,12 @@ verification = "The decoded first and final frames are not seamless. ffmpeg ssim
 id = "sequoia-morning"
 name = "Sequoia Morning"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
-source_file_url = "https://drive.google.com/file/d/1q6oUEsY62qC6RnJIJex1I5vhRXwDJe5o/view"
+source_file_url = "https://drive.usercontent.google.com/download?id=1q6oUEsY62qC6RnJIJex1I5vhRXwDJe5o&export=download&confirm=t"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/sequoia-morning-8362ed905f4d541a936db43efe7b5ca563ab9fd3eb6cd23fb7fd19f01544080a.mov"
 install_name = "sequoia-morning.mov"
 sha256 = "8362ed905f4d541a936db43efe7b5ca563ab9fd3eb6cd23fb7fd19f01544080a"
 nix_hash = "sha256-g2LtkF9NVBqTbbQ+/ntcpWOrn9PrbNI/t/0Z8BVECAo="
 byte_size = 368419794
-cacheable_under_plan_limit = true
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -217,14 +198,12 @@ verification = "The decoded first and final frames are not seamless. ffmpeg ssim
 id = "sequoia-night"
 name = "Sequoia Night"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-sequoia-wallpaper-desktop-pictures-5k/"
-source_file_url = "https://drive.google.com/file/d/16R5qX4--VdAEr7lUe4AsukqK_MVYtKEi/view"
+source_file_url = "https://drive.usercontent.google.com/download?id=16R5qX4--VdAEr7lUe4AsukqK_MVYtKEi&export=download&confirm=t"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/sequoia-night-652c8bbc8f93d2c50394c8f314a0f07f83845844d1b25ae3b92ae546ccaefe23.mov"
 install_name = "sequoia-night.mov"
 sha256 = "652c8bbc8f93d2c50394c8f314a0f07f83845844d1b25ae3b92ae546ccaefe23"
 nix_hash = "sha256-ZSyLvI+T0sUDlMjzFKDwf4OEWETRslrjuSrlRsyu/iM="
 byte_size = 432531222
-cacheable_under_plan_limit = true
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -268,14 +247,12 @@ verification = "The decoded first and final frames are not seamless. ffmpeg ssim
 id = "golden-gate"
 name = "Golden Gate"
 source_page_url = "https://mrmacintosh.com/download-the-new-macos-golden-gate-wallpaper-desktop-pictures-5k/"
-source_file_url = "https://drive.google.com/file/d/1R5vVgXaLBuDZpYifOHPR0mIHAbqLpx_G/view"
+source_file_url = "https://drive.usercontent.google.com/download?id=1R5vVgXaLBuDZpYifOHPR0mIHAbqLpx_G&export=download&confirm=t"
 rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/golden-gate-1192ff0b0c0174f3eace6d0d255f51cc981fb7868e110a8c8ca63c1b3394c3de.mov"
 install_name = "golden-gate.mov"
 sha256 = "1192ff0b0c0174f3eace6d0d255f51cc981fb7868e110a8c8ca63c1b3394c3de"
 nix_hash = "sha256-EZL/CwwBdPPqzm0NJV9RzJgft4aOEQqMjKY8GzOUw94="
 byte_size = 73858356
-cacheable_under_plan_limit = true
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -321,12 +298,10 @@ name = "Iceland"
 source_page_url = "https://aerial-videos.netlify.app/"
 source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/I005_C008_CROP_SDR_4K_HEVC.mov"
 rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/iceland-f0bfe1ee858d86c419bbf1e2e3d59f1eb60273146e1ca1e17a9da700c56e371f.mov"
 install_name = "iceland.mov"
 sha256 = "f0bfe1ee858d86c419bbf1e2e3d59f1eb60273146e1ca1e17a9da700c56e371f"
 nix_hash = "sha256-8L/h7oWNhsQZu/Hi49WfHrYCcxRuHKHhep2nAMVuNx8="
 byte_size = 790758290
-cacheable_under_plan_limit = false
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -372,12 +347,10 @@ name = "Greenland"
 source_page_url = "https://aerial-videos.netlify.app/"
 source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_GL_G002_C002_PSNK_v03_SDR_PS_20180925_SDR_4K_HEVC.mov"
 rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/greenland-ed060693b9298b130c4b21c89ad0e6cd59985cd2d4388e9fa3d2000826ef001b.mov"
 install_name = "greenland.mov"
 sha256 = "ed060693b9298b130c4b21c89ad0e6cd59985cd2d4388e9fa3d2000826ef001b"
 nix_hash = "sha256-7QYGk7kpixMMSyHImtDmzVmYXNLUOI6fo9IACCbvABs="
 byte_size = 616134656
-cacheable_under_plan_limit = false
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -423,12 +396,10 @@ name = "Patagonia"
 source_page_url = "https://aerial-videos.netlify.app/"
 source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/P006_C002_UHD_SDR_4K_HEVC.mov"
 rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/patagonia-00587863a0eb0a749e6fd791537259c7ee46a81bce99863713676849b952597d.mov"
 install_name = "patagonia.mov"
 sha256 = "00587863a0eb0a749e6fd791537259c7ee46a81bce99863713676849b952597d"
 nix_hash = "sha256-AFh4Y6DrCnSeb9eRU3JZx+5GqBvOmYY3E2doSblSWX0="
 byte_size = 464540443
-cacheable_under_plan_limit = true
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -474,12 +445,10 @@ name = "Palau Jellies"
 source_page_url = "https://aerial-videos.netlify.app/"
 source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/PA_A001_C007_SDR_20190717_SDR_4K_HEVC.mov"
 rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/mov/palau-jellies-12079533a4d23fe9a3b6da4ac4137a214b02e60c2dc3649880152d3468911cab.mov"
 install_name = "palau-jellies.mov"
 sha256 = "12079533a4d23fe9a3b6da4ac4137a214b02e60c2dc3649880152d3468911cab"
 nix_hash = "sha256-EgeVM6TSP+mjttpKxBN6IUsC5gwtw2SYgBUtNGiRHKs="
 byte_size = 667896943
-cacheable_under_plan_limit = false
 
 [wallpaper.media]
 container = "QuickTime / MOV"
@@ -519,25 +488,22 @@ endpoint_comparison_height = 540
 endpoint_ssim = 0.485985
 verification = "The complete source decoded without FFmpeg errors, producing 12848 frames. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.485985 using the aerial branch of [loop_analysis]. The endpoints are not seamless, so playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
 
-# Immutable dynamic HEIC assets. `delivery = "repository"` assets are pinned by
-# their committed bytes; a catalog asset delivered from the R2 host records
-# `delivery = "r2"` with `r2_url` and `nix_hash` and is fetched as a
-# hash-pinned fixed-output source exactly like the MOV catalog. No HEIC asset is
-# downloaded while a wallpaper process runs.
+# Dynamic HEIC catalog. Remote entries are downloaded explicitly from their
+# original sources, never by Nix or wallpaper playback. Repository entries are
+# authored test fixtures, excluded from the public catalog and production package.
 
 [[dynamic_heic]]
 id = "tahoe-dynamic"
 name = "Tahoe dynamic (8 variants)"
-delivery = "r2"
+delivery = "remote"
 provenance = "Authored on macOS by ad735/macos-heic-wallpaper (Tahoe.heic), a real multi-image dynamic wallpaper generated with Apple tooling. Verified independently with libheif heif-info and Genkan's own parser: 8 top-level 3840x2160 images with an XML h24 time sequence."
 source_page_url = "https://github.com/ad735/macos-heic-wallpaper"
+source_file_url = "https://raw.githubusercontent.com/ad735/macos-heic-wallpaper/d95c473fad4f597ce58c5911b3c3615b71cb36cf/Tahoe.heic"
 rights = "Artwork derived from macOS; no open-content license is declared by the source repository."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/tahoe-dynamic-c5394f3cc0b547d665c2b65ba0eb8d12c5bbd1f6dd67a20e641153c3bcbabf91.heic"
 install_name = "tahoe-dynamic.heic"
 sha256 = "c5394f3cc0b547d665c2b65ba0eb8d12c5bbd1f6dd67a20e641153c3bcbabf91"
 nix_hash = "sha256-xTlPPMC1R9ZlwrZboOuNEsW70fbdZ6IOZBFTw7y6v5E="
 byte_size = 25790869
-cacheable_under_plan_limit = true
 
 [dynamic_heic.structure]
 container = "HEIF"
@@ -566,16 +532,15 @@ embedded_solar_appearance = false
 [[dynamic_heic]]
 id = "tahoe-time-of-day"
 name = "Tahoe time-of-day (5 variants)"
-delivery = "r2"
+delivery = "remote"
 provenance = "Authored by Basic Apple Guy as the dynamic Tahoe time-of-day release: four macOS Tahoe stills upscaled to 5K and packed into a single dynamic HEIC. Verified with libheif heif-info and Genkan's own parser: 5 top-level 6016x3384 images with an XML h24 time sequence and an embedded light/dark appearance pair."
 source_page_url = "https://basicappleguy.com/basicappleblog/dynamic-tahoe-wallpapers"
+source_file_url = "https://drive.usercontent.google.com/download?id=18yddbZnAY4XcfkpBs94YLZtJtjPgqBjs&export=download&confirm=t"
 rights = "Fan-authored derivative of macOS artwork; distributed non-commercially by the author, with no open-content license."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/tahoe-time-of-day-9de03b172203a362a74423afe0aa43620801a2c7e6c1112bdebd7d3bbb04d526.heic"
 install_name = "tahoe-time-of-day.heic"
 sha256 = "9de03b172203a362a74423afe0aa43620801a2c7e6c1112bdebd7d3bbb04d526"
 nix_hash = "sha256-neA7FyIDo2KnRCOv4KpDYggBosfmwREr3r19O7sE1SY="
 byte_size = 38101558
-cacheable_under_plan_limit = true
 
 [dynamic_heic.structure]
 container = "HEIF"
@@ -668,16 +633,15 @@ embedded_solar_appearance = false
 [[dynamic_heic]]
 id = "chinese-hour-names"
 name = "Traditional Chinese hour names (12 variants)"
-delivery = "r2"
+delivery = "remote"
 provenance = "Evian-Zhang/DWBuilder demo/Chinese_dynamic.heic: the twelve traditional Chinese two-hour periods (十二時辰) lettered one per frame in white on black, packed into one dynamic HEIC with a 12-point solar.si schedule. Verified with libheif heif-info and Genkan's own parser: 12 top-level 2560x1440 images, HEIF item IDs 16, 33, 49, 65, 81, 97, 113, 129, 145, 161, 177, and 193 in collection order, a Microsoft sRGB ICC profile on every frame, and no appearance metadata. The frames are typographic rather than photographic, and are the source repository's 01.png through 23.png, named for the odd hour that opens each period: 雞鳴, 平旦, 日出, 食時, 隅中, 日中, 日昳, 晡時, 日入, 黃昏, 人定, and 夜半. It is the smaller of the two real solar-schedule samples found, the only one with a 12-point schedule, and the one whose only decoding blocker was the embedded profile."
 source_page_url = "https://github.com/Evian-Zhang/DWBuilder"
+source_file_url = "https://raw.githubusercontent.com/Evian-Zhang/DWBuilder/1bacd30c81641b14ce3ebcef1c01c8847411c418/demo/Chinese_dynamic.heic"
 rights = "The source repository declares no license, so the asset is published as an unlicensed third-party work with its origin recorded rather than asserted."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/chinese-hour-names-60e8e428058ac9c6776ec72c41fe64ff3dc77544ee1e9498c75e3493ad5de3e8.heic"
 install_name = "chinese-hour-names.heic"
 sha256 = "60e8e428058ac9c6776ec72c41fe64ff3dc77544ee1e9498c75e3493ad5de3e8"
 nix_hash = "sha256-YOjkKAWKycZ3bscsQf5k/z3HdUTuHpSYx140k61d4+g="
 byte_size = 154126
-cacheable_under_plan_limit = true
 
 [dynamic_heic.structure]
 container = "HEIF"
@@ -737,17 +701,18 @@ embedded_solar_appearance = false
 [[dynamic_heic]]
 id = "big-sur-1"
 name = "Big Sur #1 (16 variants)"
-delivery = "r2"
-provenance = "Jetson Creative 24 Hour Wallpaper personal-use sample, acquired from the zeromhz/jetson release mirror. All 16 5120x2880 images decoded with libheif and Genkan; the Apple solar plist contains 16 points and light/dark indices 0/15."
-source_page_url = "https://www.jetsoncreative.com/mojave"
-source_file_url = "https://github.com/zeromhz/jetson/releases/download/dd2019/24hr-BigSur-Mac-5K.zip"
+delivery = "remote"
+provenance = "Jetson Creative personal-use sample, downloaded from the author's linked CloudFront distribution. All 16 5120x2880 images decoded with libheif and Genkan; the Apple solar plist contains 16 points and light/dark indices 0/15."
+source_page_url = "https://www.jetsoncreative.com/mac-dynamic-desktop-store/big-sur-1-mac"
+source_file_url = "https://d1v8wdnxjotcdx.cloudfront.net/free/macos/24hr-BigSur-Mac-5K.zip"
+archive_member = "24hr-BigSur-1.heic"
+archive_byte_size = 94262835
+archive_sha256 = "a3cccfa195e64f3637bd1b675dea208d99541c2e5f7396a22a7776c14a52aa87"
 rights = "Jetson Creative specifies personal use only and prohibits redistribution. Retained for the user's local use at their explicit direction; no open-content license is asserted."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/big-sur-1-a9efd07f6823c8e08753614007f895487ec47532263a90bd24f5ab6a49a68503.heic"
 install_name = "big-sur-1.heic"
 sha256 = "a9efd07f6823c8e08753614007f895487ec47532263a90bd24f5ab6a49a68503"
 nix_hash = "sha256-qe/Qf2gjyOCHU2FAB/iVSH7EdTImOpC9JPWrakmmhQM="
 byte_size = 93976208
-cacheable_under_plan_limit = true
 decode_verified = true
 
 [dynamic_heic.structure]
@@ -785,17 +750,18 @@ embedded_solar_appearance = { light = 0, dark = 15 }
 [[dynamic_heic]]
 id = "monterey-bay-1"
 name = "Monterey Bay #1 (16 variants)"
-delivery = "r2"
-provenance = "Jetson Creative 24 Hour Wallpaper personal-use sample, acquired from the zeromhz/jetson release mirror. All 16 5120x2880 images decoded with libheif and Genkan; the Apple solar plist contains 16 points and light/dark indices 0/15."
-source_page_url = "https://www.jetsoncreative.com/mojave"
-source_file_url = "https://github.com/zeromhz/jetson/releases/download/dd2019/24hr-Monterey-Bay-1-Mac-5K.zip"
+delivery = "remote"
+provenance = "Jetson Creative personal-use sample, downloaded from the author's linked CloudFront distribution. All 16 5120x2880 images decoded with libheif and Genkan; the Apple solar plist contains 16 points and light/dark indices 0/15."
+source_page_url = "https://www.jetsoncreative.com/mac-dynamic-desktop-store/monterey-bay-1-mac"
+source_file_url = "https://d1v8wdnxjotcdx.cloudfront.net/free/macos/24hr-Monterey-Bay-1-Mac-5K.zip"
+archive_member = "24hr-Monterey-Bay-1.heic"
+archive_byte_size = 131796720
+archive_sha256 = "873021c1244be980e4acfc422c476efcc93dc958c9e978f506076f6d5fd1263a"
 rights = "Jetson Creative specifies personal use only and prohibits redistribution. Retained for the user's local use at their explicit direction; no open-content license is asserted."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/monterey-bay-1-c3054a7849887f220a1f5955943f15e386558ce84a7470f13f3675b4f029da58.heic"
 install_name = "monterey-bay-1.heic"
 sha256 = "c3054a7849887f220a1f5955943f15e386558ce84a7470f13f3675b4f029da58"
 nix_hash = "sha256-wwVKeEmIfyIKH1lVlD8V44ZVjOhKdHDxPzZ1tPAp2lg="
 byte_size = 130640186
-cacheable_under_plan_limit = true
 decode_verified = true
 
 [dynamic_heic.structure]
@@ -833,17 +799,18 @@ embedded_solar_appearance = { light = 0, dark = 15 }
 [[dynamic_heic]]
 id = "earth-from-iss"
 name = "Earth from ISS (16 variants)"
-delivery = "r2"
-provenance = "Jetson Creative 24 Hour Wallpaper personal-use sample, acquired from the zeromhz/jetson release mirror. All 16 5120x2880 images decoded with libheif and Genkan; the Apple solar plist contains 16 points and light/dark indices 0/15."
-source_page_url = "https://www.jetsoncreative.com/mojave"
-source_file_url = "https://github.com/zeromhz/jetson/releases/download/dd2019/24hr-Earth-Mac-5K.zip"
+delivery = "remote"
+provenance = "Jetson Creative personal-use sample, downloaded from the author's linked CloudFront distribution. All 16 5120x2880 images decoded with libheif and Genkan; the Apple solar plist contains 16 points and light/dark indices 0/15."
+source_page_url = "https://www.jetsoncreative.com/mac-dynamic-desktop-store/earth-mac"
+source_file_url = "https://d1v8wdnxjotcdx.cloudfront.net/free/macos/24hr-Earth-Mac-5K.zip"
+archive_member = "24hr-Earth-5K.heic"
+archive_byte_size = 105953978
+archive_sha256 = "c519b875ebcf84677acf8c93534240de017985e3c09da57f78f51a5a7fb83f11"
 rights = "Jetson Creative specifies personal use only and prohibits redistribution. Retained for the user's local use at their explicit direction; no open-content license is asserted."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/earth-from-iss-2c44cd2e1ff596068c1825b609ce1a6a32d4982fea27f04eeba648ee6760f885.heic"
 install_name = "earth-from-iss.heic"
 sha256 = "2c44cd2e1ff596068c1825b609ce1a6a32d4982fea27f04eeba648ee6760f885"
 nix_hash = "sha256-LETNLh/1lgaMGCW2Cc4aajLUmC/qJ/BO66ZI7mdg+IU="
 byte_size = 105753522
-cacheable_under_plan_limit = true
 decode_verified = true
 
 [dynamic_heic.structure]
@@ -881,16 +848,15 @@ embedded_solar_appearance = { light = 0, dark = 15 }
 [[dynamic_heic]]
 id = "sequoia-graphic-solar"
 name = "Sequoia Graphic solar (8 variants)"
-delivery = "r2"
+delivery = "remote"
 provenance = "alphaArgon/SequoiaGraphicWallpaper: macOS Sequoia's Metal-rendered graphic wallpaper captured at ten sunlight angles and packed into one dynamic HEIC. Verified with libheif heif-info and Genkan's own parser: 8 top-level 6016x6016 images, HEIF item IDs 37, 76, 114, 152, 190, 228, 266, and 304 in collection order, a 10-point solar.si schedule that revisits images 0 and 1, an embedded light/dark appearance pair, and an Apple display ICC profile on every frame. It is the largest real solar-schedule sample in the catalog and the asset that set the source-size and pixel ceilings."
 source_page_url = "https://github.com/alphaArgon/SequoiaGraphicWallpaper"
+source_file_url = "https://raw.githubusercontent.com/alphaArgon/SequoiaGraphicWallpaper/021b91c94c1f8daa5b3afcba03b60364c2263c81/Sequoia%20Graphic.heic"
 rights = "The source repository declares no license and states that the graphic contents are copyrighted by Apple, so the asset is published with its origin recorded rather than asserted."
-r2_url = "https://assets.genkan.dwu.sh/wallpapers/heic/sequoia-graphic-4a6440528354be1439c418ef89c341d1dffb49c1d552fc0ff96210eb6a8f3726.heic"
 install_name = "sequoia-graphic.heic"
 sha256 = "4a6440528354be1439c418ef89c341d1dffb49c1d552fc0ff96210eb6a8f3726"
 nix_hash = "sha256-SmRAUoNUvhQ5xBjvicNB0d/7ScHVUvwP+WIQ62qPNyY="
 byte_size = 70842628
-cacheable_under_plan_limit = true
 
 [dynamic_heic.structure]
 container = "HEIF"

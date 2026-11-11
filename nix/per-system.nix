@@ -43,65 +43,18 @@ let
   fontConfig = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
 
   wallpaperManifest = builtins.fromTOML (builtins.readFile ../assets/wallpapers/manifest.toml);
-  wallpapers = map (
-    wallpaper:
-    let
-      posterSource = ../assets/wallpapers + "/${wallpaper.poster.file}";
-    in
-    # The CDN plan limit describes edge cacheability, not a Nix input limit.
-    # Larger originals remain valid hash-pinned fixed-output downloads.
-    assert wallpaper.cacheable_under_plan_limit == (
-      wallpaper.byte_size < wallpaperManifest.delivery.maximum_cacheable_object_bytes
-    );
-    assert builtins.hashFile "sha256" posterSource == wallpaper.poster.sha256;
-    wallpaper
-    // {
-      videoSource = pkgs.fetchurl {
-        name = wallpaper.install_name;
-        url = wallpaper.r2_url;
-        hash = wallpaper.nix_hash;
-      };
-      inherit posterSource;
-    }
-  ) wallpaperManifest.wallpaper;
-  # MOV wallpapers and their posters are installed under `mov/`, and dynamic
-  # HEIC assets under `heic/`, so the installed tree names the format instead of
-  # mixing both under one directory. The R2 layout mirrors it.
-  installWallpaper = wallpaper: ''
-    ln -s ${wallpaper.videoSource} "$wallpaperDirectory/mov/${wallpaper.install_name}"
-    ln -s ${wallpaper.posterSource} "$wallpaperDirectory/mov/${wallpaper.poster.file}"
-  '';
-
-  # Immutable dynamic HEIC assets. A repository-delivered asset is pinned by its
-  # committed bytes; a catalog asset delivered from the R2 host records
-  # `delivery = "r2"` with `r2_url` and `nix_hash` and is fetched as a
-  # hash-pinned fixed-output source exactly like the MOV catalog.
-  dynamicHeicAssets = map (
+  # Ordinary checks use only authored, repository-delivered fixtures. Remote
+  # catalog entries are metadata, never Nix inputs (including in the dev shell).
+  repositoryHeicAssets = map (
     asset:
     let
-      repositorySource = self + "/${asset.source_path}";
-      source =
-        if asset.delivery == "r2" then
-          pkgs.fetchurl {
-            name = asset.install_name;
-            url = asset.r2_url;
-            hash = asset.nix_hash;
-          }
-        else
-          repositorySource;
+      source = self + "/${asset.source_path}";
     in
-    assert asset.delivery == "r2" || asset.delivery == "repository";
-    assert
-      asset.delivery != "repository" || builtins.hashFile "sha256" repositorySource == asset.sha256;
-    asset
-    // {
-      inherit source;
-    }
-  ) wallpaperManifest.dynamic_heic;
-  installHeicAsset = asset: ''
-    ln -s ${asset.source} "$wallpaperDirectory/heic/${asset.install_name}"
-  '';
+    assert builtins.hashFile "sha256" source == asset.sha256;
+    asset // { inherit source; }
+  ) (builtins.filter (asset: asset.delivery == "repository") wallpaperManifest.dynamic_heic);
   heicAssetCheck =
+    assert builtins.length repositoryHeicAssets > 0;
     pkgs.runCommand "genkan-heic-asset-check"
       {
         nativeBuildInputs = [ pkgs.coreutils ];
@@ -110,26 +63,34 @@ let
         ${pkgs.lib.concatMapStringsSep "\n" (asset: ''
           test "$(stat -c %s ${asset.source})" = "${toString asset.byte_size}"
           test "$(sha256sum ${asset.source} | cut -d' ' -f1)" = "${asset.sha256}"
-        '') dynamicHeicAssets}
+        '') repositoryHeicAssets}
         touch $out
       '';
-  # The development directory mirrors the installed tree: `mov/` for the MOV
-  # videos and `heic/` for the dynamic HEICs. `linkFarm` names are single path
-  # components, so the two subdirectories are created directly rather than
-  # through a farm.
-  devWallpaperDirectory =
-    pkgs.runCommand "genkan-wallpapers"
+  # Explicit test-only cache: JPEG reference images preserve UI baselines and
+  # the tiny authored HEVC clip exercises playback without third-party MOVs.
+  # Do not attach this directory to the production package or the dev shell.
+  testWallpaperDirectory =
+    pkgs.runCommand "genkan-test-wallpapers"
       {
         nativeBuildInputs = [ pkgs.coreutils ];
       }
       ''
         mkdir -p $out/mov $out/heic
-        ${pkgs.lib.concatMapStringsSep "\n" (wallpaper: ''
-          ln -s ${wallpaper.videoSource} "$out/mov/${wallpaper.install_name}"
-        '') wallpapers}
+        # niri-smoke selects the Tahoe catalog ID, but plays authored pixels.
+        ln -s ${../tests/fixtures/asset-preflight/hevc.mov} "$out/mov/tahoe-beach.mov"
+        ${pkgs.lib.concatMapStringsSep "\n" (
+          wallpaper:
+          let
+            source = ../assets/wallpapers + "/${wallpaper.poster.file}";
+          in
+          assert builtins.hashFile "sha256" source == wallpaper.poster.sha256;
+          ''
+            ln -s ${source} "$out/mov/${wallpaper.poster.file}"
+          ''
+        ) wallpaperManifest.wallpaper}
         ${pkgs.lib.concatMapStringsSep "\n" (asset: ''
           ln -s ${asset.source} "$out/heic/${asset.install_name}"
-        '') dynamicHeicAssets}
+        '') repositoryHeicAssets}
       '';
 
   # Built-in account pictures (RFD 7). The SVG sources and their rendered
@@ -172,6 +133,7 @@ let
       pkgs.makeWrapper
       pkgs.pkg-config
     ];
+    nativeCheckInputs = [ pkgs.curl ];
     buildInputs = gstreamerPackages ++ [
       pkgs.libheif
       pkgs.libxkbcommon
@@ -179,14 +141,13 @@ let
     ];
     postInstall = ''
       wallpaperDirectory=$out/share/genkan/wallpapers
-      mkdir -p "$wallpaperDirectory/mov" "$wallpaperDirectory/heic"
+      mkdir -p "$wallpaperDirectory"
       install -m 0444 ${../assets/wallpapers/manifest.toml} "$wallpaperDirectory/manifest.toml"
-      ${pkgs.lib.concatMapStringsSep "\n" installWallpaper wallpapers}
-      ${pkgs.lib.concatMapStringsSep "\n" installHeicAsset dynamicHeicAssets}
       ln -s ${avatarDirectory} $out/share/genkan/avatars
 
       wrapProgram $out/bin/genkan \
         --set FONTCONFIG_FILE ${fontConfig} \
+        --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.curl ]} \
         --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries} \
         --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${gstreamerPluginPath} \
         --suffix VK_ADD_DRIVER_FILES : ${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d
@@ -236,6 +197,7 @@ let
     postInstall = ''
       wrapProgram $out/bin/genkan \
         --set FONTCONFIG_FILE ${fontConfig} \
+        --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.curl ]} \
         --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries} \
         --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${gstreamerPluginPath}
 
@@ -249,6 +211,7 @@ let
   devShell = pkgs.mkShell {
     packages = [
       pkgs.awscli2
+      pkgs.curl
       pkgs.git-cliff
       pkgs.jq
       pkgs.jujutsu
@@ -263,7 +226,6 @@ let
     ++ gstreamerPackages;
     LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;
     GST_PLUGIN_SYSTEM_PATH_1_0 = gstreamerPluginPath;
-    GENKAN_WALLPAPER_DIR = devWallpaperDirectory;
     GENKAN_AVATAR_DIR = avatarDirectory;
   };
 
@@ -285,7 +247,7 @@ let
     '';
   };
   previewEvidenceCapture = import ./tests/preview-evidence.nix {
-    inherit pkgs;
+    inherit pkgs testWallpaperDirectory;
     genkan = package;
     checkBaseline = false;
   };
@@ -427,19 +389,14 @@ let
         ${solarGeoclueConfig} | grep -F 'system=false'
       touch $out
     '';
-  # Decodes the installed assets rather than their sources, so the check covers
-  # the packaged symlinks, the shipped container preflight, the metadata parser,
-  # and tiled decoding end to end. A regression that only breaks real multi-image
-  # wallpapers fails the build here instead of only in the graphical smoke test.
-  # Every catalog asset must decode: an entry that records
-  # `decode_verified = false` fails the check instead of dropping out of it, so
-  # re-introducing an exception has to change this check and the manifest entry
-  # together rather than silently reducing what is verified.
+  # The production decoder verifies every repository fixture through the
+  # explicit test cache, including multi-image, tiled and ICC fixtures. Remote
+  # decode claims remain catalog records, not automatic network checks.
   heicDecodeExcludedAssets = builtins.filter (
     asset: !(asset.decode_verified or true)
-  ) dynamicHeicAssets;
+  ) repositoryHeicAssets;
   heicDecodeCheck =
-    assert builtins.length dynamicHeicAssets > 0;
+    assert builtins.length repositoryHeicAssets > 0;
     assert builtins.length heicDecodeExcludedAssets == 0;
     pkgs.runCommand "genkan-heic-decode-check"
       {
@@ -448,9 +405,9 @@ let
       ''
         ${pkgs.lib.concatMapStringsSep "\n" (asset: ''
           ${package}/bin/genkan verify-wallpapers \
-            --file ${package}/share/genkan/wallpapers/heic/${asset.install_name} \
+            --file ${testWallpaperDirectory}/heic/${asset.install_name} \
             --expect-frames ${toString asset.structure.image_count}
-        '') dynamicHeicAssets}
+        '') repositoryHeicAssets}
         touch $out
       '';
 in
@@ -469,12 +426,20 @@ in
     heic-assets = heicAssetCheck;
     avatars = avatarDirectory;
     heic-decode = heicDecodeCheck;
-    graphics-smoke = import ./tests/graphics-smoke.nix {
+    wallpaper-package = import ./tests/wallpaper-package.nix {
+      inherit pkgs wallpaperManifest;
+      genkan = package;
+    };
+    wallpaper-empty-cache = import ./tests/wallpaper-empty-cache.nix {
       inherit pkgs;
       genkan = package;
     };
+    graphics-smoke = import ./tests/graphics-smoke.nix {
+      inherit pkgs testWallpaperDirectory;
+      genkan = package;
+    };
     login-output-smoke = import ./tests/login-output-smoke.nix {
-      inherit pkgs;
+      inherit pkgs testWallpaperDirectory;
       genkan = package;
     };
     desktop-wallpaper-smoke = import ./tests/desktop-wallpaper-smoke.nix {
@@ -483,7 +448,7 @@ in
       lockTestGenkan = sessionLockTestPackage;
     };
     preview-evidence = import ./tests/preview-evidence.nix {
-      inherit pkgs;
+      inherit pkgs testWallpaperDirectory;
       genkan = package;
     };
     session-lock-smoke = import ./tests/session-lock-smoke.nix {
@@ -492,7 +457,7 @@ in
       productionGenkan = package;
     };
     niri-smoke = import ./tests/niri-smoke.nix {
-      inherit pkgs;
+      inherit pkgs testWallpaperDirectory;
       genkan = package;
       lockTestGenkan = sessionLockTestPackage;
     };
@@ -506,7 +471,7 @@ in
     );
     niri-greeter-vm = pkgs.testers.runNixOSTest (
       import ./tests/niri-greeter.nix {
-        inherit pkgs;
+        inherit pkgs testWallpaperDirectory;
         genkan = package;
       }
     );

@@ -92,11 +92,18 @@ exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
   "$GENKAN_BIN" login --windowed --preview "$fixture" --width "$width" --height "$height"
 EOF
   elif [[ $mode == asset-* ]]; then
+    # Repository fixtures are not downloadable public catalog entries. Declare
+    # this provisioned local HEIC explicitly; connection checks forbid fetching.
+    cat > "$case_dir/catalog.toml" <<EOF
+[assets.$fixture]
+url = "https://example.invalid/$fixture.heic"
+format = "heic"
+EOF
     cat > "$case_dir/run-genkan" <<EOF
 #!${SHELL:-/bin/sh}
 echo \$\$ > "$case_dir/genkan.pid"
 exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
-  "$GENKAN_BIN" assets preview "$fixture" --appearance "${mode#asset-}"
+  "$GENKAN_BIN" assets --catalog "$case_dir/catalog.toml" preview "$fixture" --appearance "${mode#asset-}"
 EOF
   else
     cat > "$case_dir/run-genkan" <<EOF

@@ -11,8 +11,9 @@ nix develop
 The Makefile provides `dev`, `animated-dev`, `lock-dev`, `check`, `fmt`, `fmt-fix`, `lint`,
 `test`, `scripts-test`, `check-rfds`, `smoke`, `wallpaper-smoke`, `lock-smoke`,
 `lock-vm`, `heic-assets`, `heic-decode`, `evidence`, `update-reference-images`,
-`hardware-smoke`, `e2e`, `build`, `package`, `verify`, `changelog`,
-`next-version`, and `clean` targets. `fuzz` is an opt-in nightly target.
+`wallpaper-package`, `wallpaper-empty-cache`, `hardware-smoke`, `e2e`, `build`,
+`package`, `verify`, `changelog`, `next-version`, and `clean` targets. `fuzz` is
+an opt-in nightly target.
 
 ## Shared presentation
 
@@ -35,7 +36,7 @@ over white artwork; the wallpaper outside controls stays undimmed. The fallback
 generated background keeps its existing contrast-tested control treatment.
 
 Contrast tests use the actual control color roles and filtered material over
-RGB cube vertices and packaged poster samples, in encoded and linear sRGB.
+RGB cube vertices and test-only reference JPEGs, in encoded and linear sRGB.
 Wallpaper text has a soft shadow below it rather than an outline, so its
 contrast over bright photographic regions is a visual check, not a numeric one. The lock rejection shake uses the login motion curve,
 requests overlay-only frames at the runtime's 16ms cadence, ends at rest, and
@@ -145,9 +146,11 @@ submission and all power actions are simulated, so UI testing cannot suspend,
 restart, or shut down the development machine. Preview does not contact
 AccountsService, greetd, or logind.
 
-The ordinary preview renders a fixed wallpaper poster without starting
-GStreamer so screenshots remain stable. Choose a deterministic fixture with
-`PREVIEW`:
+The ordinary preview renders a cached wallpaper poster without starting
+GStreamer, or the generated background when no poster is cached. Neither the
+development shell nor the package supplies media. Automated reference captures
+use an explicit test-only cache of source JPEGs, not a production fallback.
+Choose a deterministic fixture with `PREVIEW`:
 
 ```sh
 PREVIEW=users make dev
@@ -182,26 +185,152 @@ login adds the session and power items and a stronger focused outline, and the
 lock masks every response. Set `WIDTH`, `HEIGHT`, and `WALLPAPER` to inspect
 responsive layouts, for example `WIDTH=1080 HEIGHT=1920 make lock-dev`.
 
+## Download and inspect wallpapers
+
+Media acquisition is explicit. The curated catalog uses original upstream
+sources; Nix does not fetch them, and previews, login, lock, and wallpaper
+playback never download them. Use the Cargo form below for an uninstalled build:
+
+```sh
+cargo run --bin genkan -- assets list
+cargo run --bin genkan -- assets download iceland
+cargo run --bin genkan -- assets preview iceland
+cargo run --bin genkan -- assets download my-wallpaper --url "$SOURCE_URL"
+cargo run --bin genkan -- assets preview my-wallpaper --reduce-motion
+```
+
+| Command | Network and validation | Local effect |
+| --- | --- | --- |
+| `assets list` / `assets preview` | Offline | Read catalog/cache; preview changes no settings |
+| `assets preflight <key>` | Bounded range reads; one representative frame | Install nothing |
+| `assets download <key>` | Complete transfer; resource-bounded hashing, ZIP parsing, and frame validation | Atomically select validated media, metadata, and a generated MOV poster |
+
+Downloads require direct HTTP(S) responses with status 200 and reject redirects.
+`--max-bytes` defaults to 2 GiB, accepts 4 KiB–16 GiB, and limits both the
+transfer and expanded media; transfers time out after 600 seconds. Supplied
+byte sizes and SHA-256 pins must match before publication. For custom URLs,
+`--sha256 HASH` is optional; without it, the computed hash is an observation,
+not a trusted upstream pin. Custom keys cannot replace keys in the selected
+catalog. Observed format, dimensions, byte size, and hash persist in cache
+`entries/<key>.toml` receipts and are available to subsequent list/preview
+commands. A matching verified cache entry can be reused.
+
+Cache selection and greeter provisioning are documented under
+[wallpaper configuration](deployment.md#wallpaper-configuration). Downloads do
+not change the selected login/lock wallpaper. Missing media retains the
+generated background; `assets preview` reports the missing path instead.
+
+### Cache publication and interrupted downloads
+
+Each download prepares a new generation under
+`objects/download-<key>-<random>/`, containing `<key>.mov` or `<key>.heic`, a
+`<key>-poster.jpg` for MOV, and metadata. Only after preparation succeeds does
+`entries/<key>.toml` atomically select that complete generation. Readers use one
+receipt snapshot for metadata, media, and poster. Preparation or publication
+failures leave the previous generation usable. This does not
+promise simultaneous display changes across processes or filesystem durability
+after power loss.
+
+Use `assets preview <key>` or the absolute media path printed by download with
+`--wallpaper-file`; do not construct a downloaded path under `mov/` or `heic/`.
+Those conventional directories remain supported for explicitly provisioned
+local/test files. Published generations are retained so in-flight previews,
+deferred HEIC opens, and saved absolute overrides remain valid. Replacement
+versions may occupy additional disk space; remove an unused version only when
+no readers or saved overrides need it.
+
+Ctrl+C or SIGTERM stops the preparation processes and cleans staging. After
+SIGKILL or a crash, the next explicit download cleans only abandoned,
+unpublished staging under the cache lock, never previously published
+generations. Playback never performs cache cleanup. Preparation has resource
+and time limits, including ZIP parsing and hashing, so a timeout does not
+publish partially prepared media.
+
+### Use a custom TOML catalog
+
+`--catalog sources.toml` replaces the curated entries. Only `url` is required;
+this illustrative entry uses a placeholder URL:
+
+```toml
+[assets.mountains]
+url = "https://source.example/mountains.mov"
+name = "My Mountains"
+format = "mov"
+width = 3840
+height = 2160
+byte_size = 790758290
+duration_seconds = 120.0
+rights = "Record the source's actual usage terms here"
+attribution = "Original author"
+# sha256 = "64 hexadecimal digits from a trusted source"
+# source_page_url = "https://source.example/mountains"
+# preview_url = "https://source.example/mountains.jpg"
+```
+
+```sh
+genkan assets list --catalog sources.toml
+genkan assets preflight mountains --catalog sources.toml
+genkan assets download mountains --catalog sources.toml
+genkan assets preview mountains --catalog sources.toml
+```
+
+Unknown metadata is shown as `?`. Supplied format, byte size, and dimensions
+are checked against observations; duration, rights, attribution, and preview
+URLs are informational. Poster URLs are not fetched. Receipts fill missing
+observations but never override a curator's URL, pins, or geometry. Custom
+`--url` downloads appear in the default list; a replacement catalog shows its
+own entries, not unrelated cached custom keys.
+
+A ZIP source needs `archive_member` (the exact member name),
+`archive_byte_size`, and `archive_sha256`, plus the extracted media's
+`byte_size` and `sha256`. Only that configured member is extracted into a
+controlled local filename; archive paths are never unpacked. Both archive and
+member pins are verified. Arbitrary ZIP discovery is not supported.
+
+### Preflight is optional, not an installation gate
+
+`genkan assets preflight <key> [--url URL]` uses bounded HTTP range reads,
+including tail metadata when needed. It decodes one HEVC MOV frame or a HEIC
+primary image with Genkan's parser/color conversion and inspects HEIC scheduling
+metadata. It installs nothing and does not persist custom `--url` entries.
+
+The default media-body budget is 8 MiB; `--max-bytes` accepts 4 KiB–64 MiB.
+There are at most 128 range requests and a 35-second worker deadline. Headers,
+TLS, and transport overhead are outside the media-byte counter. Multiple reads
+require a consistent strong ETag for a pass. Redirects, ignored or malformed
+ranges, changed sources, TLS failures, and exhausted budgets are inconclusive.
+Cancellation stops the worker and its request. Apple's root certificate is
+supplied only to curl requests for the exact HTTPS host `sylvan.apple.com`;
+it does not change system trust or disable certificate/hostname validation.
+
+Exit codes are **0: passed**, **2: unsupported or catalog mismatch**,
+**3: inconclusive**, and **1: command/configuration error**. A pass does not
+verify the whole-file hash, every frame, or a particular GPU renderer. ZIPs
+cannot be partially inspected as media, but a configured ZIP download can
+still pass full archive/member integrity checks and local frame validation.
+An inconclusive or unsupported preflight never triggers or prevents an explicit
+download; that command independently validates the complete file before
+publication. Neither command proves every frame decodes.
+
 ## Animated wallpaper preview
 
 Real wallpaper playback can be enabled without making preview authentication
-or power actions real. The Nix development shell exposes the pinned videos
-through `GENKAN_WALLPAPER_DIR`, under the same `mov/` and `heic/` split as the
-installed tree:
+or power actions real. Download the selected originals into your cache first:
 
 ```sh
+cargo run --bin genkan -- assets download tahoe-beach
 make animated-dev
+cargo run --bin genkan -- assets download sequoia-sunrise
 WALLPAPER=sequoia-sunrise make animated-dev
-WALLPAPER=sequoia-morning make animated-dev
-WALLPAPER=sequoia-night make animated-dev
-WALLPAPER=golden-gate make animated-dev
 ```
 
-`--wallpaper-file` accepts only an existing absolute `.mov` file. It replaces
-the selected catalog entry's video while retaining that entry's verified
-duration and crossfade metadata, so the file must be a local copy of the same
-catalog asset. URIs, playlists, and GStreamer pipeline descriptions are not
-accepted. Runtime playback never downloads media or invokes a shell.
+`--wallpaper-file` accepts an existing absolute MOV or HEIC file. MOV looping
+uses the actual stream duration; HEIC uses its own scheduling metadata.
+For downloaded files, use the absolute path printed by download, not
+a hardcoded cache layout. URIs, playlists, and GStreamer pipeline descriptions
+are not accepted.
+Runtime playback never downloads media or invokes a shell. With an empty cache,
+`make animated-dev` remains usable but shows the generated background.
 
 ## Verification
 
@@ -224,8 +353,9 @@ launches Genkan using Mesa's software Vulkan driver. Genkan must remain alive
 until the controlled timeout. The check requires iced's wgpu backend and proves
 that Cage launched the packaged process with the intended Vulkan driver.
 It also compares animated wallpaper crops with the static poster, requires
-multiple distinct nonblank frames, and bounds short-term RSS growth. Those
-checks do not constitute the sustained performance or input-latency acceptance
+multiple distinct nonblank frames from an authored HEVC fixture, and bounds
+short-term RSS growth. Production launches are also checked without a fixture
+cache. Those checks do not constitute the sustained performance or input-latency acceptance
 pass tracked in [Deferred Work](deferred.md).
 
 `make wallpaper-smoke` runs the headless layer-shell desktop check. It launches
@@ -252,20 +382,22 @@ the renderer's internal path.
 analysis must record the method that produced each `endpoint_ssim`, the
 reproducible set must name exactly the catalog entries, every entry must record
 a plausible endpoint measurement with its verification, `default_wallpaper` must
-name an entry, and no packaged asset may opt out of decode verification. The
+name an entry, and no catalog asset may opt out of decode verification. The
 check validates the recorded claims rather than re-measuring them, so it stays
-cheap enough for every change.
+cheap enough for every change; it does not fetch upstream media.
 
-`make heic-assets` verifies the pinned dynamic HEIC assets recorded in the
-wallpaper manifest: each repository-delivered asset's byte size and SHA-256 must
-match its manifest entry.
+`make wallpaper-package` checks that the production wallpaper tree contains
+only the manifest and the runtime closure contains neither catalog artwork nor
+a test cache. `make wallpaper-empty-cache` checks the unmodified production
+wrapper with empty HOME, XDG, and override caches: preview remains usable,
+opens no artwork, and starts no downloader or network request.
 
-`make heic-decode` opens every installed dynamic HEIC through the shipped parser
-and decodes all of its frames, checking the top-level image count against the
-manifest's `structure.image_count`. Every catalog asset must decode: an entry
-that records `decode_verified = false` fails the check instead of being skipped,
-so a known-undecodable asset has to be re-justified in the check and the
-manifest entry together.
+`make heic-assets` verifies the byte sizes and SHA-256 hashes of the authored,
+repository-delivered HEIC fixtures. `make heic-decode` opens those fixtures
+through the shipped parser and decodes all their frames, checking the count
+against the manifest's `structure.image_count`. A fixture declaring
+`decode_verified = false` fails rather than being skipped. These checks use an
+explicit test cache; remote catalog records are not downloaded or revalidated.
 
 Authentication changes should also run the x86_64 NixOS VM test:
 

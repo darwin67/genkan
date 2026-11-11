@@ -39,7 +39,7 @@ enum Command {
     Lock(LockArguments),
     /// Display a login or dynamic HEIC wallpaper on a Wayland desktop.
     Wallpaper(WallpaperArguments),
-    /// List and safely preview packaged MOV and dynamic HEIC wallpapers.
+    /// Discover, download, check, and safely preview MOV and HEIC wallpapers.
     Assets(asset_command::Arguments),
     /// Supervise the login clients and end the niri greeter when login exits.
     GreeterSession(greeter_session::Arguments),

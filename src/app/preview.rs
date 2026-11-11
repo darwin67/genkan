@@ -395,7 +395,8 @@ mod tests {
                 "fixture {fixture:?} must not expose a blinking caret"
             );
             assert!(app.wallpaper.decoder_is_stopped(), "fixture {fixture:?}");
-            assert!(app.wallpaper.has_frame(), "fixture {fixture:?}");
+            // A cached poster is optional; the generated background remains
+            // deterministic too, without artwork or network access.
             assert_eq!(app.now.format("%-I:%M").to_string(), "9:41");
             assert_eq!(
                 app.now.format("%A, %B %-d").to_string(),

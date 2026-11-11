@@ -1,4 +1,8 @@
-{ pkgs, genkan }:
+{
+  pkgs,
+  genkan,
+  testWallpaperDirectory,
+}:
 {
   name = "genkan-niri-greeter";
   enableOCR = true;
@@ -148,6 +152,7 @@
       systemd.services.greetd = {
         path = [ sentinels ];
         environment.ICED_BACKEND = "tiny-skia";
+        environment.GENKAN_WALLPAPER_DIR = toString testWallpaperDirectory;
       };
       boot.kernelModules = [ "uinput" ];
       system.build.genkanTestInput = pkgs.writeShellScript "genkan-test-input" ''

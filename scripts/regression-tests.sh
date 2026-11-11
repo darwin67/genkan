@@ -523,6 +523,7 @@ reproducible_for = "first, second"
 
 [[wallpaper]]
 id = "first"
+source_file_url = "https://example.org/first.mov"
 
 [wallpaper.loop]
 mode = "held-final-frame-crossfade"
@@ -535,6 +536,7 @@ verification = "measured"
 
 [[wallpaper]]
 id = "second"
+source_file_url = "https://example.org/second.mov"
 
 [wallpaper.loop]
 mode = "held-final-frame-crossfade"
@@ -547,6 +549,8 @@ verification = "measured"
 
 [[dynamic_heic]]
 id = "asset"
+delivery = "repository"
+source_path = "tests/fixtures/dynamic-heic/synthetic-all-properties.heic"
 decode_verified = true
 EOF
 }
@@ -656,9 +660,12 @@ reproducible_for = "first"
 
 [[wallpaper]]
 id = "first"
+source_file_url = "https://example.org/first.mov"
 
 [[dynamic_heic]]
 id = "asset"
+delivery = "repository"
+source_path = "tests/fixtures/dynamic-heic/synthetic-all-properties.heic"
 decode_verified = true
 
 [wallpaper.loop]
@@ -847,6 +854,52 @@ test_wallpaper_manifest_rejects_undecoded_assets() {
   sed -i 's/^default_wallpaper = "first"$/default_wallpaper = "missing"/' "$fixture"
   expect_wallpaper_manifest_failure "$fixture" \
     "default_wallpaper 'missing' is not a catalog entry"
+}
+
+test_wallpaper_manifest_requires_upstream_delivery() {
+  local fixture="$tmp_dir/wallpaper-manifest-delivery"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/delivery = "repository"/delivery = "remote"/' "$fixture"
+  sed -i '/^source_path = /a source_file_url = "https://example.org/asset.heic"' "$fixture"
+  "$repo_root/scripts/check-wallpaper-manifest.py" "$fixture" > /dev/null ||
+    fail "remote HEIC metadata must pass without fetching artwork"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  printf '\n[delivery]\nbase_url = "https://example.org/"\n' >> "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "the obsolete CDN delivery table must be removed"
+
+  local field
+  for field in r2_url cacheable_under_plan_limit cache_control; do
+    make_wallpaper_manifest_fixture "$fixture"
+    sed -i "/^id = \"first\"$/a $field = \"obsolete\"" "$fixture"
+    expect_wallpaper_manifest_failure "$fixture" "must not record obsolete CDN field '$field'"
+  done
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/delivery = "repository"/delivery = "r2"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "delivery must be remote or repository"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i '/^source_path = /d' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "repository asset 'asset' must record source_path"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i 's/delivery = "repository"/delivery = "remote"/' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "remote asset 'asset' must record an upstream HTTPS source_file_url"
+
+  make_wallpaper_manifest_fixture "$fixture"
+  sed -i '/^source_file_url = /d' "$fixture"
+  expect_wallpaper_manifest_failure "$fixture" "remote asset 'first' must record an upstream HTTPS source_file_url"
+
+  local url
+  for url in 'http://example.org/first.mov' 'https:///first.mov' \
+    'https://assets.genkan.dwu.sh/first.mov' 'https://user:password@example.org/first.mov' \
+    'https://[invalid/first.mov'; do
+    make_wallpaper_manifest_fixture "$fixture"
+    sed -i "s|https://example.org/first.mov|$url|" "$fixture"
+    expect_wallpaper_manifest_failure "$fixture" "remote asset 'first' must record an upstream HTTPS source_file_url"
+  done
 }
 
 test_wallpaper_manifest_rejects_unreadable_input() {
@@ -1187,6 +1240,7 @@ test_wallpaper_manifest_accepts_the_catalog
 test_wallpaper_manifest_rejects_incomplete_loop_metadata
 test_wallpaper_manifest_rejects_unreproducible_values
 test_wallpaper_manifest_rejects_undecoded_assets
+test_wallpaper_manifest_requires_upstream_delivery
 test_wallpaper_manifest_rejects_unreadable_input
 test_reference_image_refresh_uses_capture_only_derivation
 test_reference_image_refresh_is_failure_safe_and_removes_stale_files
