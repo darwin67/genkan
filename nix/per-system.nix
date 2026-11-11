@@ -48,7 +48,11 @@ let
     let
       posterSource = ../assets/wallpapers + "/${wallpaper.poster.file}";
     in
-    assert wallpaper.byte_size < wallpaperManifest.delivery.maximum_cacheable_object_bytes;
+    # The CDN plan limit describes edge cacheability, not a Nix input limit.
+    # Larger originals remain valid hash-pinned fixed-output downloads.
+    assert wallpaper.cacheable_under_plan_limit == (
+      wallpaper.byte_size < wallpaperManifest.delivery.maximum_cacheable_object_bytes
+    );
     assert builtins.hashFile "sha256" posterSource == wallpaper.poster.sha256;
     wallpaper
     // {
