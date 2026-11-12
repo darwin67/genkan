@@ -1,6 +1,7 @@
 //! Discover, explicitly cache, and preview wallpapers without changing a session.
 
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -12,6 +13,8 @@ mod download;
 mod preflight;
 
 use catalog::Asset;
+
+const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Args)]
 pub(crate) struct Arguments {
@@ -25,7 +28,11 @@ pub(crate) struct Arguments {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// List catalog wallpapers, their resolution, size, and local availability.
-    List,
+    List {
+        /// Include full names, source URLs, and usage rights below each row.
+        #[arg(long)]
+        details: bool,
+    },
     /// Download and validate an original into the local wallpaper cache.
     Download {
         id: String,
@@ -36,7 +43,7 @@ enum Command {
         #[arg(long, requires = "url")]
         sha256: Option<String>,
         /// Maximum download and expanded media size (default: 2 GiB).
-        #[arg(long, default_value_t = 2 * 1024 * 1024 * 1024, value_parser = clap::value_parser!(u64).range(4096..=16 * 1024 * 1024 * 1024))]
+        #[arg(long, default_value_t = DEFAULT_MAX_BYTES, value_parser = clap::value_parser!(u64).range(4096..=16 * 1024 * 1024 * 1024))]
         max_bytes: u64,
     },
     /// Check a remote source using bounded range reads, without installing it.
@@ -66,10 +73,13 @@ enum Command {
         #[arg(long, value_parser = clap::value_parser!(u64).range(4096..=16 * 1024 * 1024 * 1024))]
         max_bytes: u64,
     },
-    /// Play a local wallpaper in a safe windowed login preview; change nothing.
+    /// Preview a wallpaper in a safe window; download it first if missing.
     Preview {
         /// Wallpaper ID from `genkan assets list`.
         id: String,
+        /// Maximum download and expanded media size (default: 2 GiB).
+        #[arg(long, default_value_t = DEFAULT_MAX_BYTES, value_parser = clap::value_parser!(u64).range(4096..=16 * 1024 * 1024 * 1024))]
+        max_bytes: u64,
         /// Choose a dynamic HEIC's light or dark appearance.
         #[arg(long, value_enum, default_value = "automatic")]
         appearance: WallpaperAppearance,
@@ -110,7 +120,9 @@ pub(crate) fn run(arguments: Arguments) -> Result<()> {
     let assets = catalog::load(arguments.catalog.as_deref())?;
     let directory = crate::wallpaper::asset_directory()?;
     match arguments.command {
-        Command::List => list(&assets, &directory, &mut std::io::stdout().lock())?,
+        Command::List { details } => {
+            list(&assets, &directory, details, &mut std::io::stdout().lock())?
+        }
         Command::Download {
             id,
             url,
@@ -138,10 +150,21 @@ pub(crate) fn run(arguments: Arguments) -> Result<()> {
         }
         Command::Preview {
             id,
+            max_bytes,
             appearance,
             reduce_motion,
         } => {
-            let arguments = preview_arguments(assets, &directory, &id, appearance, reduce_motion)?;
+            let asset = find_asset(assets, &id)?;
+            if !asset.path(&directory).is_some_and(|path| path.is_file()) {
+                download::run(asset, &directory, max_bytes)?;
+                // Tokio's download signal handlers outlive its runtime. Exec
+                // resets them and reloads the newly published cache snapshot.
+                return Err(std::process::Command::new(std::env::current_exe()?)
+                    .args(std::env::args_os().skip(1))
+                    .exec()
+                    .into());
+            }
+            let arguments = preview_arguments(asset, &directory, appearance, reduce_motion)?;
             eprintln!("Preview only: close the window to exit; no settings are changed.");
             crate::run_login(arguments)?;
         }
@@ -159,19 +182,29 @@ fn find_asset(assets: Vec<Asset>, id: &str) -> Result<Asset> {
         .ok_or_else(|| format!("unknown wallpaper {id:?}; use 'genkan assets list'").into())
 }
 
-fn list(assets: &[Asset], directory: &Path, output: &mut impl Write) -> Result<()> {
+fn list(assets: &[Asset], directory: &Path, details: bool, output: &mut impl Write) -> Result<()> {
+    let id_width = assets
+        .iter()
+        .map(|asset| asset.id.len())
+        .max()
+        .unwrap_or(2)
+        .max(2);
     writeln!(
         output,
-        "ID\tFORMAT\tRESOLUTION\tMiB\tSTATUS\tNAME\tSOURCE\tRIGHTS"
+        "{:<id_width$}  {:<6}  {:<11}  {:>7}  STATUS",
+        "ID", "FORMAT", "RESOLUTION", "MiB"
     )?;
     for asset in assets {
         writeln!(
             output,
-            "{}\t{}\t{}x{}\t{}\t{}\t{}\t{}\t{}",
+            "{:<id_width$}  {:<6}  {:<11}  {:>7}  {}",
             asset.id,
             asset.format.as_deref().unwrap_or("?").to_ascii_uppercase(),
-            asset.width.map_or_else(|| "?".into(), |n| n.to_string()),
-            asset.height.map_or_else(|| "?".into(), |n| n.to_string()),
+            format!(
+                "{}x{}",
+                asset.width.map_or_else(|| "?".into(), |n| n.to_string()),
+                asset.height.map_or_else(|| "?".into(), |n| n.to_string())
+            ),
             asset
                 .bytes
                 .map_or_else(|| "?".into(), |n| format!("{:.1}", n as f64 / 1_048_576.0)),
@@ -180,36 +213,37 @@ fn list(assets: &[Asset], directory: &Path, output: &mut impl Write) -> Result<(
             } else {
                 "missing"
             },
-            asset.name,
-            asset.url.as_deref().unwrap_or("local-only"),
-            asset
-                .metadata
-                .get("rights")
-                .and_then(toml::Value::as_str)
-                .unwrap_or("not supplied"),
         )?;
+        if details {
+            writeln!(output, "  Name:   {}", asset.name)?;
+            writeln!(
+                output,
+                "  Source: {}",
+                asset.url.as_deref().unwrap_or("local-only")
+            )?;
+            writeln!(
+                output,
+                "  Rights: {}\n",
+                asset
+                    .metadata
+                    .get("rights")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or("not supplied")
+            )?;
+        }
     }
     Ok(())
 }
 
 fn preview_arguments(
-    assets: Vec<Asset>,
+    asset: Asset,
     directory: &Path,
-    id: &str,
     appearance: WallpaperAppearance,
     reduce_motion: bool,
 ) -> Result<LoginArguments> {
-    let asset = find_asset(assets, id)?;
     let path = asset
         .path(directory)
         .ok_or("local preview requires a declared format (mov or heic)")?;
-    if !path.is_file() {
-        return Err(format!(
-            "wallpaper {id:?} is not installed at {}; run 'genkan assets download {id}' first",
-            path.display()
-        )
-        .into());
-    }
     Ok(LoginArguments {
         list_preview_fixtures: false,
         username: None,

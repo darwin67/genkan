@@ -208,9 +208,10 @@ saved overrides need it.
 
 Operators must explicitly provision the greeter's cache under its own identity
 or set a shared absolute override; a desktop user's cache is not automatically
-available to greetd. Login, lock, previews, and wallpaper playback never download
-missing media. An empty cache uses the generated background; `assets preview`
-instead reports the missing file.
+available to greetd. Login, lock, and wallpaper playback never download
+missing media. An empty cache uses the generated background in those runtimes;
+the operator-facing `assets preview` command instead downloads a missing asset
+before opening its window.
 
 SIGINT or SIGTERM stops preparation and cleans staging. After SIGKILL or a
 crash, the next explicit download cleans only abandoned, unpublished staging
@@ -238,14 +239,16 @@ or make simulated authentication and power actions real. The distinction must
 be visible in `--help` and documented next to `make dev`.
 
 `genkan assets list` prints the upstream MOV and HEIC catalog plus cached custom
-entries with dimensions, size, and local availability.
+entries in a compact aligned table with dimensions, size, and local availability.
+`--details` adds full names, source URLs, and usage rights beneath each row.
 `genkan assets preview <id>` opens the existing windowed animated login preview
-for a cached asset, with optional
-`--appearance light|dark` for HEIC and `--reduce-motion`. It downloads nothing,
-changes no configuration, and never acquires a session lock. Closing the window
-ends the preview; missing assets fail with their expected local path and a
-download instruction. `--catalog` selects the same replacement catalog for
-list, preflight, download, and preview.
+with optional `--appearance light|dark` for HEIC and `--reduce-motion`. A missing
+asset is downloaded using the same limits, validation, and atomic publication
+as `assets download`; `--max-bytes` controls its download limit. Existing local
+media is reused without a network request. A failed download stops before the
+window opens. Preview changes no configuration and never acquires a session
+lock; closing the window ends it. `--catalog` selects the same replacement
+catalog for list, preflight, download, and preview.
 
 === Optional preflight
 

@@ -84,25 +84,33 @@ WALLPAPER=sequoia-night make animated-dev
 ### Download wallpapers explicitly
 
 The package includes a curated upstream catalog, but no wallpaper MOVs, HEICs,
-or posters. Download only the originals you want, then preview them locally:
+or posters. Preview downloads a missing original before opening it; use download
+on its own to prepare media without opening a window:
 
 ```sh
 genkan assets list
-genkan assets download iceland
 genkan assets preview iceland
-genkan assets download big-sur-1
 genkan assets preview big-sur-1 --appearance dark
+genkan assets download iceland
 genkan assets download my-wallpaper --url "$SOURCE_URL" --sha256 "$SHA256"
 genkan assets preview my-wallpaper
 ```
 
 The list includes format, original resolution, size in MiB, and whether the file
-is cached. Custom downloads retain their observed metadata and computed SHA-256
-in the cache and appear in later list/preview commands. For a custom URL,
+is cached in a compact aligned table. Use `genkan assets list --details` for
+full names, source URLs, and usage rights. Custom downloads retain their
+observed metadata and computed SHA-256 in the cache and appear in later
+list/preview commands. For a custom URL,
 `--sha256` is optional; without a trusted pin the computed hash records identity,
 not upstream authenticity. `--url` cannot replace a catalog key. Use
 `--catalog sources.toml` to select your own `[assets.<key>]` TOML entries instead
 of the curated catalog.
+
+Transfers show a live terminal bar with downloaded/total MiB, percentage,
+average speed, and ETA. Unknown lengths show an indeterminate bar until the
+transfer completes. A separate `Validating` status covers integrity and media
+checks before installation; 100% means transferred, not yet installed.
+Redirected output uses plain completion and validation lines without redraws.
 
 Downloads require a direct HTTP(S) URL returning 200; redirects are rejected.
 Preparation, including hashing and ZIP extraction, is resource-bounded.
@@ -113,8 +121,9 @@ archive and media pins before publication. Originals are not resized.
 Publication atomically selects a complete metadata/media/poster generation;
 readers use one receipt snapshot, and a failed replacement leaves the previous
 cached version usable.
-The default download limit is 2 GiB; `--max-bytes` accepts 4 KiB–16 GiB and
-also bounds expanded media. Each transfer has a 600-second timeout.
+For both download and preview, the default download limit is 2 GiB;
+`--max-bytes` accepts 4 KiB–16 GiB and also bounds expanded media. Each transfer
+has a 600-second timeout.
 
 Published versions are retained so running previews and saved absolute file
 overrides remain valid. Replacements may therefore use additional disk space;
@@ -124,10 +133,11 @@ previously published versions. Playback performs no cache cleanup.
 
 The cache is the absolute `GENKAN_WALLPAPER_DIR`, otherwise an absolute
 `XDG_CACHE_HOME` plus `/genkan/wallpapers`, otherwise an absolute `HOME` plus
-`/.cache/genkan/wallpapers`. Listing, previews, login, lock, and wallpaper
-playback never download media. Missing media uses the generated background;
-`assets preview` instead reports the missing file. Preview opens a normal
-window with simulated authentication and power actions; closing it changes no
+`/.cache/genkan/wallpapers`. Listing, login, lock, and wallpaper playback never
+download media. Missing media uses the generated background in those runtimes.
+`assets preview` downloads missing media, but reuses existing local files
+without a network request. Failed downloads stop the preview. Preview opens a
+normal window with simulated authentication and power actions; closing it changes no
 settings. For `--wallpaper-file`, use the absolute media path printed by
 download, not a guessed `mov/` or `heic/` path. For an uninstalled build, use
 `cargo run --bin genkan -- assets …` inside `nix develop`.

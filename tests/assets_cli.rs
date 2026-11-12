@@ -20,7 +20,7 @@ fn genkan(directory: &Path) -> Command {
 }
 
 #[test]
-fn list_reports_local_availability_and_preview_rejects_missing_or_unknown_ids() {
+fn list_is_compact_reports_availability_and_keeps_details_optional() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join("mov")).unwrap();
     // Availability does not decode the file; listing is cheap and display-free.
@@ -31,25 +31,30 @@ fn list_reports_local_availability_and_preview_rejects_missing_or_unknown_ids() 
         .unwrap();
     assert!(output.status.success(), "{:?}", output);
     let listing = String::from_utf8(output.stdout).unwrap();
-    assert!(listing.contains("tahoe-beach\tMOV\t3840x2160\t162.3\tinstalled"));
-    assert!(listing.contains("iceland\tMOV\t3840x2160\t754.1\tmissing"));
-    assert!(listing.contains("palau-jellies\tMOV\t3840x2160\t637.0\tmissing"));
-    assert!(listing.contains("tahoe-time-of-day\tHEIC\t6016x3384\t36.3\tmissing"));
-    assert!(listing.contains("big-sur-1\tHEIC\t5120x2880\t89.6\tmissing"));
+    assert_eq!(
+        listed_asset(&listing, "tahoe-beach"),
+        ["tahoe-beach", "MOV", "3840x2160", "162.3", "installed"]
+    );
+    assert_eq!(
+        listed_asset(&listing, "iceland"),
+        ["iceland", "MOV", "3840x2160", "754.1", "missing"]
+    );
+    assert_eq!(
+        listed_asset(&listing, "big-sur-1"),
+        ["big-sur-1", "HEIC", "5120x2880", "89.6", "missing"]
+    );
+    assert_eq!(listing.lines().count(), 17);
+    assert!(listing.lines().all(|line| line.len() <= 80));
+    assert!(!listing.contains('\t'));
+    assert!(!listing.contains("https://"));
+    assert!(!listing.contains("no open-content license"));
+    let details = successful(genkan(directory.path()).args(["assets", "list", "--details"]));
+    assert!(details.contains("Iceland"));
+    assert!(details.contains("https://sylvan.apple.com/"));
+    assert!(
+        details.contains("Apple aerial artwork; no open-content license is asserted by Genkan.")
+    );
 
-    for id in ["sequoia-night", "tahoe-time-of-day"] {
-        let output = genkan(directory.path())
-            .args(["assets", "preview", id])
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        let error = String::from_utf8(output.stderr).unwrap();
-        assert!(error.contains("is not installed at"), "{error}");
-        assert!(
-            error.contains(directory.path().to_str().unwrap()),
-            "{error}"
-        );
-    }
     for id in [
         "missing",
         "../tahoe-beach",
@@ -96,6 +101,15 @@ fn list_reports_local_availability_and_preview_rejects_missing_or_unknown_ids() 
         }
         std::fs::remove_file(&receipt).unwrap();
     }
+}
+
+fn listed_asset<'a>(listing: &'a str, id: &str) -> Vec<&'a str> {
+    listing
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some(id))
+        .unwrap_or_else(|| panic!("missing {id}: {listing}"))
+        .split_whitespace()
+        .collect()
 }
 
 /// Tail metadata spans several range pages beyond an 8 MiB padding box. This
@@ -202,7 +216,11 @@ impl SourceServer {
                 } else {
                     "Connection: close"
                 };
-                let header = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Range: bytes {reported_start}-{end}/{}\r\n{tag}{connection}\r\n\r\n", body.len(), bytes.len());
+                let header = if path == "/unknown-size" {
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".into()
+                } else {
+                    format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Range: bytes {reported_start}-{end}/{}\r\n{tag}{connection}\r\n\r\n", body.len(), bytes.len())
+                };
                 if stream.write_all(header.as_bytes()).is_err() {
                     continue;
                 }
@@ -218,12 +236,21 @@ impl SourceServer {
                 };
                 let mut offset = 0;
                 while offset < body.len() {
-                    match stream.write(&body[offset..]) {
+                    let paced = matches!(path, "/paced" | "/unknown-size");
+                    let end = if paced {
+                        (offset + 65536).min(body.len())
+                    } else {
+                        body.len()
+                    };
+                    match stream.write(&body[offset..end]) {
                         Ok(0) | Err(_) => break,
                         Ok(count) => {
                             offset += count;
                             sent.fetch_add(count, Ordering::Relaxed);
                         }
+                    }
+                    if paced {
+                        std::thread::sleep(Duration::from_millis(10));
                     }
                 }
             }
@@ -287,13 +314,232 @@ fn cached_media(directory: &Path, key: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn downloads_report_terminal_progress_before_validation() {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let server = SourceServer::new(movie_with_tail_metadata());
+    for route in ["/paced", "/unknown-size", "/truncated"] {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut master, mut slave) = (0, 0);
+        // SAFETY: openpty initializes both descriptors; each is owned exactly
+        // once below, and null attributes request the normal terminal defaults.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        let mut master = unsafe { std::fs::File::from_raw_fd(master) };
+        let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+        rustix::fs::fcntl_setfl(&master, rustix::fs::OFlags::NONBLOCK).unwrap();
+        let mut command = genkan(directory.path());
+        let mut child = command
+            .args(["assets", "download", "sample", "--url", &server.url(route)])
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave)
+            .spawn()
+            .unwrap();
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut output = Vec::new();
+        let mut buffer = [0; 4096];
+        let status = loop {
+            match master.read(&mut buffer) {
+                Ok(count) => output.extend_from_slice(&buffer[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => {}
+                Err(error) => panic!("terminal read failed: {error}"),
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                while let Ok(count @ 1..) = master.read(&mut buffer) {
+                    output.extend_from_slice(&buffer[..count]);
+                }
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("terminal download timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("MiB/s"), "{output}");
+        assert!(output.contains("ETA"), "{output}");
+        if route == "/truncated" {
+            assert!(!status.success());
+            assert!(!output.contains("100%"), "{output}");
+            assert!(!output.contains("Validating sample"), "{output}");
+            assert!(!output.contains("Downloaded sample:"), "{output}");
+            assert!(!directory.path().join("entries/sample.toml").exists());
+            continue;
+        }
+        assert!(status.success(), "{output}");
+        assert!(
+            output.contains("100%") && output.contains("8.2 / 8.2 MiB"),
+            "{output}"
+        );
+        let validation = output.find("Validating sample").unwrap();
+        assert!(output[..validation].contains("100%"), "{output}");
+        assert!(
+            output[validation..].contains("Downloaded sample:"),
+            "{output}"
+        );
+        if route == "/unknown-size" {
+            assert!(
+                output.contains("--%") && output.contains("/ ? MiB"),
+                "{output}"
+            );
+            assert!(
+                output
+                    .split('\r')
+                    .filter(|line| line.contains("MiB/s"))
+                    .all(|line| { line.contains("--%") || line.contains("100%") }),
+                "unknown length must not invent a percentage: {output}"
+            );
+        } else {
+            assert!(
+                output.split('\r').any(|line| {
+                    line.split(']')
+                        .nth(1)
+                        .and_then(|line| line.split_whitespace().next())
+                        .and_then(|value| value.trim_end_matches('%').parse::<u32>().ok())
+                        .is_some_and(|percent| percent > 0 && percent < 100)
+                }),
+                "no intermediate progress: {output}"
+            );
+        }
+    }
+}
+
+#[test]
+fn preview_downloads_missing_media_and_reuses_it_without_the_source() {
+    for (format, bytes) in [
+        (
+            "mov",
+            include_bytes!("fixtures/asset-preflight/hevc.mov").as_slice(),
+        ),
+        (
+            "heic",
+            include_bytes!("fixtures/dynamic-heic/synthetic-all-properties.heic").as_slice(),
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let server = SourceServer::new(bytes.to_vec());
+        let catalog = directory.path().join("sources.toml");
+        std::fs::write(
+            &catalog,
+            format!(
+                "[assets.sample]\nurl = {:?}\n{}",
+                server.url("/ok"),
+                if format == "mov" {
+                    "format = 'mov'\n"
+                } else {
+                    ""
+                }
+            ),
+        )
+        .unwrap();
+        let output = output_with_timeout(
+            genkan(directory.path())
+                .args(["assets", "preview", "sample", "--catalog"])
+                .arg(&catalog),
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("Downloaded sample"),
+            "{output:?}"
+        );
+        // No compositor is available, but preparation must reach the safe GUI
+        // launch rather than failing on the stale conventional media path.
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Preview only:"),
+            "{output:?}"
+        );
+        let media = cached_media(directory.path(), "sample");
+        assert_eq!(std::fs::read(&media).unwrap(), bytes);
+        assert_eq!(
+            server.served.load(std::sync::atomic::Ordering::Relaxed),
+            bytes.len()
+        );
+        drop(server);
+        let output = output_with_timeout(
+            genkan(directory.path())
+                .args(["assets", "preview", "sample", "--catalog"])
+                .arg(&catalog),
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Preview only:"),
+            "{output:?}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("Downloading"),
+            "{output:?}"
+        );
+        assert_eq!(cached_media(directory.path(), "sample"), media);
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let server = SourceServer::new(include_bytes!("fixtures/asset-preflight/hevc.mov").to_vec());
+    let catalog = directory.path().join("sources.toml");
+    for (route, max_bytes) in [("/redirect", "2147483648"), ("/ok", "4096")] {
+        std::fs::write(
+            &catalog,
+            format!(
+                "[assets.sample]\nurl = {:?}\nformat = 'mov'\n",
+                server.url(route)
+            ),
+        )
+        .unwrap();
+        let output = output_with_timeout(
+            genkan(directory.path())
+                .args([
+                    "assets",
+                    "preview",
+                    "sample",
+                    "--max-bytes",
+                    max_bytes,
+                    "--catalog",
+                ])
+                .arg(&catalog),
+        );
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("download validation failed"), "{error}");
+        assert!(!error.contains("Preview only:"), "{error}");
+        assert!(!directory.path().join("entries/sample.toml").exists());
+    }
+}
+
+#[test]
 fn custom_download_preserves_originals_generates_poster_and_is_rediscovered_offline() {
     let directory = tempfile::tempdir().unwrap();
     let bytes = include_bytes!("fixtures/asset-preflight/hevc.mov");
     let server = SourceServer::new(bytes.to_vec());
     let url = server.url("/no-etag");
-    let output =
-        successful(genkan(directory.path()).args(["assets", "download", "mine", "--url", &url]));
+    let output = output_with_timeout(
+        genkan(directory.path()).args(["assets", "download", "mine", "--url", &url]),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let status = String::from_utf8(output.stderr).unwrap();
+    assert!(status.contains("Download complete:"), "{status}");
+    assert!(
+        status.find("Download complete:").unwrap() < status.find("Validating mine").unwrap(),
+        "{status}"
+    );
+    assert!(
+        !status.contains(['\r', '\x1b']),
+        "redirected output must be plain text: {status}"
+    );
+    let output = String::from_utf8(output.stdout).unwrap();
     assert!(output.contains("Computed hash recorded locally"));
     assert_eq!(
         std::fs::read(cached_media(directory.path(), "mine")).unwrap(),
@@ -303,9 +549,12 @@ fn custom_download_preserves_originals_generates_poster_and_is_rediscovered_offl
         image::open(cached_media(directory.path(), "mine").with_file_name("mine-poster.jpg"))
             .unwrap();
     assert_eq!((poster.width(), poster.height()), (96, 64));
-    assert!(
-        successful(genkan(directory.path()).args(["assets", "list"]))
-            .contains("mine\tMOV\t96x64\t0.0\tinstalled")
+    assert_eq!(
+        listed_asset(
+            &successful(genkan(directory.path()).args(["assets", "list"])),
+            "mine"
+        ),
+        ["mine", "MOV", "96x64", "0.0", "installed"]
     );
     let receipt: toml::Table = std::fs::read_to_string(directory.path().join("entries/mine.toml"))
         .unwrap()
@@ -352,12 +601,17 @@ fn zip_download_extracts_only_the_selected_heic_and_checks_archive_and_media_pin
         heic
     );
     assert!(!directory.path().join("not-extracted").exists());
-    assert!(successful(
-        genkan(directory.path())
-            .args(["assets", "list", "--catalog"])
-            .arg(&catalog)
-    )
-    .contains("dynamic\tHEIC\t8x8"));
+    assert_eq!(
+        listed_asset(
+            &successful(
+                genkan(directory.path())
+                    .args(["assets", "list", "--catalog"])
+                    .arg(&catalog)
+            ),
+            "dynamic"
+        ),
+        ["dynamic", "HEIC", "8x8", "0.0", "installed"]
+    );
     // Force source revalidation under a new key: a bad archive pin must fail
     // before extraction, and a correct archive with a bad media pin must fail too.
     for field in ["archive_sha256", "sha256"] {
@@ -536,9 +790,12 @@ fn publication_failure_preserves_the_previous_complete_generation() {
         &heic.url("/ok"),
     ]));
     successful(genkan(directory.path()).args(["assets", "download", "mine"]));
-    assert!(
-        successful(genkan(directory.path()).args(["assets", "list"]))
-            .contains("mine\tHEIC\t8x8\t0.0\tinstalled")
+    assert_eq!(
+        listed_asset(
+            &successful(genkan(directory.path()).args(["assets", "list"])),
+            "mine"
+        ),
+        ["mine", "HEIC", "8x8", "0.0", "installed"]
     );
     assert_eq!(
         std::fs::read(&old).unwrap(),
@@ -657,8 +914,10 @@ fn downloads_and_listing_share_home_xdg_and_override_cache_resolution() {
         successful(download.args(["assets", "download", mode, "--url", &server.url("/ok")]));
         let cache = home.join(suffix);
         assert!(cached_media(&cache, mode).is_file());
-        assert!(successful(genkan(&cache).args(["assets", "list"]))
-            .contains(&format!("{mode}\tHEIC\t8x8\t0.0\tinstalled")));
+        assert_eq!(
+            listed_asset(&successful(genkan(&cache).args(["assets", "list"])), mode),
+            [mode, "HEIC", "8x8", "0.0", "installed"]
+        );
     }
 }
 
@@ -684,14 +943,19 @@ fn preflight_decodes_a_movie_with_remote_tail_metadata_without_full_download() {
     let catalog = directory.path().join("sources.toml");
     std::fs::write(&catalog, format!("[assets.mountains]\nurl = {:?}\nname = 'My Mountains'\nformat = 'mov'\nwidth = 96\nheight = 64\nrights = 'Authored test pattern'\n", source.url("/ok"))).unwrap();
     let listing = genkan(directory.path())
-        .args(["assets", "list", "--catalog"])
+        .args(["assets", "list", "--details", "--catalog"])
         .arg(&catalog)
         .output()
         .unwrap();
     assert!(listing.status.success());
-    assert!(String::from_utf8(listing.stdout)
-        .unwrap()
-        .contains("mountains\tMOV\t96x64\t?\tmissing\tMy Mountains"));
+    let listing = String::from_utf8(listing.stdout).unwrap();
+    assert_eq!(
+        listed_asset(&listing, "mountains"),
+        ["mountains", "MOV", "96x64", "?", "missing"]
+    );
+    assert!(listing.contains("Name:   My Mountains"));
+    assert!(listing.contains(&format!("Source: {}", source.url("/ok"))));
+    assert!(listing.contains("Rights: Authored test pattern"));
     assert_eq!(
         source.served.load(std::sync::atomic::Ordering::Relaxed),
         0,

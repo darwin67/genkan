@@ -1,11 +1,12 @@
 //! Explicit downloads. Playback never calls this module.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
@@ -35,6 +36,69 @@ impl Drop for Transfer {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+    }
+}
+
+struct Progress {
+    terminal: bool,
+    total: Option<u64>,
+    started: Instant,
+    last_draw: Instant,
+}
+
+impl Progress {
+    fn draw(&mut self, received: u64, force: bool) {
+        if !self.terminal || (!force && self.last_draw.elapsed() < Duration::from_millis(200)) {
+            return;
+        }
+        self.last_draw = Instant::now();
+        let speed = received as f64 / self.started.elapsed().as_secs_f64().max(0.001);
+        let (bar, percent, total, eta) = if let Some(total) = self.total {
+            let percent = if total == 0 {
+                100
+            } else {
+                (received * 100 / total).min(100)
+            };
+            let filled = (percent * 16 / 100) as usize;
+            let eta = if received >= total {
+                "00:00".into()
+            } else if speed > 0.0 {
+                let seconds = ((total - received) as f64 / speed).ceil() as u64;
+                format!("{:02}:{:02}", seconds / 60, seconds % 60)
+            } else {
+                "--:--".into()
+            };
+            (
+                format!("{}{}", "#".repeat(filled), "-".repeat(16 - filled)),
+                format!("{percent:>3}%"),
+                format!("{:.1}", total as f64 / 1_048_576.0),
+                eta,
+            )
+        } else {
+            (
+                "????????????????".into(),
+                " --%".into(),
+                "?".into(),
+                "--:--".into(),
+            )
+        };
+        // Progress is advisory: a closed terminal must not break installation.
+        let mut output = io::stderr().lock();
+        let _ = write!(
+            output,
+            "\r\x1b[2K[{bar}] {percent}  {:.1} / {total} MiB  {:.1} MiB/s  ETA {eta}",
+            received as f64 / 1_048_576.0,
+            speed / 1_048_576.0
+        );
+        let _ = output.flush();
+    }
+}
+
+impl Drop for Progress {
+    fn drop(&mut self) {
+        if self.terminal {
+            let _ = writeln!(io::stderr());
+        }
     }
 }
 
@@ -77,7 +141,7 @@ fn verify(file: &mut File, bytes: Option<u64>, hash: Option<&str>) -> Result<(u6
     Ok(observed)
 }
 
-fn fetch(url: &str, file: &mut File, max_bytes: u64) -> Result<()> {
+fn fetch(url: &str, file: &mut File, max_bytes: u64, expected_size: Option<u64>) -> Result<()> {
     if !(url.starts_with("https://") || url.starts_with("http://"))
         || url.chars().any(char::is_control)
     {
@@ -90,6 +154,7 @@ fn fetch(url: &str, file: &mut File, max_bytes: u64) -> Result<()> {
             "--disable",
             "--globoff",
             "--silent",
+            "--no-buffer",
             "--fail",
             "--proto",
             "=http,https",
@@ -122,10 +187,50 @@ fn fetch(url: &str, file: &mut File, max_bytes: u64) -> Result<()> {
         });
     }
     let mut transfer = Transfer(command.spawn().map_err(|_| "curl is unavailable")?);
-    let received = io::copy(
-        &mut transfer.0.stdout.take().unwrap().take(max_bytes + 1),
-        file,
-    )?;
+    let mut progress = Progress {
+        terminal: io::stderr().is_terminal(),
+        total: expected_size,
+        started: Instant::now(),
+        last_draw: Instant::now(),
+    };
+    progress.draw(0, true);
+    let mut body = transfer.0.stdout.take().unwrap().take(max_bytes + 1);
+    let mut received = 0;
+    let mut buffer = [0; 65536];
+    loop {
+        let count = body.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        if received == 0 {
+            // Curl flushes headers before its unbuffered body. Use the final
+            // response's length, not a proxy/interim response or expanded ZIP size.
+            let mut header = String::new();
+            if headers
+                .as_file()
+                .take(65536)
+                .read_to_string(&mut header)
+                .is_ok()
+            {
+                progress.total = header
+                    .rsplit("\r\n\r\n")
+                    .find(|block| block.starts_with("HTTP/"))
+                    .and_then(|block| {
+                        block.lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<u64>().ok())
+                                .flatten()
+                        })
+                    })
+                    .filter(|size| *size > 0)
+                    .or(progress.total);
+            }
+        }
+        file.write_all(&buffer[..count])?;
+        received += count as u64;
+        progress.draw(received, false);
+    }
     if received > max_bytes {
         return Err("download exceeds --max-bytes; no media installed".into());
     }
@@ -147,6 +252,14 @@ fn fetch(url: &str, file: &mut File, max_bytes: u64) -> Result<()> {
             status.code().unwrap_or(-1)
         )
         .into());
+    }
+    progress.total = Some(received);
+    progress.draw(received, true);
+    if !progress.terminal {
+        eprintln!(
+            "Download complete: {:.1} MiB.",
+            received as f64 / 1_048_576.0
+        );
     }
     Ok(())
 }
@@ -269,8 +382,12 @@ pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<()> 
         "Downloading {} from its source; originals are not resized.",
         asset.id
     );
-    let (code, output) =
-        preflight::run_child(&mut command, &input, std::time::Duration::from_secs(700))?;
+    let result = preflight::run_child(&mut command, &input, Duration::from_secs(700));
+    // Cancellation kills the worker before its progress-line destructor runs.
+    if result.is_err() && io::stderr().is_terminal() {
+        eprintln!();
+    }
+    let (code, output) = result?;
     if code != 0 {
         return Err(format!("download validation failed: {output}").into());
     }
@@ -340,7 +457,12 @@ pub(super) fn worker(stage: &Path, max_bytes: u64) -> Result<()> {
         url,
         &mut source,
         expected_size.unwrap_or(max_bytes).min(max_bytes),
+        expected_size,
     )?;
+    eprintln!(
+        "Validating {}: checking integrity and decoding media...",
+        asset.id
+    );
     if let Some(member) = archive {
         verify(&mut source, expected_size, text(&asset, "archive_sha256"))?;
         source.seek(SeekFrom::Start(0))?;
