@@ -540,9 +540,13 @@ are test-only references. Download and preview as your desktop user with:
 
 ```sh
 genkan assets list
-genkan assets download tahoe-beach
 genkan assets preview tahoe-beach
 ```
+
+`assets preview` downloads the original if missing, then opens a simulated
+window without changing wallpaper settings. Cached previews stay offline.
+Use `genkan assets download tahoe-beach` to prepare it without a window, or
+`genkan assets list --details` for full names, source URLs, and usage rights.
 
 Download preparation, including hashing and ZIP parsing, is resource-bounded.
 The downloader verifies curated sizes and SHA-256 pins, validates a
@@ -553,7 +557,9 @@ direct HTTP(S) response with status 200; redirects are rejected. The default tra
 limit is 2 GiB (`--max-bytes` accepts 4 KiB–16 GiB), with a 600-second transfer
 timeout. For custom URLs, catalogs, and configured ZIP sources, see
 [download and inspect wallpapers](development.md#download-and-inspect-wallpapers).
-No preview, login, lock, or wallpaper process auto-downloads missing media.
+Login, lock, and wallpaper playback never auto-download missing media.
+Preview uses the same download limits and validation; a failed download stops
+before opening its window.
 
 ### Cache selection and greeter provisioning
 
@@ -625,7 +631,8 @@ Keep the greeter's media writable only by its provisioning identity or an
 administrator, not by arbitrary desktop users. The service must be able to
 read it. Downloads are an operator action, never a login/startup hook. A
 missing cache or poster uses the generated background without delaying
-authentication; `assets preview` instead reports the missing path.
+authentication. Only the operator-facing `assets preview` command attempts to
+download a missing asset.
 
 ### Select cached media
 

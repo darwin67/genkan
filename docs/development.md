@@ -187,13 +187,14 @@ responsive layouts, for example `WIDTH=1080 HEIGHT=1920 make lock-dev`.
 
 ## Download and inspect wallpapers
 
-Media acquisition is explicit. The curated catalog uses original upstream
-sources; Nix does not fetch them, and previews, login, lock, and wallpaper
-playback never download them. Use the Cargo form below for an uninstalled build:
+The curated catalog uses original upstream sources; Nix does not fetch them.
+`assets preview` downloads a missing asset before opening its window; cached
+previews, login, lock, and wallpaper playback stay offline. Use the Cargo form
+below for an uninstalled build:
 
 ```sh
 cargo run --bin genkan -- assets list
-cargo run --bin genkan -- assets download iceland
+cargo run --bin genkan -- assets list --details
 cargo run --bin genkan -- assets preview iceland
 cargo run --bin genkan -- assets download my-wallpaper --url "$SOURCE_URL"
 cargo run --bin genkan -- assets preview my-wallpaper --reduce-motion
@@ -201,13 +202,15 @@ cargo run --bin genkan -- assets preview my-wallpaper --reduce-motion
 
 | Command | Network and validation | Local effect |
 | --- | --- | --- |
-| `assets list` / `assets preview` | Offline | Read catalog/cache; preview changes no settings |
+| `assets list` | Offline | Compact table; `--details` adds names, URLs, and rights |
+| `assets preview <key>` | Download and validate only if missing; cached preview is offline | Cache missing media, then open a simulated window; change no settings |
 | `assets preflight <key>` | Bounded range reads; one representative frame | Install nothing |
 | `assets download <key>` | Complete transfer; resource-bounded hashing, ZIP parsing, and frame validation | Atomically select validated media, metadata, and a generated MOV poster |
 
 Downloads require direct HTTP(S) responses with status 200 and reject redirects.
-`--max-bytes` defaults to 2 GiB, accepts 4 KiB–16 GiB, and limits both the
-transfer and expanded media; transfers time out after 600 seconds. Supplied
+For download and preview, `--max-bytes` defaults to 2 GiB, accepts 4 KiB–16 GiB,
+and limits both the transfer and expanded media; transfers time out after
+600 seconds. Supplied
 byte sizes and SHA-256 pins must match before publication. For custom URLs,
 `--sha256 HASH` is optional; without it, the computed hash is an observation,
 not a trusted upstream pin. Custom keys cannot replace keys in the selected
@@ -218,7 +221,9 @@ commands. A matching verified cache entry can be reused.
 Cache selection and greeter provisioning are documented under
 [wallpaper configuration](deployment.md#wallpaper-configuration). Downloads do
 not change the selected login/lock wallpaper. Missing media retains the
-generated background; `assets preview` reports the missing path instead.
+generated background in login, lock, and wallpaper playback. `assets preview`
+attempts acquisition instead; a download or validation failure stops before
+opening the window and leaves no partial installation.
 
 ### Cache publication and interrupted downloads
 

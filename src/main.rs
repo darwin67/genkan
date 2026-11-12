@@ -766,10 +766,12 @@ mod tests {
     }
 
     #[test]
-    fn asset_commands_are_read_only_and_keep_login_options_out() {
+    fn asset_commands_keep_login_options_out() {
         for args in [
             vec!["assets", "list"],
+            vec!["assets", "list", "--details"],
             vec!["assets", "preview", "iceland"],
+            vec!["assets", "preview", "iceland", "--max-bytes", "4096"],
             vec!["assets", "preview", "big-sur-1", "--appearance", "dark"],
             vec!["assets", "preview", "palau-jellies", "--reduce-motion"],
         ] {
