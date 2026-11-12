@@ -579,9 +579,27 @@ so replacements may occupy additional disk space. Remove an unused version only
 when no readers or saved overrides need it.
 
 Downloading as your desktop user does not populate the greeter's cache.
-Provision explicitly under the greeter identity with a usable HOME/XDG cache,
-or use a shared absolute override. For example, for a host whose greetd
-identity and group are both `greeter`:
+For normal catalog selection, give the greeter a usable HOME and provision its
+cache there. For example, for a host whose greetd identity and group are both
+`greeter`:
+
+```nix
+users.users.greeter = {
+  home = "/var/lib/greeter";
+  createHome = true;
+};
+```
+
+After applying that configuration, use the `genkan` binary from the configured
+package (its full path if it is not on PATH):
+
+```sh
+sudo install -d -o greeter -g greeter -m 0700 /var/lib/greeter/.cache/genkan/wallpapers
+sudo -u greeter env -u GENKAN_WALLPAPER_DIR -u XDG_CACHE_HOME HOME=/var/lib/greeter \
+  genkan assets download tahoe-beach
+```
+
+Alternatively, provision a shared cache:
 
 ```sh
 sudo install -d -o greeter -g greeter -m 0755 /var/cache/genkan/wallpapers
@@ -589,13 +607,19 @@ sudo -u greeter env GENKAN_WALLPAPER_DIR=/var/cache/genkan/wallpapers \
   genkan assets download tahoe-beach
 ```
 
-Use the `genkan` binary from the configured package (its full path if it is not
-on PATH), then pass the same directory to greetd:
+For the opt-in NixOS greeter module, set `wallpaperFile` to the exact absolute
+media path printed by the download command; replace the example generation
+below with that path:
 
 ```nix
-systemd.services.greetd.environment.GENKAN_WALLPAPER_DIR =
-  "/var/cache/genkan/wallpapers";
+programs.genkan.greeter.wallpaperFile =
+  "/var/cache/genkan/wallpapers/objects/download-tahoe-beach-REPLACE/tahoe-beach.mov";
 ```
+
+To use `GENKAN_WALLPAPER_DIR` instead, pass it in the compositor/Genkan launch
+command. Setting `systemd.services.greetd.environment.GENKAN_WALLPAPER_DIR` is
+not sufficient: greetd starts the greeter with a separate PAM environment and
+does not forward arbitrary daemon variables.
 
 Keep the greeter's media writable only by its provisioning identity or an
 administrator, not by arbitrary desktop users. The service must be able to
