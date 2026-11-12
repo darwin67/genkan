@@ -208,6 +208,104 @@ pub struct RgbaFrame {
     pub pixels: Vec<u8>,
 }
 
+/// Actual properties observed by a bounded, representative-image probe.
+pub struct Probe {
+    pub width: u32,
+    pub height: u32,
+    pub image_count: usize,
+    pub has_schedule: bool,
+}
+
+/// Inspects container metadata and decodes the primary image using the normal
+/// HEIC limits and color conversion. The caller must bound reads and keep the
+/// source version stable across seeks. Unlike `Document::open`, this does not
+/// snapshot every compressed image and must not be used by login or lock.
+pub fn probe<R: Read + Seek + 'static>(mut reader: R, source_bytes: u64) -> Result<Probe, Error> {
+    let limits = Limits::default();
+    if source_bytes > limits.max_source_bytes {
+        return Err(Error::SourceTooLarge);
+    }
+    let mut metadata = Vec::new();
+    metadata
+        .try_reserve_exact(source_bytes as usize)
+        .map_err(|_| Error::Limit("container probe buffer"))?;
+    metadata.resize(source_bytes as usize, 0);
+    let mut offset = 0usize;
+    let mut boxes = 0;
+    while offset < metadata.len() {
+        boxes += 1;
+        if boxes > limits.max_container_boxes {
+            return Err(Error::Limit("container boxes"));
+        }
+        reader
+            .seek(SeekFrom::Start(offset as u64))
+            .map_err(|_| Error::Open("probe seek failed"))?;
+        let header = metadata
+            .get_mut(offset..offset + 8)
+            .ok_or_else(|| Error::Container("truncated box".into()))?;
+        reader
+            .read_exact(header)
+            .map_err(|_| Error::Open("probe read failed"))?;
+        let size = u32::from_be_bytes(header[..4].try_into().unwrap());
+        let kind: [u8; 4] = header[4..8].try_into().unwrap();
+        let (size, header_size) = match size {
+            0 => ((metadata.len() - offset) as u64, 8),
+            1 => {
+                let extended = metadata
+                    .get_mut(offset + 8..offset + 16)
+                    .ok_or_else(|| Error::Container("truncated extended box".into()))?;
+                reader
+                    .read_exact(extended)
+                    .map_err(|_| Error::Open("probe read failed"))?;
+                (u64::from_be_bytes(extended.try_into().unwrap()), 16)
+            }
+            size => (u64::from(size), 8),
+        };
+        if size < header_size as u64 || size > (metadata.len() - offset) as u64 {
+            return Err(Error::Container("invalid box size".into()));
+        }
+        let end = offset + size as usize;
+        // The structural walk and libheif ignore these payloads. Preserve all
+        // other boxes exactly, including item locations and native metadata.
+        // Compressed image extents are fetched on demand by libheif's reader,
+        // never replaced with the zeroes used only for the structural walk.
+        if !matches!(&kind, b"mdat" | b"free" | b"skip") {
+            reader
+                .read_exact(&mut metadata[offset + header_size..end])
+                .map_err(|_| Error::Open("probe read failed"))?;
+        }
+        offset = end;
+    }
+    preflight_container(&metadata, &limits)?;
+    reader
+        .rewind()
+        .map_err(|_| Error::Open("probe seek failed"))?;
+    let document =
+        Document::from_reader(Box::new(StreamReader::new(reader, source_bytes)), limits)?;
+    let frame = document.decode(document.primary_image())?;
+    Ok(Probe {
+        width: frame.width,
+        height: frame.height,
+        image_count: document.item_ids().count(),
+        has_schedule: document.metadata().time().is_some() || document.metadata().solar().is_some(),
+    })
+}
+
+fn preflight_container(source: &[u8], limits: &Limits) -> Result<(), Error> {
+    container::preflight(
+        source,
+        &container::Budget {
+            max_container_items: limits.max_container_items,
+            max_container_associations: limits.max_container_associations,
+            max_container_boxes: limits.max_container_boxes,
+            max_container_depth: limits.max_container_depth,
+            max_item_extents: limits.max_item_extents,
+            max_metadata_items: u32::try_from(limits.max_metadata_items).unwrap_or(u32::MAX),
+            max_metadata_bytes: u64::try_from(limits.max_metadata_bytes).unwrap_or(u64::MAX),
+        },
+    )
+}
+
 /// An opened HEIC whose decoded source is fixed when it is opened.
 ///
 /// The container is validated and copied before it reaches libheif, so neither
@@ -261,18 +359,7 @@ impl Document {
             .take(source_bytes)
             .read_to_end(&mut source)
             .map_err(|_| Error::Open("file could not be read"))?;
-        container::preflight(
-            &source,
-            &container::Budget {
-                max_container_items: limits.max_container_items,
-                max_container_associations: limits.max_container_associations,
-                max_container_boxes: limits.max_container_boxes,
-                max_container_depth: limits.max_container_depth,
-                max_item_extents: limits.max_item_extents,
-                max_metadata_items: u32::try_from(limits.max_metadata_items).unwrap_or(u32::MAX),
-                max_metadata_bytes: u64::try_from(limits.max_metadata_bytes).unwrap_or(u64::MAX),
-            },
-        )?;
+        preflight_container(&source, &limits)?;
 
         // libheif parses a descriptor rather than the validated buffer, so the
         // two could otherwise disagree: an owner with write access can replace
@@ -284,6 +371,13 @@ impl Document {
         let snapshot_bytes = u64::try_from(source.len()).unwrap_or(u64::MAX);
         drop(source);
 
+        Self::from_reader(
+            Box::new(StreamReader::new(snapshot, snapshot_bytes)),
+            limits,
+        )
+    }
+
+    fn from_reader(reader: Box<dyn libheif_rs::Reader>, limits: Limits) -> Result<Self, Error> {
         let _ = libheif();
         let mut context = HeifContext::new().map_err(container_error)?;
         let mut security_limits = libheif_rs::SecurityLimits::default();
@@ -308,9 +402,7 @@ impl Document {
         context
             .set_security_limits(&security_limits)
             .map_err(container_error)?;
-        context
-            .read_reader(Box::new(StreamReader::new(snapshot, snapshot_bytes)))
-            .map_err(container_error)?;
+        context.read_reader(reader).map_err(container_error)?;
 
         let item_ids = context.image_ids();
         if item_ids.is_empty() {

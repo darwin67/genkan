@@ -3,9 +3,9 @@
 
 The catalog records two claims that are expensive to re-derive and easy to let
 drift: the endpoint measurement behind each wallpaper's crossfade, and the
-decode verification of each packaged dynamic HEIC. This validates the recorded
-claims rather than re-measuring them, so it stays cheap enough for every
-change.
+decode verification of each catalog dynamic HEIC. This validates the recorded
+claims and upstream delivery metadata rather than downloading or re-measuring
+assets. Ordinary decode checks exercise authored repository fixtures only.
 
 The manifest is parsed with the standard library's TOML reader rather than a
 text scan, so comments, whitespace, multi-line strings, and table association
@@ -18,6 +18,7 @@ The WALLPAPER_MANIFEST environment variable is used when no path is given.
 import os
 import sys
 import tomllib
+from urllib.parse import urlsplit
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 DEFAULT_MANIFEST = os.path.join(REPO_ROOT, "assets", "wallpapers", "manifest.toml")
@@ -155,9 +156,52 @@ def check_dynamic_heic_assets(manifest):
         require(
             isinstance(verified, bool) and verified,
             f"dynamic HEIC asset '{asset_id}' must not record decode_verified = "
-            "false; the packaged heic-decode check requires every catalog asset "
-            "to decode",
+            "false; catalog entries must retain their recorded decode verification",
         )
+
+
+def check_delivery(manifest):
+    require("delivery" not in manifest, "the obsolete CDN delivery table must be removed")
+    for asset in manifest["wallpaper"] + manifest["dynamic_heic"]:
+        asset_id = asset.get("id") or "<unnamed>"
+        for key in asset:
+            require(
+                not key.startswith(("r2_", "cacheable_", "cache_")),
+                f"asset '{asset_id}' must not record obsolete CDN field '{key}'",
+            )
+
+    for asset in manifest["dynamic_heic"]:
+        asset_id = asset.get("id") or "<unnamed>"
+        require(
+            asset.get("delivery") in ("remote", "repository"),
+            f"dynamic HEIC asset '{asset_id}' delivery must be remote or repository",
+        )
+        if asset["delivery"] == "repository":
+            require_text(
+                asset.get("source_path"),
+                f"repository asset '{asset_id}' must record source_path",
+            )
+
+    remote_assets = manifest["wallpaper"] + [
+        asset for asset in manifest["dynamic_heic"] if asset["delivery"] == "remote"
+    ]
+    for asset in remote_assets:
+        asset_id = asset.get("id") or "<unnamed>"
+        url = asset.get("source_file_url")
+        message = f"remote asset '{asset_id}' must record an upstream HTTPS source_file_url"
+        require_text(url, message)
+        try:
+            parsed = urlsplit(url)
+            valid = (
+                parsed.scheme == "https"
+                and parsed.hostname
+                and parsed.hostname != "assets.genkan.dwu.sh"
+                and not parsed.username
+                and not parsed.password
+            )
+        except ValueError:
+            valid = False
+        require(valid, message)
 
 
 def check_default_wallpaper(manifest, ids):
@@ -185,6 +229,7 @@ def main():
         check_reproducible_for(loop_analysis, ids)
         check_dynamic_heic_assets(manifest)
         check_default_wallpaper(manifest, ids)
+        check_delivery(manifest)
     except Problem as problem:
         print(problem, file=sys.stderr)
         return 1

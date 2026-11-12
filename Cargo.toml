@@ -48,6 +48,7 @@ gui = [
     "dep:iced_runtime",
     "dep:rclip-desktop-entry",
     "dep:seccompiler",
+    "dep:sha2",
     "dep:smithay-client-toolkit",
     "dep:tiny-skia",
     "dep:tempfile",
@@ -63,6 +64,7 @@ gui = [
     "dep:zbus",
     "dep:zune-core",
     "dep:zune-jpeg",
+    "dep:zip",
 ]
 
 [[bin]]
@@ -105,6 +107,7 @@ quick-xml = { version = "0.42.0", default-features = false, optional = true }
 rclip-desktop-entry = { version = "0.1.0", features = ["alloc"], optional = true }
 rustix = { version = "1.1.4", features = ["fs", "process", "time"], optional = true }
 seccompiler = { version = "0.5.0", optional = true }
+sha2 = { version = "0.10.9", optional = true }
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std"], optional = true }
 tempfile = { version = "3.27.0", optional = true }
 toml = { version = "1.1.4", optional = true }
@@ -118,6 +121,7 @@ zeroize = { version = "=1.9.0", optional = true }
 zbus = { version = "5.2.0", default-features = false, features = ["tokio"], optional = true }
 zune-core = { version = "0.4", optional = true }
 zune-jpeg = { version = "0.4", optional = true }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"], optional = true }
 
 [dev-dependencies]
 proptest = "1.6"

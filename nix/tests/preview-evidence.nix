@@ -1,6 +1,7 @@
 {
   pkgs,
   genkan,
+  testWallpaperDirectory,
   checkBaseline ? true,
 }:
 
@@ -20,6 +21,7 @@ pkgs.runCommand "genkan-preview-evidence${pkgs.lib.optionalString (!checkBaselin
   }
   ''
     export GENKAN_BIN=${genkan}/bin/genkan
+    export GENKAN_WALLPAPER_DIR=${testWallpaperDirectory}
     export PREVIEW_OUTPUT_DIR=$out
     export PREVIEW_EVIDENCE_LIB=${../../scripts/preview-evidence-lib.sh}
     ${pkgs.lib.optionalString checkBaseline ''

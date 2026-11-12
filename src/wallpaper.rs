@@ -5,7 +5,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -48,7 +48,6 @@ const HEIC_FAILED_TAG: u8 = b'E';
 const HEIC_HEADER_BYTES: usize = 12;
 const MAX_HEIC_FRAME_DIMENSION: u32 = 16_384;
 const MAX_HEIC_FRAME_BYTES: usize = 256 * 1024 * 1024;
-static POSTERS: [OnceLock<Result<image::Handle, String>>; 9] = [const { OnceLock::new() }; 9];
 
 #[derive(Debug, Clone, Copy)]
 struct PlaybackSpec {
@@ -245,8 +244,14 @@ pub(crate) enum Refresh {
 }
 
 impl State {
-    pub(crate) fn start(settings: Settings) -> Self {
-        let poster = load_poster(settings.catalog)
+    pub(crate) fn start(mut settings: Settings) -> Self {
+        // Select the cache generation once, before opening either its poster
+        // or media. A concurrent download cannot mix their generations.
+        if settings.override_path.is_none() {
+            settings.override_path =
+                cached_wallpaper_path(settings.catalog.spec().install_name).ok();
+        }
+        let poster = load_poster(settings.catalog, settings.override_path.as_deref())
             .map_err(|error| diagnostic(&error))
             .ok();
 
@@ -261,7 +266,7 @@ impl State {
         let spec = settings.catalog.spec();
         let result = settings
             .override_path
-            .map_or_else(|| packaged_wallpaper_path(spec.install_name), Ok)
+            .map_or_else(|| cached_wallpaper_path(spec.install_name), Ok)
             .and_then(|path| Player::start(&path, spec.duration, spec.crossfade));
         match result {
             Ok(player) => Self {
@@ -315,7 +320,7 @@ impl State {
         if !selects_dynamic_heic(settings) {
             return Self::start(settings.clone());
         }
-        let poster = load_poster(settings.catalog)
+        let poster = load_poster(settings.catalog, settings.override_path.as_deref())
             .map_err(|error| diagnostic(&error))
             .ok();
         Self::poster_only(poster)
@@ -935,7 +940,7 @@ fn worker_command(
 /// `PR_SET_PDEATHSIG` covers termination after the request, and the `getppid`
 /// check closes the window where the parent died before `prctl` ran. A helper
 /// whose greeter is already gone must not open, parse, or decode the file.
-fn bind_to_parent(expected_parent: i32) -> bool {
+pub(crate) fn bind_to_parent(expected_parent: i32) -> bool {
     // SAFETY: `PR_SET_PDEATHSIG` changes only this process, and `getppid` has
     // no preconditions.
     let requested = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
@@ -1620,6 +1625,12 @@ fn build_pipeline(
                 if sample_shared.failed.load(Ordering::Acquire) {
                     return Err(gst::FlowError::Flushing);
                 }
+                // Overrides and downloaded custom movies need their own loop
+                // boundary, not the selected catalog movie's duration.
+                let duration = sink
+                    .query_duration::<gst::ClockTime>()
+                    .map(|duration| Duration::from_nanos(duration.nseconds()))
+                    .unwrap_or(duration);
                 let result = sink
                     .pull_sample()
                     .map_err(|_| gst::FlowError::Eos)
@@ -1987,48 +1998,98 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn packaged_wallpaper_path(install_name: &str) -> Result<PathBuf, String> {
-    let executable = std::env::current_exe()
-        .map_err(|_| pipeline_error("could not locate the packaged wallpaper"))?;
-    wallpaper_path_for_executable(&executable, install_name)
-        .ok_or_else(|| pipeline_error("could not locate the packaged wallpaper"))
-}
-
-fn load_poster(catalog: Catalog) -> Result<image::Handle, String> {
-    POSTERS[catalog.index()]
-        .get_or_init(|| decode_poster(catalog.spec()))
-        .clone()
-}
-
-fn decode_poster(spec: &PlaybackSpec) -> Result<image::Handle, String> {
-    let path = packaged_wallpaper_path(spec.poster_name)
-        .ok()
-        .filter(|path| path.is_file())
-        .or_else(|| {
-            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/wallpapers")
-                .join(spec.poster_name);
-            path.is_file().then_some(path)
+pub(crate) fn asset_directory() -> Result<PathBuf, String> {
+    if let Some(directory) = std::env::var_os("GENKAN_WALLPAPER_DIR") {
+        let directory = PathBuf::from(directory);
+        return directory
+            .is_absolute()
+            .then_some(directory)
+            .ok_or_else(|| "GENKAN_WALLPAPER_DIR must be absolute".into());
+    }
+    if let Some(directory) = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return Ok(directory.join("genkan/wallpapers"));
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .map(|home| home.join(".cache/genkan/wallpapers"))
+        .ok_or_else(|| {
+            "set HOME, XDG_CACHE_HOME or GENKAN_WALLPAPER_DIR to locate the wallpaper cache".into()
         })
-        .ok_or_else(|| "wallpaper poster is unavailable; using generated background".to_owned())?;
-    let rgba = image_rs::open(path)
-        .map_err(|_| {
-            "wallpaper poster could not be decoded; using generated background".to_owned()
-        })?
-        .into_rgba8();
+}
+
+fn cached_wallpaper_path(install_name: &str) -> Result<PathBuf, String> {
+    Ok(cached_asset_path(&asset_directory()?, "mov", install_name))
+}
+
+/// Receipts atomically select a complete immutable media/poster generation.
+/// Conventional paths remain available for explicitly provisioned local files.
+pub(crate) fn cached_asset_path(directory: &Path, format: &str, install_name: &str) -> PathBuf {
+    let stem = install_name.strip_suffix("-poster.jpg").unwrap_or_else(|| {
+        install_name
+            .rsplit_once('.')
+            .map_or(install_name, |(stem, _)| stem)
+    });
+    let id = Path::new(stem);
+    let receipt = directory.join("entries").join(id).with_extension("toml");
+    let generation = (|| {
+        let mut input = String::new();
+        open_regular(&receipt)
+            .ok()?
+            .take(1024 * 1024 + 1)
+            .read_to_string(&mut input)
+            .ok()?;
+        if input.len() > 1024 * 1024 {
+            return None;
+        }
+        let table: toml::Table = input.parse().ok()?;
+        cache_generation(&table).map(str::to_owned)
+    })();
+    if let Some(generation) = generation {
+        directory
+            .join("objects")
+            .join(generation)
+            .join(install_name)
+    } else {
+        directory.join(format).join(install_name)
+    }
+}
+
+pub(crate) fn cache_generation(metadata: &toml::Table) -> Option<&str> {
+    let generation = metadata.get("cache_generation")?.as_str()?;
+    (generation.starts_with("download-")
+        && generation.len() <= 128
+        && generation
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    .then_some(generation)
+}
+
+fn load_poster(catalog: Catalog, override_path: Option<&Path>) -> Result<image::Handle, String> {
+    let path = if let Some(movie) = override_path {
+        let stem = movie
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or("invalid wallpaper filename")?;
+        movie.with_file_name(format!("{stem}-poster.jpg"))
+    } else {
+        cached_wallpaper_path(catalog.spec().poster_name)?
+    };
+    let input = open_regular(&path).map_err(|_| {
+        "wallpaper poster is not a readable regular file; using generated background"
+    })?;
+    let rgba = image_rs::io::Reader::with_format(
+        std::io::BufReader::new(input),
+        image_rs::ImageFormat::Jpeg,
+    )
+    .decode()
+    .map_err(|_| "wallpaper poster could not be decoded; using generated background".to_owned())?
+    .into_rgba8();
     let (width, height) = rgba.dimensions();
     Ok(image::Handle::from_rgba(width, height, rgba.into_raw()))
-}
-
-fn wallpaper_path_for_executable(executable: &Path, install_name: &str) -> Option<PathBuf> {
-    let prefix = executable.parent()?.parent()?;
-    // MOV videos and their posters are installed under `mov/`; dynamic HEICs
-    // live under `heic/` and are only ever selected through `--file`.
-    Some(
-        prefix
-            .join("share/genkan/wallpapers/mov")
-            .join(install_name),
-    )
 }
 
 fn pipeline_error(reason: &str) -> String {
@@ -2084,19 +2145,6 @@ mod tests {
     }
 
     #[test]
-    fn executable_path_resolves_the_packaged_default() {
-        assert_eq!(
-            wallpaper_path_for_executable(
-                Path::new("/nix/store/genkan/bin/.genkan-wrapped"),
-                "tahoe-beach.mov"
-            ),
-            Some(PathBuf::from(
-                "/nix/store/genkan/share/genkan/wallpapers/mov/tahoe-beach.mov"
-            ))
-        );
-    }
-
-    #[test]
     fn opened_wallpaper_is_stable_after_path_replacement() {
         let directory = std::env::temp_dir().join(format!(
             "genkan-wallpaper-source-replacement-{}",
@@ -2134,6 +2182,74 @@ mod tests {
         assert!(open_wallpaper(&path).is_err());
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn fifo_sidecars_do_not_stall_background_fallback() {
+        if let Ok(case) = std::env::var("GENKAN_FIFO_SIDECAR_CASE") {
+            let directory = asset_directory().unwrap();
+            let path = (case != "receipt").then(|| directory.join(format!("source.{case}")));
+            let state = State::start(heic_settings(path, false, false));
+            assert!(state.decoder_is_stopped());
+            assert!(!state.has_frame());
+            return;
+        }
+
+        for case in ["receipt", "mov", "heic"] {
+            for symlink in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let sidecar = if case == "receipt" {
+                    std::fs::create_dir(directory.path().join("entries")).unwrap();
+                    directory.path().join("entries/tahoe-beach.toml")
+                } else {
+                    let source: &[u8] = if case == "mov" {
+                        include_bytes!("../tests/fixtures/asset-preflight/hevc.mov")
+                    } else {
+                        include_bytes!(
+                            "../tests/fixtures/dynamic-heic/synthetic-all-properties.heic"
+                        )
+                    };
+                    std::fs::write(directory.path().join(format!("source.{case}")), source)
+                        .unwrap();
+                    directory.path().join("source-poster.jpg")
+                };
+                let fifo = if symlink {
+                    directory.path().join("sidecar.fifo")
+                } else {
+                    sidecar.clone()
+                };
+                rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, Mode::RUSR | Mode::WUSR).unwrap();
+                if symlink {
+                    std::os::unix::fs::symlink(&fifo, &sidecar).unwrap();
+                }
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "wallpaper::tests::fifo_sidecars_do_not_stall_background_fallback",
+                    ])
+                    .env("GENKAN_FIFO_SIDECAR_CASE", case)
+                    .env("GENKAN_WALLPAPER_DIR", directory.path())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while child.try_wait().unwrap().is_none() {
+                    if Instant::now() >= deadline {
+                        child.kill().unwrap();
+                        child.wait().unwrap();
+                        panic!("{case} sidecar stalled wallpaper fallback (symlink={symlink})");
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{case} sidecar failed (symlink={symlink}): {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
     }
 
     #[test]
@@ -2238,7 +2354,7 @@ mod tests {
     }
 
     #[test]
-    fn static_catalog_entries_load_posters_without_players() {
+    fn static_catalog_entries_never_start_players() {
         for catalog in Catalog::value_variants() {
             let state = State::start(Settings {
                 catalog: *catalog,
@@ -2248,7 +2364,6 @@ mod tests {
                 appearance: AppearancePreference::Automatic,
             });
             assert!(state.decoder_is_stopped(), "{catalog:?}");
-            assert!(state.has_frame(), "{catalog:?}");
         }
     }
 
@@ -2359,9 +2474,9 @@ mod tests {
         assert!(selects_dynamic_heic(&settings));
 
         let mut state = State::start_deferred(&settings);
-        // The poster is displayed while the renderer backend is unknown, and
-        // no decoder has been started.
-        assert!(state.has_frame());
+        // This fixture has no cached poster: the generated background remains
+        // while the backend is unknown, without starting a decoder.
+        assert!(!state.has_frame());
         assert!(state.decoder_is_stopped());
 
         state.start_heic_source(&settings);
@@ -2426,27 +2541,26 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_heic_static_uses_only_the_poster() {
+    fn dynamic_heic_static_without_a_poster_uses_the_generated_background() {
         let state = State::start(heic_settings(Some(heic_fixture()), false, false));
         assert!(state.decoder_is_stopped());
-        assert!(state.has_frame());
+        assert!(!state.has_frame());
     }
 
     #[test]
     fn dynamic_heic_failure_retains_the_poster() {
-        let directory =
-            std::env::temp_dir().join(format!("genkan-heic-failure-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir(&directory).unwrap();
-        let path = directory.join("broken.heic");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("broken.heic");
         std::fs::write(&path, b"not a heic container").unwrap();
+        image_rs::RgbImage::from_pixel(2, 1, image_rs::Rgb([27, 80, 123]))
+            .save(directory.path().join("broken-poster.jpg"))
+            .unwrap();
 
         let mut state = State::start(heic_settings(Some(path), true, false));
+        let poster = state.rgba_frame().unwrap();
         assert_eq!(wait_for_heic(&mut state), Refresh::Failed);
         assert!(state.decoder_is_stopped());
-        assert!(state.has_frame());
-
-        std::fs::remove_dir_all(directory).unwrap();
+        assert_eq!(state.rgba_frame().unwrap().pixels(), poster.pixels());
     }
 
     #[test]
@@ -2461,7 +2575,7 @@ mod tests {
         assert!(!state.decoder_is_stopped());
         assert_eq!(wait_for_heic(&mut state), Refresh::Failed);
         assert!(state.decoder_is_stopped());
-        assert!(state.has_frame());
+        assert!(!state.has_frame());
     }
 
     fn clock_snapshot(hour: u8, minute: u8, second: u8) -> ClockSnapshot {

@@ -165,21 +165,25 @@ non-interactive background-layer surface per output:
 genkan wallpaper --file /home/alice/Pictures/dynamic.heic
 ```
 
-The package also installs hash-pinned wallpaper samples under
-`share/genkan/wallpapers`, recorded in the
-[wallpaper manifest](../assets/wallpapers/manifest.toml) with their provenance,
-rights, SHA-256, byte size, item structure, and schedule metadata. The installed
-tree names the format: `mov/` holds the MOV videos and their posters, and
-`heic/` holds the dynamic HEIC assets, and the R2 object layout mirrors it.
-Repository samples are pinned by their committed bytes; a catalog asset
-delivered from the R2 host records its delivery URL and is fetched by Nix as a
-hash-pinned fixed-output source. A wallpaper process never downloads media.
+The package installs only the
+[wallpaper manifest](../assets/wallpapers/manifest.toml) under
+`share/genkan/wallpapers`, not MOVs, HEICs, or posters. Use an existing local
+file or explicitly run `genkan assets download <key>` before selecting a
+catalog wallpaper. Downloads use curated upstream sources, not an R2 mirror;
+Nix does not fetch artwork. A wallpaper process never downloads media. See
+[wallpaper configuration](#wallpaper-configuration) for cache paths and
+greeter provisioning.
 
 `--wallpaper` selects the same MOV catalog as login; `--reduce-motion` shows
 its poster. `--wallpaper-file` accepts an absolute MOV or HEIC override, with
 the same appearance and reduced-motion arguments as login. `--skip-output`
 omits a connector or persistent monitor name. No decoder starts when every
 output is skipped.
+
+For a downloaded HEIC, use the absolute media path printed by download with
+`--file`; do not assume it lives under the cache's `heic/` directory.
+Previously published versions are retained, so saved absolute file overrides
+keep selecting the same version after a replacement download.
 
 `--file` retains the desktop HEIC interface and is required with `--solar`.
 It accepts an existing absolute regular `.heic` or `.heif` file. URIs, FIFOs, devices, and
@@ -529,7 +533,104 @@ the logind error.
 
 ## Wallpaper configuration
 
-Tahoe Beach animates by default. Select another packaged catalog entry with:
+The default selection is Tahoe Beach, but a fresh installation shows the
+generated background until its media is explicitly downloaded. Packages and the
+development shell contain no wallpaper MOVs, HEICs, or posters; source JPEGs
+are test-only references. Download and preview as your desktop user with:
+
+```sh
+genkan assets list
+genkan assets download tahoe-beach
+genkan assets preview tahoe-beach
+```
+
+Download preparation, including hashing and ZIP parsing, is resource-bounded.
+The downloader verifies curated sizes and SHA-256 pins, validates a
+representative HEVC MOV or HEIC frame, and generates a MOV poster before
+atomically selecting the complete cached generation. A preparation or
+publication failure leaves the previous generation usable. It requires a
+direct HTTP(S) response with status 200; redirects are rejected. The default transfer/expanded-media
+limit is 2 GiB (`--max-bytes` accepts 4 KiB–16 GiB), with a 600-second transfer
+timeout. For custom URLs, catalogs, and configured ZIP sources, see
+[download and inspect wallpapers](development.md#download-and-inspect-wallpapers).
+No preview, login, lock, or wallpaper process auto-downloads missing media.
+
+### Cache selection and greeter provisioning
+
+The first applicable cache path wins:
+
+| Environment | Cache root |
+| --- | --- |
+| `GENKAN_WALLPAPER_DIR` set | That absolute directory; a relative value is an error |
+| Absolute `XDG_CACHE_HOME` | `$XDG_CACHE_HOME/genkan/wallpapers` |
+| Absolute `HOME` | `$HOME/.cache/genkan/wallpapers` |
+
+Downloaded media, MOV posters, and metadata live together under
+`objects/download-<key>-<random>/`; an atomic `entries/<key>.toml` receipt
+selects the complete generation. Readers use one receipt snapshot for metadata,
+media, and poster. Conventional `mov/` and `heic/` directories
+are supported only for explicitly provisioned local/test files, not as download
+destinations. Use the printed media path for file overrides. The next explicit
+download cleans only abandoned, unpublished staging; it never deletes previously
+published generations. Playback performs no cache cleanup.
+
+Published versions are retained for active readers and saved absolute overrides,
+so replacements may occupy additional disk space. Remove an unused version only
+when no readers or saved overrides need it.
+
+Downloading as your desktop user does not populate the greeter's cache.
+For normal catalog selection, give the greeter a usable HOME and provision its
+cache there. For example, for a host whose greetd identity and group are both
+`greeter`:
+
+```nix
+users.users.greeter = {
+  home = "/var/lib/greeter";
+  createHome = true;
+};
+```
+
+After applying that configuration, use the `genkan` binary from the configured
+package (its full path if it is not on PATH):
+
+```sh
+sudo install -d -o greeter -g greeter -m 0700 /var/lib/greeter/.cache/genkan/wallpapers
+sudo -u greeter env -u GENKAN_WALLPAPER_DIR -u XDG_CACHE_HOME HOME=/var/lib/greeter \
+  genkan assets download tahoe-beach
+```
+
+Alternatively, provision a shared cache:
+
+```sh
+sudo install -d -o greeter -g greeter -m 0755 /var/cache/genkan/wallpapers
+sudo -u greeter env GENKAN_WALLPAPER_DIR=/var/cache/genkan/wallpapers \
+  genkan assets download tahoe-beach
+```
+
+For the opt-in NixOS greeter module, set `wallpaperFile` to the exact absolute
+media path printed by the download command; replace the example generation
+below with that path:
+
+```nix
+programs.genkan.greeter.wallpaperFile =
+  "/var/cache/genkan/wallpapers/objects/download-tahoe-beach-REPLACE/tahoe-beach.mov";
+```
+
+To use `GENKAN_WALLPAPER_DIR` instead, pass it in the compositor/Genkan launch
+command. Setting `systemd.services.greetd.environment.GENKAN_WALLPAPER_DIR` is
+not sufficient: greetd starts the greeter with a separate PAM environment and
+does not forward arbitrary daemon variables.
+
+Keep the greeter's media writable only by its provisioning identity or an
+administrator, not by arbitrary desktop users. The service must be able to
+read it. Downloads are an operator action, never a login/startup hook. A
+missing cache or poster uses the generated background without delaying
+authentication; `assets preview` instead reports the missing path.
+
+### Select cached media
+
+Once downloaded, Tahoe Beach animates by default. Select another cached MOV
+catalog entry with:
 
 ```text
 --wallpaper sequoia-sunrise
@@ -545,13 +646,25 @@ background when the poster is unavailable. After playback begins, a failure
 retains the last displayed frame instead of briefly replacing it with the
 poster.
 
-`login` and `lock` also accept an absolute local dynamic HEIC through the same
-`--wallpaper-file` option:
+`login` and `lock` also accept an absolute local MOV or dynamic HEIC through
+`--wallpaper-file`. For a custom download, run:
 
 ```sh
-genkan login --wallpaper-file /home/alice/Pictures/dynamic.heic
-genkan lock --wallpaper-file /home/alice/Pictures/dynamic.heic
+genkan assets download my-wallpaper --url "$SOURCE_URL" --sha256 "$SHA256"
 ```
+
+Set `WALLPAPER_FILE` to the absolute media path printed by that command, then:
+
+```sh
+genkan login --wallpaper-file "$WALLPAPER_FILE"
+genkan lock --wallpaper-file "$WALLPAPER_FILE"
+```
+
+Use the printed path, not a constructed `mov/` or `heic/` path. Existing local
+files such as `/home/alice/Pictures/dynamic.heic` remain valid overrides.
+Saved absolute overrides remain valid after replacements and keep selecting
+their original published version; change the override only to select a newer
+version.
 
 A HEIC override uses the same parser, time-of-day scheduler, and RGBA frame path
 as the desktop wallpaper, but never requests location. `--appearance light` or
@@ -579,9 +692,10 @@ instead. These are process and protocol limits, not an operating-system memory
 sandbox: a whole-system or cgroup out-of-memory kill, a device failure, or a
 compositor disconnect can still terminate the greeter.
 
-The package installs immutable, hash-pinned wallpaper inputs; runtime playback
-does not access the network. Asset provenance, delivery, integrity, and loop
-behavior are documented in [RFD 2](../rfd/0002/README.adoc).
+Runtime playback reads only local media. Asset provenance, explicit upstream
+delivery, integrity, and loop behavior are documented in
+[RFD 2](../rfd/0002/README.adoc). There is no runtime or build dependency on R2;
+the former delivery bucket is left untouched.
 
 ## Graphics runtime
 

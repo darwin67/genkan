@@ -7,12 +7,12 @@
 
 == Goal
 
-Replace Genkan's generated color-field background with a full-screen animated
-wallpaper while preserving responsive login controls, readable foreground
-content, deterministic preview evidence, and reliable startup in the greetd
-environment.
+Offer full-screen animated wallpaper while preserving responsive login
+controls, readable foreground content, deterministic preview evidence, and
+reliable startup in the greetd environment. Media is downloaded only on explicit
+request; an unprovisioned installation keeps the generated background.
 
-The first implementation uses the original-resolution 4K Tahoe Beach and
+The first implementation used the original-resolution 4K Tahoe Beach and
 Sequoia Sunrise, Morning, and Night wallpaper videos rather than downscaling
 them to 1080p. Playback is a presentation concern only; it must not affect
 authentication, account discovery, session selection, or power operations.
@@ -51,13 +51,14 @@ packaging treatment must be recorded before implementation is marked complete.
 
 == Decision
 
-Genkan will support a silent looping video as the bottom layer of the greeter.
-The initial asset catalog contains the original 4K Tahoe Default Beach MOV and
+Genkan supports a silent looping video as the bottom layer of the greeter.
+The initial asset catalog contained the original 4K Tahoe Default Beach MOV and
 all three original 4K Sequoia MOV variants: Sunrise, Morning, and Night. Tahoe
-Beach is the default because it most directly continues RFD 1's Tahoe reference.
-An administrative setting selects any catalog entry without accepting an
-arbitrary remote asset. The source videos will not be downscaled merely to
-reduce package size.
+Beach remains the default selection because it most directly continues RFD 1's
+Tahoe reference, but it must be explicitly cached before it can play. The
+catalog now also includes other aerial MOVs and dynamic HEICs. An administrative
+setting selects local media; login and lock do not accept remote playback URLs.
+Original downloads are not downscaled to reduce storage or transfer size.
 
 The implementation may remux a file without changing its encoded video, but it
 will not initially reduce spatial resolution, frame rate, or visual quality.
@@ -69,8 +70,9 @@ Each source is inspected to determine whether its final and initial frames form
 a visually seamless loop. A seamless source seeks directly to its beginning. A
 non-seamless source holds its final frame while seeking and crossfades that
 frame over the newly decoded opening frames. Playback then continues; Genkan
-never exposes a hard end-to-start jump. Loop timing and crossfade duration are
-asset metadata so each video can use independently verified transition values.
+never exposes a hard end-to-start jump. Loop boundaries use the actual stream
+duration; crossfade policy remains asset metadata so each video can use
+independently verified transition values.
 
 The wallpaper fills the output using aspect-preserving cover semantics: scale
 until both dimensions are covered, center the frame, and crop overflow. Genkan
@@ -108,7 +110,7 @@ playback.
 
 [source,text]
 ----
-packaged MOV -> GStreamer decode -> latest-frame slot -> iced texture
+cached MOV -> GStreamer decode -> latest-frame slot -> iced texture
                                                         |
 selected poster ----------------------------------------+
                                                         |
@@ -134,55 +136,90 @@ Presentation failures do not close the greeter or disable any interaction.
 
 == Asset and packaging model
 
-The four original media files are package inputs with pinned cryptographic
-hashes. Builds must not perform an unpinned network download and the running
-greeter never contacts the network. The package installs the videos under
-`share/genkan/wallpapers` instead of embedding them in the executable.
+Production packages install only the catalog manifest under
+`share/genkan/wallpapers`: no MOVs, HEICs, posters, or prepopulated cache. Nix
+builds and the development shell do not fetch upstream artwork. Source JPEGs
+remain test-only visual references, and authored MOV/HEIC fixtures exercise the
+decoders without making third-party artwork a production dependency.
 
-The source files are too large for ordinary Git object storage. A dedicated
-Cloudflare R2 bucket stores all four as immutable objects. Object keys include a
-stable logical name and content hash; replacement bytes always receive a new
-key. The repository retains a manifest containing each logical identifier,
-source page, R2 URL, SHA-256 hash, byte size, media metadata, poster frame, and
-loop transition metadata.
+The original design delivered hash-named objects from a Cloudflare R2 bucket as
+Nix fixed-output inputs. That delivery model is superseded: code and packaging
+no longer depend on R2, and the existing bucket is left untouched. The manifest
+now records upstream URLs, cryptographic pins, byte sizes, provenance, media
+metadata, and loop policy. Provenance is not an assertion of an open-content
+license.
 
-Nix acquires each object from R2 as a fixed-output source, verifies its hash, and
-installs it alongside Genkan. The upstream Google Drive links are acquisition
-references only and are not part of reproducible package builds. Publishing or
-replacing an R2 object is an explicit release action, not an implicit build
-step.
+=== Explicit downloads
 
-The R2 bucket is exposed through `assets.genkan.dwu.sh`, with wallpaper objects
-under `/wallpapers/`. Each object name ends in its SHA-256 hash and is served
-with the original media type plus
-`Cache-Control: public, max-age=31536000, immutable`. A Cloudflare Cache Rule for
-that hostname and path marks the responses eligible for edge caching and honors
-the immutable origin TTL. Versioned object URLs are never overwritten or purged
-during ordinary releases; a changed file receives a new URL.
+`genkan assets download <key>` explicitly acquires an original from the curated
+upstream catalog; `--catalog sources.toml` selects replacement
+`[assets.<key>]` tables. `download <key> --url URL [--sha256 HASH]` supports a
+custom source but cannot replace a key in the selected catalog. Transfers
+require a direct HTTP(S) response with status 200 and reject redirects. The
+default `--max-bytes` is 2 GiB, configurable from 4 KiB to 16 GiB, and bounds
+both transfer and expanded media. Each transfer times out after 600 seconds.
 
-Objects are grouped by media format under the `/wallpapers/` prefix: `mov/` holds
-the MOV videos and their posters, and `heic/` holds the dynamic HEIC assets. The
-installed tree under `share/genkan/wallpapers` mirrors that split, so a path names
-the format instead of leaving it to be inferred from a file extension.
+Download preparation, including hashing and ZIP parsing, runs with resource and
+time limits. The downloader verifies declared byte sizes and SHA-256 hashes,
+then validates a representative HEVC MOV or HEIC frame before publication.
+A configured ZIP source must pin the archive and the exact media member;
+only that member is extracted to a controlled filename, never an archive path.
+A MOV download generates a poster. Observed format, dimensions, size, and hash
+persist in `entries/<key>.toml` so custom downloads appear in later list/preview
+commands. Without a trusted custom SHA-256, the recorded hash identifies the
+download but does not authenticate its upstream origin. Frame validation is not
+a promise that every frame decodes.
 
-Immutability is a property of the hash-named object URLs. An unversioned key
-carries no such guarantee and is not part of the delivery contract, so the catalog
-publishes no separate index object; the manifest is the integrity record, and
-retiring an unversioned key is not a purge of versioned content.
+=== Local cache and overrides
 
-The account plan's maximum cacheable object size describes CDN eligibility, not
-a Nix input limit. Larger original-resolution sources are accepted as
-hash-pinned fixed-output downloads even when Cloudflare bypasses its edge cache.
-The manifest records cacheability separately from byte size; the package checks
-that those fields agree instead of rejecting objects above the CDN limit.
-R2 remains the origin of record. Cache hits and byte-range behavior are measured
-delivery properties, not prerequisites for local playback: Nix fetches and
-verifies complete files before installation. Object integrity depends on the
-pinned hash rather than the CDN, transport, DNS, or account trust.
+The cache root is the absolute `GENKAN_WALLPAPER_DIR`, otherwise an absolute
+`XDG_CACHE_HOME` plus `/genkan/wallpapers`, otherwise an absolute `HOME` plus
+`/.cache/genkan/wallpapers`. A relative override is an error. Each receipt
+selects one complete downloaded generation:
 
-Development builds accept an administrative wallpaper path so exact media can
-be tested without copying it into the repository. The packaged service selects
-one of the installed catalog identifiers and defaults to Tahoe Beach. The path
+[source,text]
+----
+cache-root/
+  entries/<key>.toml                 (atomic generation selector)
+  objects/download-<key>-<random>/
+    <key>.mov or <key>.heic
+    <key>-poster.jpg                (MOV only)
+    entry.toml                      (metadata and hashes)
+    published                       (retention marker)
+  mov/ and heic/                    (explicit local/test provisioning only)
+----
+
+Only after preparation succeeds does an atomic receipt replacement publish the
+media, poster, and metadata together. The generation is marked published before
+the receipt switch, and readers select one receipt snapshot for all three.
+Preparation and publication failures leave the previous generation usable.
+This is not a promise of simultaneous display changes across processes or
+filesystem durability after power loss.
+
+Conventional `mov/` and `heic/` directories remain supported for explicitly
+provisioned local/test files, not as downloaded-media destinations. Use the
+absolute media path printed by download with `--wallpaper-file`, rather than
+constructing a path. Published generations are retained so in-flight previews,
+deferred HEIC opens, and saved absolute overrides remain valid. Replacements may
+occupy additional disk space; remove an unused version only when no readers or
+saved overrides need it.
+
+=== Provisioning and recovery
+
+Operators must explicitly provision the greeter's cache under its own identity
+or set a shared absolute override; a desktop user's cache is not automatically
+available to greetd. Login, lock, previews, and wallpaper playback never download
+missing media. An empty cache uses the generated background; `assets preview`
+instead reports the missing file.
+
+SIGINT or SIGTERM stops preparation and cleans staging. After SIGKILL or a
+crash, the next explicit download cleans only abandoned, unpublished staging
+under the cache lock, never previously published generations. Playback never
+performs cleanup. Cancellation or a preparation timeout does not publish partial
+media.
+
+Development and production accept an administrative wallpaper path so exact
+media can be tested without copying it into the repository. The path
 override is opened and validated once, then passed to GStreamer by descriptor
 so a later pathname replacement cannot change the media being decoded. It is a
 file path only, not a URI: network schemes, playlists, and GStreamer pipeline
@@ -191,23 +228,45 @@ descriptions are not accepted.
 == Preview and configuration behavior
 
 Ordinary preview remains deterministic. It does not start the decoder and
-renders a fixed poster frame representing the packaged video, with the current
-generated background as a fallback when that poster is unavailable. Existing
-reference screenshots can therefore settle and remain reviewable.
+renders the cached poster, with the generated background as a fallback when
+that poster is unavailable. Automated reference captures use an explicit
+test-only cache of source JPEGs, not a production fallback.
 
 A separate animated-preview option enables real playback for local review. It
 does not unfreeze the fixture clock, contact AccountsService, greetd, or logind,
 or make simulated authentication and power actions real. The distinction must
 be visible in `--help` and documented next to `make dev`.
 
-`genkan assets list` prints the packaged MOV and HEIC catalog with dimensions,
-size, and local availability. `genkan assets preview <id>` opens the existing
-windowed animated login preview for an installed asset, with optional
+`genkan assets list` prints the upstream MOV and HEIC catalog plus cached custom
+entries with dimensions, size, and local availability.
+`genkan assets preview <id>` opens the existing windowed animated login preview
+for a cached asset, with optional
 `--appearance light|dark` for HEIC and `--reduce-motion`. It downloads nothing,
 changes no configuration, and never acquires a session lock. Closing the window
-ends the preview; missing assets fail with their expected local path.
+ends the preview; missing assets fail with their expected local path and a
+download instruction. `--catalog` selects the same replacement catalog for
+list, preflight, download, and preview.
 
-The production default plays animation. An administrative reduced-motion or
+=== Optional preflight
+
+`genkan assets preflight <key>` inspects an original source using bounded HTTP
+range reads, outside login and lock. Users may replace the curated metadata
+with `[assets.<key>]` TOML tables, or supply a key and `--url` directly. The
+isolated worker decodes one representative frame with the existing media
+libraries and reports passed, unsupported, or inconclusive. Incomplete reads,
+unstable versions, and unsupported range delivery never imply compatibility
+or initiate a full download. Missing strong ETags and ZIP sources can produce
+inconclusive or unsupported results without preventing an explicit download:
+that command performs complete-file integrity checks and local frame validation
+independently. Inspection installs nothing and does not change selection.
+Apple's root certificate is used only for curl requests to the exact HTTPS
+aerial host `sylvan.apple.com`, not added to system trust; peer and hostname
+verification remain enabled.
+
+=== Playback defaults
+
+The production default plays animation when the selected media is cached;
+otherwise it uses the generated background. An administrative reduced-motion or
 static setting shows the poster frame without initializing GStreamer. Decode
 failure before the first frame has the same visual result but is reported
 separately so operators can distinguish preference from failure. A later
@@ -243,9 +302,10 @@ of truth; screenshots support visual review without replacing those checks.
 
 == Security and failure boundaries
 
-The wallpaper decoder runs before authentication and therefore processes only
-the pinned packaged asset by default. Media bytes, tags, paths, decoder output,
-and errors never enter greetd requests or logs containing PAM responses. The
+The wallpaper decoder runs before authentication and processes only local
+media: a previously downloaded, validated catalog asset or an explicit local
+override. Media bytes, tags, paths, decoder output, and errors never enter greetd
+requests or logs containing PAM responses. The
 feature does not broaden session-command discovery, invoke a shell, read account
 icons, or transfer authentication ownership away from greetd.
 
@@ -265,7 +325,12 @@ replacement cannot substitute another file.
 
 The implementation must provide evidence for:
 
-* metadata and cryptographic identity of all four packaged 4K sources;
+* metadata and cryptographic identity of curated upstream sources;
+* an artwork-free production package and usable offline empty-cache startup;
+* explicit download integrity checks, bounded frame validation, configured ZIP
+  extraction, generated MOV posters, and persistent custom metadata;
+* atomic generation publication, previous-generation recovery on failure, and
+  interrupted-download cleanup without playback-side cache mutation;
 * deterministic static preview with no media decoder or service connections;
 * animated preview producing distinct valid frames while keeping fixture time
   and simulated side effects fixed;
@@ -297,8 +362,9 @@ runtime fallback rather than the primary presentation.
 
 HEIC variants provide day, dusk, and night changes with much smaller assets,
 but they are still images rather than continuous animation and add a separate
-metadata interpretation and decoder path. They may be considered later as a
-static time-of-day mode.
+metadata interpretation and decoder path. They were deferred at the original
+decision and are now supported as a separate time-of-day mode, not a substitute
+for continuous MOV animation.
 
 === Downscale to 1080p
 
@@ -321,7 +387,7 @@ keeps compositor configuration independent.
 
 == Non-goals
 
-This RFD does not add audio, remote URLs, playlists, an in-greeter wallpaper
+This RFD does not add audio, remote playback URLs, playlists, an in-greeter wallpaper
 browser, lock-screen behavior, per-account media, arbitrary GStreamer pipeline
 input, or desktop-session wallpaper configuration. It does not change greetd,
 PAM, AccountsService, session validation, or logind behavior.

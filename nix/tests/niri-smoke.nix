@@ -2,6 +2,7 @@
   pkgs,
   genkan,
   lockTestGenkan,
+  testWallpaperDirectory,
 }:
 pkgs.runCommand "genkan-niri-smoke"
   {
@@ -11,6 +12,7 @@ pkgs.runCommand "genkan-niri-smoke"
     ];
     GENKAN_BIN = "${genkan}/bin/genkan";
     GENKAN_LOCK_TEST_BIN = "${lockTestGenkan}/bin/genkan";
+    GENKAN_WALLPAPER_DIR = testWallpaperDirectory;
     NIRI_BIN = "${pkgs.niri}/bin/niri";
     SWAY_BIN = "${pkgs.sway-unwrapped}/bin/sway";
     HEIC_FIXTURE = ../../tests/fixtures/dynamic-heic/synthetic-all-properties.heic;

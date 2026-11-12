@@ -1,4 +1,8 @@
-{ pkgs, genkan }:
+{
+  pkgs,
+  genkan,
+  testWallpaperDirectory,
+}:
 {
   name = "genkan-niri-greeter";
   enableOCR = true;
@@ -139,6 +143,17 @@
         uid = 1000;
         hashedPassword = "";
       };
+      users.users.greeter = {
+        home = "/var/lib/greeter";
+        createHome = true;
+      };
+      # greetd builds a PAM environment, not the daemon's environment. Provision
+      # the greeter's real HOME cache instead of setting a daemon-only override.
+      systemd.tmpfiles.rules = [
+        "d /var/lib/greeter/.cache 0700 greeter greeter -"
+        "d /var/lib/greeter/.cache/genkan 0700 greeter greeter -"
+        "L /var/lib/greeter/.cache/genkan/wallpapers - - - - ${testWallpaperDirectory}"
+      ];
       security.pam.services.greetd.rules.auth.confirm = {
         order = 0;
         control = "sufficient";
@@ -255,6 +270,9 @@
         machine.succeed("systemctl stop greetd; rm /run/systemd/system/greetd.service.d/control.conf /tmp/genkan-default-spawn; systemctl daemon-reload; systemctl start greetd")
 
         login = wait_login()
+        machine.succeed(f"tr '\\0' '\\n' </proc/{login['pid']}/environ | grep -Fx HOME=/var/lib/greeter")
+        machine.fail(f"tr '\\0' '\\n' </proc/{login['pid']}/environ | grep '^GENKAN_WALLPAPER_DIR='")
+        machine.succeed("runuser -u greeter -- test -r /var/lib/greeter/.cache/genkan/wallpapers/mov/tahoe-beach-poster.jpg")
         outputs = msg("outputs")
         assert set(outputs) == {"Virtual-1", "Virtual-2"}, outputs
         assert outputs["Virtual-1"]["logical"]["scale"] == 1.5

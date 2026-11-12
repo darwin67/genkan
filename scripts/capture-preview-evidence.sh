@@ -92,11 +92,18 @@ exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
   "$GENKAN_BIN" login --windowed --preview "$fixture" --width "$width" --height "$height"
 EOF
   elif [[ $mode == asset-* ]]; then
+    # Repository fixtures are not downloadable public catalog entries. Declare
+    # this provisioned local HEIC explicitly; connection checks forbid fetching.
+    cat > "$case_dir/catalog.toml" <<EOF
+[assets.$fixture]
+url = "https://example.invalid/$fixture.heic"
+format = "heic"
+EOF
     cat > "$case_dir/run-genkan" <<EOF
 #!${SHELL:-/bin/sh}
 echo \$\$ > "$case_dir/genkan.pid"
 exec strace -f -e trace=connect -o "$case_dir/connect.trace" \
-  "$GENKAN_BIN" assets preview "$fixture" --appearance "${mode#asset-}"
+  "$GENKAN_BIN" assets --catalog "$case_dir/catalog.toml" preview "$fixture" --appearance "${mode#asset-}"
 EOF
   else
     cat > "$case_dir/run-genkan" <<EOF
@@ -137,6 +144,16 @@ EOF
   sleep 2
   require_running_process "$app_pid" "$case_dir/genkan.log"
 
+  # A generated background can stabilize before the HEIC worker is ready.
+  # Require the lossless fixture's light=red or dark=white frame before counting
+  # stability, sampling away from controls and retaining the same pixel bounds.
+  local expected="" pixel="p{0,$((height - 1))}"
+  if [[ $mode == asset-light ]]; then
+    expected="$pixel.r > 0.95 && $pixel.g < 0.05 && $pixel.b < 0.05"
+  elif [[ $mode == asset-dark ]]; then
+    expected="$pixel.r > 0.95 && $pixel.g > 0.95 && $pixel.b > 0.95"
+  fi
+
   screenshot=""
   for _ in $(seq 1 50); do
     require_running_process "$app_pid" "$case_dir/genkan.log"
@@ -150,7 +167,8 @@ EOF
     )
     require_running_process "$app_pid" "$case_dir/genkan.log"
     screenshot=$(find "$case_dir/capture" -maxdepth 1 -name 'wayland-screenshot-*.png' -print -quit)
-    if [[ -n $screenshot ]] && valid_preview_frame "$screenshot" "$width" "$height"; then
+    if [[ -n $screenshot ]] && valid_preview_frame "$screenshot" "$width" "$height" &&
+      { [[ -z $expected ]] || [[ $(identify -format "%[fx:$expected]" "$screenshot") == 1 ]]; }; then
       frame_hash=$(sha256sum "$screenshot" | cut -d' ' -f1)
       if advance_frame_stability previous_hash "$frame_hash"; then
         if [[ -z ${PREVIEW_REFERENCE_DIR:-} || ! -f $PREVIEW_REFERENCE_DIR/$name.png ]] ||
@@ -171,21 +189,6 @@ EOF
     exit 1
   fi
   mv "$screenshot" "$PREVIEW_OUTPUT_DIR/$name.png"
-  if [[ $mode == asset-* ]]; then
-    # The lossless fixture defines light=red and dark=white. Sample away from
-    # controls: a valid-looking Tahoe fallback must not count as a HEIC preview.
-    local pixel expected
-    pixel="p{0,$((height - 1))}"
-    if [[ $mode == asset-light ]]; then
-      expected="$pixel.r > 0.95 && $pixel.g < 0.05 && $pixel.b < 0.05"
-    else
-      expected="$pixel.r > 0.95 && $pixel.g > 0.95 && $pixel.b > 0.95"
-    fi
-    [[ $(identify -format "%[fx:$expected]" "$PREVIEW_OUTPUT_DIR/$name.png") == 1 ]] || {
-      echo "HEIC preview did not render its $mode fixture frame" >&2
-      exit 1
-    }
-  fi
   if [[ $mode == login ]]; then
     covered_fixtures["$fixture"]=1
   fi

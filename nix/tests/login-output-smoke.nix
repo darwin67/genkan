@@ -1,4 +1,8 @@
-{ pkgs, genkan }:
+{
+  pkgs,
+  genkan,
+  testWallpaperDirectory,
+}:
 
 let
   inheritedSocketTest = pkgs.writeText "genkan-inherited-socket-test.py" ''
@@ -52,6 +56,7 @@ in
 
 pkgs.runCommand "genkan-login-output-smoke"
   {
+    GENKAN_WALLPAPER_DIR = testWallpaperDirectory;
     nativeBuildInputs = with pkgs; [
       coreutils
       grim
@@ -171,10 +176,10 @@ print(str(output["rect"]["x"]) + ".0")
     # produce two different halves of the wallpaper.
     changed=$(magick compare -metric AE "$selected" "$selected_baseline" null: 2>&1 \
       | awk '{ print $1 }' || true)
-    [[ "$changed" -gt 10000 ]]
+    awk -v value="$changed" 'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ && value + 0 > 10000) }'
     changed=$(magick compare -metric AE "$background" "$background_authentication" null: 2>&1 \
       | awk '{ print $1 }' || true)
-    [[ "$changed" -gt 10000 ]]
+    awk -v value="$changed" 'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ && value + 0 > 10000) }'
     topology_updates=$(grep -Fc 'layout_width: 2560.0, layout_height: 800.0' "$login_log")
     XDG_RUNTIME_DIR="$runtime" swaymsg -s "$ipc" output HEADLESS-2 disable >/dev/null
     for _ in $(seq 1 200); do
@@ -222,7 +227,7 @@ print(str(output["rect"]["x"]) + ".0")
       grim -o HEADLESS-1 "$after_input"
     changed=$(magick compare -metric AE "$before_input" "$after_input" null: 2>&1 \
       | awk '{ print $1 }' || true)
-    [[ "$changed" -gt 200 ]]
+    awk -v value="$changed" 'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ && value + 0 > 200) }'
     stop_preview
 
     start_preview visible-prompt HEADLESS-1 \
@@ -236,7 +241,7 @@ print(str(output["rect"]["x"]) + ".0")
       grim -o HEADLESS-1 "$expected_input"
     difference=$(magick compare -metric AE "$after_input" "$expected_input" null: 2>&1 \
       | awk '{ print $1 }' || true)
-    [[ "$difference" -lt 200 ]]
+    awk -v value="$difference" 'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ && value + 0 < 200) }'
     stop_preview
 
     # An inherited socket is reserved for iced/winit. Auxiliary output

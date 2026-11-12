@@ -189,7 +189,11 @@ jobs:
         run: nix build .#checks.${{ matrix.system }}.heic-assets --print-build-logs
       - name: Dynamic HEIC decode
         run: nix build .#checks.${{ matrix.system }}.heic-decode --print-build-logs
+      - name: Wallpaper-free production package
+        run: nix build .#checks.${{ matrix.system }}.wallpaper-package --print-build-logs
       # Graphics checks use software rendering and must not compete for runner CPU.
+      - name: Offline production with empty wallpaper cache
+        run: nix build .#checks.${{ matrix.system }}.wallpaper-empty-cache --print-build-logs
       - name: Graphics smoke
         run: nix build .#checks.${{ matrix.system }}.graphics-smoke --print-build-logs
       - name: Desktop wallpaper smoke
