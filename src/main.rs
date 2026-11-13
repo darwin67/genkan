@@ -1149,6 +1149,11 @@ mod tests {
             "sequoia-morning",
             "sequoia-night",
             "golden-gate",
+            "scotland",
+            "liwa",
+            "hawaii",
+            "hong-kong",
+            "san-francisco",
         ] {
             assert!(try_parse_login(["genkan", "--wallpaper", name]).is_ok());
         }

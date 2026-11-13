@@ -1,7 +1,7 @@
 schema_version = 1
 catalog_id = "genkan-wallpapers"
 default_wallpaper = "tahoe-beach"
-verified_at = "2026-11-11"
+verified_at = "2026-11-13"
 
 # Original-resolution files are downloaded explicitly from upstream sources.
 # SHA-256 and byte sizes describe the installed media; archive_* fields describe
@@ -9,10 +9,10 @@ verified_at = "2026-11-11"
 
 [loop_analysis]
 # The original five values were re-derived on 2026-09-21 with ffmpeg 8.1.2;
-# the four aerials added on 2026-11-11 use ffmpeg 7.1.5. Their full-resolution
+# the nine aerials added on 2026-11-11 and 2026-11-13 use ffmpeg 7.1.5. Their full-resolution
 # lossless endpoint PNGs are scaled after extraction, as distinguished below.
 metric = "ssim"
-tool = "ffmpeg 8.1.2 (original five) and 7.1.5 (Iceland, Greenland, Patagonia, Palau Jellies), with the `ssim` filter"
+tool = "ffmpeg 8.1.2 (original five) and 7.1.5 (Iceland, Greenland, Patagonia, Palau Jellies, Scotland, Liwa, Hawaii, Hong Kong, San Francisco), with the `ssim` filter"
 comparison = "first decoded frame vs final decoded frame, each scaled to the entry's endpoint_comparison_width and endpoint_comparison_height"
 # Substitute SRC, ID, W and H. The frames are compared as decoded PNG pixels rather
 # than through an intermediate lossy format, so the result depends only on the
@@ -20,7 +20,7 @@ comparison = "first decoded frame vs final decoded frame, each scaled to the ent
 procedure = '''
 N=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 SRC)
 case ID in
-  iceland|greenland|patagonia|palau-jellies)
+  iceland|greenland|patagonia|palau-jellies|scotland|liwa|hawaii|hong-kong|san-francisco)
     ffmpeg -v error -y -i SRC -vf "select=eq(n\,0)" -vsync 0 -frames:v 1 first-full.png
     ffmpeg -v error -y -i SRC -vf "select=eq(n\,$((N-1)))" -vsync 0 -frames:v 1 last-full.png
     ffmpeg -v error -y -i first-full.png -vf scale=W:H first.png
@@ -45,7 +45,7 @@ caveat = "HEVC reference frames make short-seek extraction of the final frame un
 # golden-gate 14,386. Sequoia Sunrise and Golden Gate declare more frames than
 # decode (28,806 and 14,400), and selecting by those declared counts produces no
 # frame at all rather than a reproducible endpoint.
-reproducible_for = "tahoe-beach, sequoia-sunrise, sequoia-morning, sequoia-night, golden-gate, iceland, greenland, patagonia, palau-jellies"
+reproducible_for = "tahoe-beach, sequoia-sunrise, sequoia-morning, sequoia-night, golden-gate, iceland, greenland, patagonia, palau-jellies, scotland, liwa, hawaii, hong-kong, san-francisco"
 
 [[wallpaper]]
 id = "tahoe-beach"
@@ -488,80 +488,344 @@ endpoint_comparison_height = 540
 endpoint_ssim = 0.485985
 verification = "The complete source decoded without FFmpeg errors, producing 12848 frames. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.485985 using the aerial branch of [loop_analysis]. The endpoints are not seamless, so playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
 
+[[wallpaper]]
+id = "scotland"
+name = "Scotland"
+source_page_url = "https://aerial-videos.netlify.app/"
+source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/S003_C020_SDR_4K_HEVC.mov"
+rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
+install_name = "scotland.mov"
+sha256 = "269383fe4f2894dcffdcd63ca57a89ea940613a8436a56dd1e87748a32c3bc7b"
+nix_hash = "sha256-JpOD/k8olNz/3NY8pXqJ6pQGE6hDalbdHod0ijLDvHs="
+byte_size = 736953968
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "30000/1001"
+time_base = "1/30000"
+frame_count = 14090
+duration_seconds = 470.136333
+stream_bit_rate = 12536995
+container_bit_rate = 12540259
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt709"
+color_primaries = "bt709"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "scotland-poster.jpg"
+sha256 = "a70ad53c1def0e74ab05d30ad8f6cfd87e6cd98e5a651cf770712447ce4ee708"
+width = 3840
+height = 2160
+source_timestamp_seconds = 470.102967
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.148907
+verification = "The complete source decoded without FFmpeg errors and yielded the final declared frame at index 14089. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.148907 using the aerial branch of [loop_analysis]. The endpoints are not seamless, so playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
+
+[[wallpaper]]
+id = "liwa"
+name = "Liwa"
+source_page_url = "https://aerial-videos.netlify.app/"
+source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_LW_L001_C006_PSNK_DENOISE_v02_SDR_PS_FINAL_20180709_SDR_4K_HEVC.mov"
+rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
+install_name = "liwa.mov"
+sha256 = "d85cce6e394c1d6e6609dce0e3e92dbb456865559dd750c4be24f187411ee8ea"
+nix_hash = "sha256-2FzObjlMHW5mCdzg4+ktu0VoZVWd11DEviTxh0Ee6Oo="
+byte_size = 428431821
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "30000/1001"
+time_base = "1/30000"
+frame_count = 12600
+duration_seconds = 420.420000
+stream_bit_rate = 8149246
+container_bit_rate = 8152453
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt709"
+color_primaries = "bt709"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "liwa-poster.jpg"
+sha256 = "d0c08cbd6b00c93693ea3792ec8b253fc5c9088529dcb0f00cffa95e42d9b7cf"
+width = 3840
+height = 2160
+source_timestamp_seconds = 420.386633
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.475340
+verification = "The complete source decoded without FFmpeg errors and yielded the final declared frame at index 12599. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.475340 using the aerial branch of [loop_analysis]. The endpoints are not seamless, so playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
+
+[[wallpaper]]
+id = "hawaii"
+name = "Hawaii"
+source_page_url = "https://aerial-videos.netlify.app/"
+source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_H007_C003_PS_v01_SDR_PS_20180925_SDR_4K_HEVC.mov"
+rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
+install_name = "hawaii.mov"
+sha256 = "e68d93715521fd678c0993c34f1b22b6646be6432a4c19fb9483aebeae4fc5ce"
+nix_hash = "sha256-5o2TcVUh/WeMCZPDTxsitmRr5kMqTBn7lIOuvq5Pxc4="
+byte_size = 247229564
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "30000/1001"
+time_base = "1/30000"
+frame_count = 7201
+duration_seconds = 240.273367
+stream_bit_rate = 8228365
+container_bit_rate = 8231609
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt709"
+color_primaries = "bt709"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "hawaii-poster.jpg"
+sha256 = "b78ed10e422afe7d2f232090ede9e664ed853f0ae3d5ca4a319ad70ff5e006c8"
+width = 3840
+height = 2160
+source_timestamp_seconds = 240.240000
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.247118
+verification = "The complete source decoded without FFmpeg errors and yielded the final declared frame at index 7200. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.247118 using the aerial branch of [loop_analysis]. The endpoints are not seamless, so playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
+
+[[wallpaper]]
+id = "hong-kong"
+name = "Hong Kong"
+source_page_url = "https://aerial-videos.netlify.app/"
+source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_HK_H004_C010_PSNK_v08_SDR_PS_20181009_SDR_4K_HEVC.mov"
+rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
+install_name = "hong-kong.mov"
+sha256 = "0446912a47a0ca26954c8900ddb1f238f2e10b7a9acd471431915507f4796780"
+nix_hash = "sha256-BEaRKkegyiaVTIkA3bHyOPLhC3qazUcUMZFVB/R5Z4A="
+byte_size = 435674794
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "30000/1001"
+time_base = "1/30000"
+frame_count = 12600
+duration_seconds = 420.420000
+stream_bit_rate = 8287052
+container_bit_rate = 8290277
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt709"
+color_primaries = "bt709"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "hong-kong-poster.jpg"
+sha256 = "d8935e54d76a66e0f2cb4748ac7939eacfe2c900c3862ad7447f927eee5e235f"
+width = 3840
+height = 2160
+source_timestamp_seconds = 420.386633
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.526316
+verification = "The complete source decoded without FFmpeg errors, producing 12600 frames. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.526316 using the aerial branch of [loop_analysis]. The endpoints are not seamless, so playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
+
+[[wallpaper]]
+id = "san-francisco"
+name = "San Francisco"
+source_page_url = "https://aerial-videos.netlify.app/"
+source_file_url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/5f/8d/d7/5f8dd7a6-37aa-cf2f-8b06-931ea6a4054f/comp_A007_C017_01156B_v02_SDR_PS_20180925_SDR_4K_HEVC.mov"
+rights = "Apple aerial artwork; no open-content license is asserted by Genkan."
+install_name = "san-francisco.mov"
+sha256 = "5fa3e29b57093596d1b5063273b4cf60a6ca2c408411a8c135617f9b2df24b23"
+nix_hash = "sha256-X6Pim1cJNZbRtQYyc7TPYKbKLECEEajBNWF/my3ySyM="
+byte_size = 241999482
+
+[wallpaper.media]
+container = "QuickTime / MOV"
+format_name = "mov,mp4,m4a,3gp,3g2,mj2"
+codec = "HEVC"
+codec_profile = "Main 10"
+codec_tag = "hvc1"
+pixel_format = "yuv420p10le"
+width = 3840
+height = 2160
+frame_rate = "30000/1001"
+time_base = "1/30000"
+frame_count = 7200
+duration_seconds = 240.240000
+stream_bit_rate = 8055374
+container_bit_rate = 8058590
+color_range = "tv"
+color_space = "bt709"
+color_transfer = "bt709"
+color_primaries = "bt709"
+audio_streams = 0
+
+[wallpaper.poster]
+file = "san-francisco-poster.jpg"
+sha256 = "b2f2050687bb247f9893578efb328ebb00416d6cfabc11aa7cca15de50d14b19"
+width = 3840
+height = 2160
+source_timestamp_seconds = 240.206633
+selection = "final decoded frame"
+
+[wallpaper.loop]
+mode = "held-final-frame-crossfade"
+direct_seek_seamless = false
+crossfade_milliseconds = 2000
+endpoint_comparison_width = 960
+endpoint_comparison_height = 540
+endpoint_ssim = 0.633680
+verification = "The complete source decoded without FFmpeg errors and yielded the final declared frame at index 7199. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.633680 using the aerial branch of [loop_analysis]. The endpoints are not seamless, so playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
+
 # Dynamic HEIC catalog. Remote entries are downloaded explicitly from their
 # original sources, never by Nix or wallpaper playback. Repository entries are
 # authored test fixtures, excluded from the public catalog and production package.
 
 [[dynamic_heic]]
-id = "tahoe-dynamic"
-name = "Tahoe dynamic (8 variants)"
+id = "tahoe"
+name = "Tahoe"
 delivery = "remote"
-provenance = "Authored on macOS by ad735/macos-heic-wallpaper (Tahoe.heic), a real multi-image dynamic wallpaper generated with Apple tooling. Verified independently with libheif heif-info and Genkan's own parser: 8 top-level 3840x2160 images with an XML h24 time sequence."
-source_page_url = "https://github.com/ad735/macos-heic-wallpaper"
-source_file_url = "https://raw.githubusercontent.com/ad735/macos-heic-wallpaper/d95c473fad4f597ce58c5911b3c3615b71cb36cf/Tahoe.heic"
-rights = "Artwork derived from macOS; no open-content license is declared by the source repository."
-install_name = "tahoe-dynamic.heic"
-sha256 = "c5394f3cc0b547d665c2b65ba0eb8d12c5bbd1f6dd67a20e641153c3bcbabf91"
-nix_hash = "sha256-xTlPPMC1R9ZlwrZboOuNEsW70fbdZ6IOZBFTw7y6v5E="
-byte_size = 25790869
+provenance = "Jetson Creative's Tahoe 2026 release, downloaded from the author's linked CloudFront distribution. All 16 5120x2880 photographs of the same rocky Lake Tahoe shoreline decoded with Genkan. The Apple solar plist contains 16 sun-position points and light/dark indices 0/15."
+source_page_url = "https://www.jetsoncreative.com/mac-dynamic-desktop-store/tahoe-2026"
+source_file_url = "https://d1v8wdnxjotcdx.cloudfront.net/free/macos/24hr-Tahoe-2026-Mac-5K.zip"
+archive_member = "Tahoe 2026.heic"
+archive_byte_size = 90937297
+archive_sha256 = "263352c951e3439e3325b6397880000e88d358ca2e6ee523cc367a6eaf24a3a5"
+rights = "Released by Jetson Creative under CC BY-NC 4.0. Attribution required; no commercial use. Contact the author for commercial licensing."
+attribution = "Jetson Creative / 24 Hour Wallpaper — Tahoe 2026 (CC BY-NC 4.0)"
+install_name = "tahoe.heic"
+sha256 = "0690ce0c1bee8fc0ffbaba3b311f9eb0df24f08d19f24fe6996ada1e0205fec3"
+nix_hash = "sha256-BpDODBvuj8D/uro7MR+esN8k8I0Z8k/mmWraHgIF/sM="
+byte_size = 90651666
+decode_verified = true
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 16
+image_item_ids = [61, 124, 185, 246, 307, 368, 429, 490, 551, 612, 673, 734, 795, 856, 917, 978]
+primary_item_id = 61
+width = 5120
+height = 2880
+color_space = "sRGB (no embedded ICC profile)"
+
+[dynamic_heic.schedule]
+solar_points = [
+  { index = 0, altitude = -0.3427528387535028, azimuth = 270.9334057827345 },
+  { index = 1, altitude = -10.239758644725045, azimuth = 81.77588714480999 },
+  { index = 2, altitude = -4.247734408075456, azimuth = 86.33545030477751 },
+  { index = 3, altitude = 1.3890866331008431, azimuth = 90.81267037496195 },
+  { index = 4, altitude = 7.167168970526129, azimuth = 95.30740958876589 },
+  { index = 5, altitude = 13.08619419164163, azimuth = 99.92062963268938 },
+  { index = 6, altitude = 40.41563946490428, azimuth = 129.18652208191958 },
+  { index = 7, altitude = 53.43347266172774, azimuth = 182.2330942549791 },
+  { index = 8, altitude = 38.793128200638634, azimuth = 233.5515919580959 },
+  { index = 9, altitude = 11.089423171265878, azimuth = 261.87159046576664 },
+  { index = 10, altitude = 5.1845753236736245, azimuth = 266.4432737071051 },
+  { index = 11, altitude = -6.248309374122789, azimuth = 275.44204536695247 },
+  { index = 12, altitude = -12.20770735214888, azimuth = 280.07031589401174 },
+  { index = 13, altitude = -39.48933951993012, azimuth = 309.41857318745144 },
+  { index = 14, altitude = -52.75318137879935, azimuth = 2.1750965538675473 },
+  { index = 15, altitude = -38.04743388682423, azimuth = 53.50908581251309 },
+]
+standalone_appearance = false
+embedded_h24_appearance = false
+embedded_solar_appearance = { light = 0, dark = 15 }
+
+[[dynamic_heic]]
+id = "catalina"
+name = "Catalina"
+delivery = "remote"
+provenance = "Apple's macOS Catalina dynamic island wallpaper, obtained from the Internet Archive apple-dynamic-wallpapers collection. All 8 top-level 6016x6016 photographs decoded with Genkan, including conversion from their Apple display ICC profile to sRGB. The Apple solar plist contains a 10-point schedule that reuses images 1 and 5, and light/dark indices 0/1. The archive is a third-party source, not an Apple-hosted distribution."
+source_page_url = "https://archive.org/details/apple-dynamic-wallpapers"
+source_file_url = "https://archive.org/download/apple-dynamic-wallpapers/Catalina.heic"
+rights = "Artwork distributed with macOS; third-party archived copy. No open-content license is asserted by Genkan."
+install_name = "catalina.heic"
+sha256 = "c4b5701343ad010652307807586a7b1a2d9be0bf5724ac4eaf0a1f7e195a3a3e"
+nix_hash = "sha256-xLVwE0OtAQZSMHgHWGp7Gi2b4L9XJKxOrwoffhlaOj4="
+byte_size = 124504568
+decode_verified = true
 
 [dynamic_heic.structure]
 container = "HEIF"
 image_count = 8
-image_item_ids = [41, 83, 124, 165, 206, 247, 288, 329]
-primary_item_id = 41
-width = 3840
-height = 2160
-color_space = "sRGB"
+image_item_ids = [37, 76, 114, 152, 190, 228, 266, 304]
+primary_item_id = 37
+width = 6016
+height = 6016
+color_space = "embedded ICC, Apple display profile converted to sRGB"
 
 [dynamic_heic.schedule]
-h24_points = [
-  { index = 0, t = 0.0 },
-  { index = 1, t = 0.125 },
-  { index = 2, t = 0.25 },
-  { index = 3, t = 0.375 },
-  { index = 4, t = 0.5 },
-  { index = 5, t = 0.625 },
-  { index = 6, t = 0.75 },
-  { index = 7, t = 0.875 },
+solar_points = [
+  { index = 0, altitude = 0.0, azimuth = 270.0 },
+  { index = 1, altitude = -25.0, azimuth = 70.0 },
+  { index = 2, altitude = -9.0, azimuth = 80.0 },
+  { index = 3, altitude = 0.0, azimuth = 90.0 },
+  { index = 4, altitude = 10.0, azimuth = 100.0 },
+  { index = 5, altitude = 25.0, azimuth = 110.0 },
+  { index = 5, altitude = 25.0, azimuth = 250.0 },
+  { index = 6, altitude = 10.0, azimuth = 260.0 },
+  { index = 7, altitude = -9.0, azimuth = 280.0 },
+  { index = 1, altitude = -25.0, azimuth = 290.0 },
 ]
 standalone_appearance = false
 embedded_h24_appearance = false
-embedded_solar_appearance = false
-
-[[dynamic_heic]]
-id = "tahoe-time-of-day"
-name = "Tahoe time-of-day (5 variants)"
-delivery = "remote"
-provenance = "Authored by Basic Apple Guy as the dynamic Tahoe time-of-day release: four macOS Tahoe stills upscaled to 5K and packed into a single dynamic HEIC. Verified with libheif heif-info and Genkan's own parser: 5 top-level 6016x3384 images with an XML h24 time sequence and an embedded light/dark appearance pair."
-source_page_url = "https://basicappleguy.com/basicappleblog/dynamic-tahoe-wallpapers"
-source_file_url = "https://drive.usercontent.google.com/download?id=18yddbZnAY4XcfkpBs94YLZtJtjPgqBjs&export=download&confirm=t"
-rights = "Fan-authored derivative of macOS artwork; distributed non-commercially by the author, with no open-content license."
-install_name = "tahoe-time-of-day.heic"
-sha256 = "9de03b172203a362a74423afe0aa43620801a2c7e6c1112bdebd7d3bbb04d526"
-nix_hash = "sha256-neA7FyIDo2KnRCOv4KpDYggBosfmwREr3r19O7sE1SY="
-byte_size = 38101558
-
-[dynamic_heic.structure]
-container = "HEIF"
-image_count = 5
-image_item_ids = [37, 75, 112, 149, 186]
-primary_item_id = 37
-width = 6016
-height = 3384
-color_space = "sRGB"
-
-[dynamic_heic.schedule]
-h24_points = [
-  { index = 0, t = 0.0 },
-  { index = 1, t = 0.25 },
-  { index = 2, t = 0.4166666666666667 },
-  { index = 3, t = 0.7083333333333334 },
-  { index = 4, t = 0.875 },
-]
-standalone_appearance = false
-embedded_h24_appearance = { light = 1, dark = 3 }
-embedded_solar_appearance = false
+embedded_solar_appearance = { light = 0, dark = 1 }
 
 [[dynamic_heic]]
 id = "synthetic-all-properties"

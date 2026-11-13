@@ -171,6 +171,11 @@ in
           "sequoia-morning"
           "sequoia-night"
           "golden-gate"
+          "scotland"
+          "liwa"
+          "hawaii"
+          "hong-kong"
+          "san-francisco"
         ];
         default = "tahoe-beach";
         description = "Login wallpaper, also used on the other outputs.";

@@ -179,8 +179,11 @@ The greeter selects Tahoe Beach by default and animates it only when cached.
 Operators can select another MOV with `--wallpaper <id>` (see
 `genkan assets list`), or use
 `--reduce-motion` to retain its static poster. The catalog also includes the
-original 4K Iceland, Greenland, Patagonia, and Palau Jellies aerials and 5K
-Big Sur, Monterey Bay, and Earth from ISS dynamic HEICs. Provision the cache
+original 4K Iceland, Greenland, Patagonia, Palau Jellies, Scotland, Liwa, Hawaii,
+Hong Kong, and San Francisco aerials, plus solar-metadata HEICs for Tahoe,
+Catalina, Big Sur, Monterey Bay, and Earth from ISS. The `tahoe` HEIC replaces
+the former `tahoe-dynamic` and `tahoe-time-of-day` catalog choices;
+`tahoe-beach` remains the default MOV. Provision the cache
 explicitly under the greeter identity or set a shared absolute
 `GENKAN_WALLPAPER_DIR`; a download as your desktop user does not populate the
 greeter's cache. See [greeter provisioning](docs/deployment.md#wallpaper-configuration).

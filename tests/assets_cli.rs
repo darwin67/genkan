@@ -43,7 +43,22 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
         listed_asset(&listing, "big-sur-1"),
         ["big-sur-1", "HEIC", "5120x2880", "89.6", "missing"]
     );
-    assert_eq!(listing.lines().count(), 17);
+    assert_eq!(
+        listed_asset(&listing, "tahoe"),
+        ["tahoe", "HEIC", "5120x2880", "86.5", "missing"]
+    );
+    assert_eq!(
+        listed_asset(&listing, "catalina"),
+        ["catalina", "HEIC", "6016x6016", "118.7", "missing"]
+    );
+    for id in ["scotland", "liwa", "hawaii", "hong-kong", "san-francisco"] {
+        let asset = listed_asset(&listing, id);
+        assert_eq!(&asset[..3], &[id, "MOV", "3840x2160"]);
+        assert_eq!(asset[4], "missing");
+    }
+    assert!(!listing.contains("tahoe-dynamic"));
+    assert!(!listing.contains("tahoe-time-of-day"));
+    assert_eq!(listing.lines().count(), 22);
     assert!(listing.lines().all(|line| line.len() <= 80));
     assert!(!listing.contains('\t'));
     assert!(!listing.contains("https://"));
@@ -51,6 +66,25 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
     let details = successful(genkan(directory.path()).args(["assets", "list", "--details"]));
     assert!(details.contains("Iceland"));
     assert!(details.contains("https://sylvan.apple.com/"));
+    for (id, name, source) in [
+        (
+            "hong-kong",
+            "Hong Kong",
+            "comp_HK_H004_C010_PSNK_v08_SDR_PS_20181009_SDR_4K_HEVC.mov",
+        ),
+        (
+            "san-francisco",
+            "San Francisco",
+            "comp_A007_C017_01156B_v02_SDR_PS_20180925_SDR_4K_HEVC.mov",
+        ),
+    ] {
+        let entry = details
+            .split("\n\n")
+            .find(|entry| entry.split_whitespace().next() == Some(id))
+            .unwrap_or_else(|| panic!("missing details for {id}: {details}"));
+        assert!(entry.contains(name), "{entry}");
+        assert!(entry.contains(source), "{entry}");
+    }
     assert!(
         details.contains("Apple aerial artwork; no open-content license is asserted by Genkan.")
     );
