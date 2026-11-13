@@ -423,6 +423,9 @@ in
     inherit package;
     module = moduleCheck;
     greeter-module = greeterModuleCheck;
+    wallpaper-provisioning = import ./tests/wallpaper-provisioning.nix {
+      inherit pkgs moduleSystem;
+    };
     heic-assets = heicAssetCheck;
     avatars = avatarDirectory;
     heic-decode = heicDecodeCheck;

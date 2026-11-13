@@ -142,6 +142,7 @@ fn movie_with_tail_metadata() -> Vec<u8> {
 
 struct SourceServer {
     address: std::net::SocketAddr,
+    content: std::sync::Arc<std::sync::RwLock<Vec<u8>>>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     served: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -160,12 +161,15 @@ impl SourceServer {
         let served = Arc::new(AtomicUsize::new(0));
         let stopping = stop.clone();
         let sent = served.clone();
+        let content = Arc::new(std::sync::RwLock::new(bytes));
+        let source = content.clone();
         let thread = std::thread::spawn(move || {
             while !stopping.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = listener.accept() else {
                     std::thread::sleep(Duration::from_millis(5));
                     continue;
                 };
+                let bytes = source.read().unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
@@ -257,6 +261,7 @@ impl SourceServer {
         });
         Self {
             address,
+            content,
             stop,
             served,
             thread: Some(thread),
@@ -569,6 +574,170 @@ fn custom_download_preserves_originals_generates_poster_and_is_rediscovered_offl
         successful(genkan(directory.path()).args(["assets", "download", "mine"]))
             .contains("Already cached mine")
     );
+}
+
+#[test]
+fn preparation_validates_before_selection_reuses_sources_and_preserves_old_media() {
+    let cache = tempfile::tempdir().unwrap();
+    let sources = tempfile::tempdir().unwrap();
+    let selected = || {
+        successful(genkan(cache.path()).args(["assets", "selected"]))
+            .trim()
+            .to_owned()
+    };
+    let movie = include_bytes!("fixtures/asset-preflight/hevc.mov");
+    let server = SourceServer::new(movie.to_vec());
+    let url = server.url("/ok");
+    successful(genkan(cache.path()).args(["assets", "prepare", "--url", &url]));
+    let first = selected();
+    assert_eq!(std::fs::read(&first).unwrap(), movie);
+    assert_eq!(
+        image::image_dimensions(Path::new(&first).with_file_name("prepared-poster.jpg")).unwrap(),
+        (96, 64)
+    );
+    drop(server);
+    assert!(
+        successful(genkan(cache.path()).args(["assets", "prepare", "--url", &url]))
+            .contains("Already cached")
+    );
+    assert_eq!(selected(), first);
+    let limited = output_with_timeout(genkan(cache.path()).args([
+        "assets",
+        "prepare",
+        "--url",
+        &url,
+        "--max-bytes",
+        "4096",
+    ]));
+    assert!(!limited.status.success());
+    assert!(String::from_utf8_lossy(&limited.stderr).contains("cached media exceeds --max-bytes"));
+    assert_eq!(selected(), first);
+
+    let local = sources.path().join("source-without-extension");
+    std::fs::write(
+        &local,
+        include_bytes!("fixtures/dynamic-heic/synthetic-all-properties.heic"),
+    )
+    .unwrap();
+    successful(
+        genkan(cache.path())
+            .args(["assets", "prepare", "--file"])
+            .arg(&local),
+    );
+    let second = selected();
+    assert!(second.ends_with(".heic"));
+    assert_ne!(first, second);
+    assert_eq!(
+        std::fs::read(&second).unwrap(),
+        std::fs::read(&local).unwrap()
+    );
+    assert!(successful(
+        genkan(cache.path())
+            .args(["assets", "prepare", "--file"])
+            .arg(&local)
+    )
+    .contains("Already cached"));
+    assert_eq!(selected(), second);
+
+    // Same path, changed content must not be mistaken for the cached source.
+    std::fs::write(&local, b"<html>not media</html>").unwrap();
+    let bad_remote = SourceServer::new(b"<html>not media</html>".to_vec());
+    let pinned_remote = SourceServer::new(movie.to_vec());
+    let incompatible = sources.path().join("unsupported.heic");
+    std::fs::write(
+        &incompatible,
+        include_bytes!("fixtures/dynamic-heic/synthetic-icc-unsupported.heic"),
+    )
+    .unwrap();
+    for (args, detail) in [
+        (
+            vec!["--file".to_owned(), local.display().to_string()],
+            "not a direct MOV/HEIC",
+        ),
+        (
+            vec!["--url".to_owned(), bad_remote.url("/ok")],
+            "not a direct MOV/HEIC",
+        ),
+        (
+            vec!["--file".to_owned(), incompatible.display().to_string()],
+            "ICC",
+        ),
+        (
+            vec![
+                "--url".to_owned(),
+                pinned_remote.url("/ok"),
+                "--sha256".to_owned(),
+                "0".repeat(64),
+            ],
+            "SHA-256",
+        ),
+    ] {
+        let result =
+            output_with_timeout(genkan(cache.path()).args(["assets", "prepare"]).args(&args));
+        assert!(!result.status.success(), "{result:?}");
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains(&args[1]), "{error}");
+        assert!(error.contains(detail), "{error}");
+        assert!(error.contains("Previous selection unchanged"), "{error}");
+        assert_eq!(selected(), second);
+        assert_eq!(std::fs::read(&first).unwrap(), movie);
+    }
+    std::fs::write(&local, movie).unwrap();
+    successful(
+        genkan(cache.path())
+            .args(["assets", "prepare", "--file"])
+            .arg(&local),
+    );
+    assert!(selected().ends_with(".mov"));
+    assert_eq!(
+        std::fs::read(&second).unwrap(),
+        include_bytes!("fixtures/dynamic-heic/synthetic-all-properties.heic")
+    );
+    let catalog = sources.path().join("catalog.toml");
+    std::fs::write(&catalog, format!("[assets.curated]\nurl = {:?}\nformat = 'mov'\nwidth = 96\nheight = 64\nsha256 = '97bafd684fc1f48ecaafe71dcbc220b5ba2b33fc24e7b16f0d448434cf6269f6'\n", pinned_remote.url("/ok"))).unwrap();
+    successful(
+        genkan(cache.path())
+            .args(["assets", "prepare", "curated", "--catalog"])
+            .arg(&catalog),
+    );
+    let curated = selected();
+    assert!(curated.ends_with("curated.mov"));
+    let result = output_with_timeout(
+        genkan(cache.path())
+            .args([
+                "assets",
+                "prepare",
+                "curated",
+                "--sha256",
+                &"0".repeat(64),
+                "--catalog",
+            ])
+            .arg(&catalog),
+    );
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("conflicts with the trusted catalog hash")
+    );
+    assert_eq!(selected(), curated);
+    // A new trusted version at the same URL may be smaller than the old cache.
+    // Lowering the limit must not reject it solely because the old MOV is larger.
+    let url = pinned_remote.url("/ok");
+    successful(genkan(cache.path()).args(["assets", "prepare", "--url", &url]));
+    let heic = include_bytes!("fixtures/dynamic-heic/synthetic-all-properties.heic");
+    *pinned_remote.content.write().unwrap() = heic.to_vec();
+    use sha2::{Digest, Sha256};
+    successful(genkan(cache.path()).args([
+        "assets",
+        "prepare",
+        "--url",
+        &url,
+        "--sha256",
+        &format!("{:x}", Sha256::digest(heic)),
+        "--max-bytes",
+        "4096",
+    ]));
+    assert!(selected().ends_with(".heic"));
+    assert_eq!(std::fs::read(selected()).unwrap(), heic);
 }
 
 #[test]

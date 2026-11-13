@@ -27,6 +27,24 @@ pub(crate) struct Arguments {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Prepare and atomically select compatible media, retaining the old selection on failure.
+    Prepare {
+        /// Catalog ID. Omit when using --url or --file.
+        #[arg(conflicts_with_all = ["url", "file"])]
+        id: Option<String>,
+        /// Direct HTTP(S) media source; a trusted hash is optional.
+        #[arg(long, conflicts_with = "file")]
+        url: Option<String>,
+        /// Local regular media file to copy, validate and cache.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        #[arg(long)]
+        sha256: Option<String>,
+        #[arg(long, default_value_t = DEFAULT_MAX_BYTES, value_parser = clap::value_parser!(u64).range(4096..=16 * 1024 * 1024 * 1024))]
+        max_bytes: u64,
+    },
+    /// Print the last successfully prepared media path (no network or decoding).
+    Selected,
     /// List catalog wallpapers, their resolution, size, and local availability.
     List {
         /// Include full names, source URLs, and usage rights below each row.
@@ -92,6 +110,78 @@ enum Command {
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub(crate) fn run(arguments: Arguments) -> Result<()> {
+    if let Command::Prepare {
+        id,
+        url,
+        file,
+        sha256,
+        max_bytes,
+    } = &arguments.command
+    {
+        let directory = crate::wallpaper::asset_directory()?;
+        let source = id
+            .clone()
+            .or_else(|| url.clone())
+            .or_else(|| file.as_ref().map(|p| p.display().to_string()))
+            .ok_or("choose a catalog ID, --url HTTP(S) URL, or --file PATH")?;
+        let result = (|| -> Result<()> {
+            let mut asset = if let Some(id) = id {
+                // Always use curator declarations, not cached observations.
+                find_asset(catalog::declared(arguments.catalog.as_deref())?, id)?
+            } else {
+                let mut metadata = toml::Table::new();
+                if let Some(url) = url {
+                    metadata.insert("url".into(), url.clone().into());
+                }
+                if let Some(file) = file {
+                    let file = file.canonicalize()?;
+                    metadata.insert(
+                        "local_file".into(),
+                        file.to_str()
+                            .ok_or("local source path must be UTF-8")?
+                            .into(),
+                    );
+                }
+                Asset::from_entry("prepared", metadata)?
+            };
+            if let Some(hash) = sha256 {
+                if asset
+                    .metadata
+                    .get("sha256")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|trusted| !trusted.eq_ignore_ascii_case(hash))
+                {
+                    return Err("--sha256 conflicts with the trusted catalog hash".into());
+                }
+                asset.metadata.insert("sha256".into(), hash.clone().into());
+                asset = Asset::from_entry(&asset.id, asset.metadata.clone())?;
+            }
+            let path = download::run(asset, &directory, *max_bytes)?;
+            // tempfile generations are private until validation succeeds. Make
+            // only immutable published content readable by playback consumers.
+            use std::os::unix::fs::{symlink, PermissionsExt};
+            std::fs::set_permissions(
+                path.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o755),
+            )?;
+            for entry in std::fs::read_dir(path.parent().unwrap())? {
+                std::fs::set_permissions(entry?.path(), std::fs::Permissions::from_mode(0o644))?;
+            }
+            let link = tempfile::NamedTempFile::new_in(&directory)?.into_temp_path();
+            std::fs::remove_file(&link)?;
+            symlink(path.canonicalize()?, &link)?;
+            std::fs::rename(&link, directory.join("selected"))?;
+            println!("Selected: {}", path.display());
+            Ok(())
+        })();
+        return result.map_err(|error| format!("cannot prepare {source:?}: {error}. Previous selection unchanged. Use a direct HEVC MOV or supported dynamic HEIC; inspect with 'genkan assets preflight', or check the local path and size limit.").into());
+    }
+    if let Command::Selected = arguments.command {
+        let path = std::fs::read_link(crate::wallpaper::asset_directory()?.join("selected"))?;
+        crate::wallpaper::open_wallpaper(&path)?;
+        println!("{}", path.display());
+        return Ok(());
+    }
     if let Command::DownloadWorker {
         ref stage,
         max_bytes,
@@ -169,6 +259,8 @@ pub(crate) fn run(arguments: Arguments) -> Result<()> {
             crate::run_login(arguments)?;
         }
         Command::Preflight { .. }
+        | Command::Prepare { .. }
+        | Command::Selected
         | Command::PreflightWorker { .. }
         | Command::DownloadWorker { .. } => unreachable!(),
     }

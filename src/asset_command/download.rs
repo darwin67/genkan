@@ -114,7 +114,7 @@ fn number(asset: &Asset, key: &str) -> Option<u64> {
         .map(|n| n as u64)
 }
 
-fn identity(file: &mut File) -> Result<(u64, String)> {
+fn identity(file: &mut File, max_bytes: u64) -> Result<(u64, String)> {
     file.rewind()?;
     let mut hash = Sha256::new();
     let mut bytes = 0;
@@ -126,12 +126,20 @@ fn identity(file: &mut File) -> Result<(u64, String)> {
         }
         hash.update(&buffer[..count]);
         bytes += count as u64;
+        if bytes > max_bytes {
+            return Err("media exceeds --max-bytes; no media installed".into());
+        }
     }
     Ok((bytes, format!("{:x}", hash.finalize())))
 }
 
-fn verify(file: &mut File, bytes: Option<u64>, hash: Option<&str>) -> Result<(u64, String)> {
-    let observed = identity(file)?;
+fn verify(
+    file: &mut File,
+    bytes: Option<u64>,
+    hash: Option<&str>,
+    max_bytes: u64,
+) -> Result<(u64, String)> {
+    let observed = identity(file, max_bytes)?;
     if bytes.is_some_and(|bytes| bytes != observed.0) {
         return Err("download byte size differs from catalog metadata".into());
     }
@@ -264,11 +272,20 @@ fn fetch(url: &str, file: &mut File, max_bytes: u64, expected_size: Option<u64>)
     Ok(())
 }
 
-pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<()> {
-    let url = asset
-        .url
-        .as_deref()
-        .ok_or("this asset has no download URL")?;
+pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<std::path::PathBuf> {
+    let local = text(&asset, "local_file");
+    if asset.url.is_none() && local.is_none() {
+        return Err("this asset has no source URL or local file".into());
+    }
+    let local_identity = local
+        .map(|path| {
+            let mut file = crate::wallpaper::open_wallpaper(Path::new(path))?;
+            if file.metadata()?.len() > max_bytes {
+                return Err("local file exceeds --max-bytes; raise the limit explicitly".into());
+            }
+            verify(&mut file, asset.bytes, text(&asset, "sha256"), max_bytes)
+        })
+        .transpose()?;
     fs::create_dir_all(directory)?;
     let lock = File::options()
         .create(true)
@@ -316,7 +333,12 @@ pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<()> 
     let receipt_path = directory.join("entries").join(format!("{}.toml", asset.id));
     if receipt_path.is_file() {
         let receipt = catalog::read_table(&receipt_path)?;
-        if receipt.get("url").and_then(toml::Value::as_str) == Some(url) {
+        if receipt.get("url") == asset.metadata.get("url")
+            && receipt.get("local_file") == asset.metadata.get("local_file")
+            && local_identity.as_ref().is_none_or(|(_, hash)| {
+                receipt.get("sha256").and_then(toml::Value::as_str) == Some(hash)
+            })
+        {
             let cached = Asset::from_entry(&asset.id, receipt)?;
             let declarations_match = ["format", "width", "height", "archive_member"]
                 .into_iter()
@@ -325,7 +347,13 @@ pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<()> 
                         .metadata
                         .get(key)
                         .is_none_or(|value| cached.metadata.get(key) == Some(value))
+                })
+                && text(&asset, "sha256").is_none_or(|hash| {
+                    text(&cached, "sha256").is_some_and(|cached| cached.eq_ignore_ascii_case(hash))
                 });
+            if declarations_match && cached.bytes.is_some_and(|bytes| bytes > max_bytes) {
+                return Err("cached media exceeds --max-bytes; raise the limit explicitly".into());
+            }
             if let Some(path) = cached.path(directory).filter(|_| declarations_match) {
                 let poster = path.with_file_name(format!("{}-poster.jpg", asset.id));
                 if let Ok(mut file) = crate::wallpaper::open_wallpaper(&path) {
@@ -333,19 +361,25 @@ pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<()> 
                         &mut file,
                         asset.bytes.or(cached.bytes),
                         text(&asset, "sha256").or_else(|| text(&cached, "sha256")),
+                        max_bytes,
                     )
                     .is_ok()
                         && (cached.format.as_deref() != Some("mov")
                             || crate::stable_file::open_regular(&poster).ok().is_some_and(
                                 |mut poster| {
-                                    verify(&mut poster, None, text(&cached, "poster_sha256"))
-                                        .is_ok()
+                                    verify(
+                                        &mut poster,
+                                        None,
+                                        text(&cached, "poster_sha256"),
+                                        u64::MAX,
+                                    )
+                                    .is_ok()
                                         && text(&cached, "poster_sha256").is_some()
                                 },
                             ))
                     {
                         println!("Already cached {}: {}", asset.id, path.display());
-                        return Ok(());
+                        return Ok(path);
                     }
                 }
             }
@@ -367,6 +401,10 @@ pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<()> 
         .tempdir_in(&objects)?;
     let mut input = asset.metadata.clone();
     input.insert("id".into(), asset.id.clone().into());
+    if let Some((_, hash)) = local_identity {
+        // Bind the worker's copy to the version used for the reuse decision.
+        input.insert("sha256".into(), hash.into());
+    }
     let mut command = Command::new(std::env::current_exe()?);
     command.env("TMPDIR", stage.path());
     command
@@ -420,7 +458,7 @@ pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<()> 
     if text(&asset, "sha256").is_none() {
         println!("Computed hash recorded locally; no trusted upstream SHA-256 was supplied.");
     }
-    Ok(())
+    Ok(installed.path(directory).unwrap())
 }
 
 pub(super) fn worker(stage: &Path, max_bytes: u64) -> Result<()> {
@@ -439,7 +477,6 @@ pub(super) fn worker(stage: &Path, max_bytes: u64) -> Result<()> {
         .ok_or("missing download key")?
         .to_owned();
     let asset = Asset::from_entry(&id, metadata)?;
-    let url = asset.url.as_deref().ok_or("missing download URL")?;
     let archive = text(&asset, "archive_member");
     let expected_size = if archive.is_some() {
         number(&asset, "archive_byte_size")
@@ -453,18 +490,30 @@ pub(super) fn worker(stage: &Path, max_bytes: u64) -> Result<()> {
         .read(true)
         .write(true)
         .open(&source_path)?;
-    fetch(
-        url,
-        &mut source,
-        expected_size.unwrap_or(max_bytes).min(max_bytes),
-        expected_size,
-    )?;
+    if let Some(path) = text(&asset, "local_file") {
+        let input = crate::wallpaper::open_wallpaper(Path::new(path))?;
+        if io::copy(&mut input.take(max_bytes + 1), &mut source)? > max_bytes {
+            return Err("local file exceeds --max-bytes; no media installed".into());
+        }
+    } else {
+        fetch(
+            asset.url.as_deref().ok_or("missing download URL")?,
+            &mut source,
+            expected_size.unwrap_or(max_bytes).min(max_bytes),
+            expected_size,
+        )?;
+    }
     eprintln!(
         "Validating {}: checking integrity and decoding media...",
         asset.id
     );
     if let Some(member) = archive {
-        verify(&mut source, expected_size, text(&asset, "archive_sha256"))?;
+        verify(
+            &mut source,
+            expected_size,
+            text(&asset, "archive_sha256"),
+            max_bytes,
+        )?;
         source.seek(SeekFrom::Start(0))?;
         let mut zip = zip::ZipArchive::new(source)?;
         let mut member = zip.by_name(member)?;
@@ -487,6 +536,7 @@ pub(super) fn worker(stage: &Path, max_bytes: u64) -> Result<()> {
         &mut File::open(&media_path)?,
         asset.bytes,
         text(&asset, "sha256"),
+        max_bytes,
     )?;
     let poster_path = stage.join(format!("{}-poster.jpg", asset.id));
     let mut metadata = asset.metadata.clone();
@@ -496,7 +546,7 @@ pub(super) fn worker(stage: &Path, max_bytes: u64) -> Result<()> {
     if poster_path.is_file() {
         metadata.insert(
             "poster_sha256".into(),
-            identity(&mut File::open(poster_path)?)?.1.into(),
+            identity(&mut File::open(poster_path)?, u64::MAX)?.1.into(),
         );
     }
     let format = metadata["format"]

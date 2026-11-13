@@ -563,7 +563,75 @@ before opening its window.
 
 ### Cache selection and greeter provisioning
 
-The first applicable cache path wins:
+On NixOS, import `genkan.nixosModules.default` and let Genkan own preparation:
+
+```nix
+programs.genkan = {
+  enable = true;
+  greeter.enable = true;
+  wallpaper.source.catalog = "iceland";
+};
+```
+
+Choose exactly one source; no per-wallpaper package or downstream downloader is needed:
+
+| `programs.genkan.wallpaper.source` | Example |
+| --- | --- |
+| `catalog` | `"iceland"` (IDs from `genkan assets list`) |
+| `url` | `"https://example.org/original.mov"` (direct HTTP(S), no redirects) |
+| `file` | `/path/to/original.heic` or `"/srv/wallpapers/original.mov"` |
+
+`source.sha256` optionally supplies a trusted 64-digit hexadecimal SHA-256.
+Omitting it for a custom source records a computed integrity hash, not proof of
+upstream authenticity. Catalog size, archive, and hash checks cannot be disabled
+or overridden. `wallpaper.maxBytes` defaults to 2 GiB (range 4 KiB–16 GiB).
+Media must pass Genkan's existing bounded MOV/HEIC inspection and representative
+frame decoding; MOV posters are generated automatically. This is not an exhaustive
+decode of every frame or a promise of compositor/hardware support.
+
+`genkan-wallpaper.service` prepares at boot and when its configuration changes,
+before greetd, as the dedicated `genkan-wallpapers` system user. Its state is
+`/var/lib/genkan-wallpapers`: published media and posters are readable by greeter
+and desktop users, but writable only by the provisioning identity/root. Local
+sources must be readable by that identity; Nix path literals enter the store,
+whereas absolute strings refer to runtime files. Do not embed secrets in source URLs.
+Unchanged URLs reuse verified cached content without contacting the server;
+local sources are rehashed to detect changes. To deliberately refresh a mutable
+URL, use a new URL or a trusted hash for the new content.
+
+An atomic `selected` symlink changes only after successful preparation. Errors
+identify the source and problem in the service journal and retain the previous
+selection and published generations. A failed service does not block greetd;
+without any successful selection the generated media-free fallback remains.
+Retry explicitly with `sudo systemctl restart genkan-wallpaper.service` after
+correcting the source or connectivity. Already running playback keeps its current
+media until restarted; provisioning never restarts greetd or a desktop session.
+
+The module installs a wrapper as the system `genkan` and uses it in **both Cage
+and niri greeter launches**. Desktop autostart can simply run `genkan wallpaper`,
+and lock hooks `genkan lock --daemonize`. For an explicit Nix executable path,
+use `${config.programs.genkan.wallpaper.package}/bin/genkan`, not the raw
+`programs.genkan.package` or flake package. The wrapper resolves the selected
+immutable media path and passes `--wallpaper-file`; it does not depend on greetd
+forwarding daemon environment variables. Explicit `--file`/`--wallpaper-file`
+arguments (including `greeter.wallpaperFile`) win. Solar mode still requires an
+explicit HEIC `--file` and `--solar`. Desktop autostart and idle policy remain
+host-owned. The default flake package remains media-free and unchanged.
+
+Outside NixOS, the same public provisioning interface is available:
+
+```sh
+genkan assets prepare iceland
+genkan assets prepare --url "https://example.org/original.mov"
+genkan assets prepare --file /absolute/path/to/original.heic
+genkan assets selected
+```
+
+Use an absolute `GENKAN_WALLPAPER_DIR` for a separately owned shared cache.
+`assets selected` only prints the last prepared media path; ordinary unwrapped
+playback does not automatically consume it. Pass that path as `--wallpaper-file`.
+
+For manual cache management, the first applicable cache path wins:
 
 | Environment | Cache root |
 | --- | --- |
@@ -584,55 +652,11 @@ Published versions are retained for active readers and saved absolute overrides,
 so replacements may occupy additional disk space. Remove an unused version only
 when no readers or saved overrides need it.
 
-Downloading as your desktop user does not populate the greeter's cache.
-For normal catalog selection, give the greeter a usable HOME and provision its
-cache there. For example, for a host whose greetd identity and group are both
-`greeter`:
-
-```nix
-users.users.greeter = {
-  home = "/var/lib/greeter";
-  createHome = true;
-};
-```
-
-After applying that configuration, use the `genkan` binary from the configured
-package (its full path if it is not on PATH):
-
-```sh
-sudo install -d -o greeter -g greeter -m 0700 /var/lib/greeter/.cache/genkan/wallpapers
-sudo -u greeter env -u GENKAN_WALLPAPER_DIR -u XDG_CACHE_HOME HOME=/var/lib/greeter \
-  genkan assets download tahoe-beach
-```
-
-Alternatively, provision a shared cache:
-
-```sh
-sudo install -d -o greeter -g greeter -m 0755 /var/cache/genkan/wallpapers
-sudo -u greeter env GENKAN_WALLPAPER_DIR=/var/cache/genkan/wallpapers \
-  genkan assets download tahoe-beach
-```
-
-For the opt-in NixOS greeter module, set `wallpaperFile` to the exact absolute
-media path printed by the download command; replace the example generation
-below with that path:
-
-```nix
-programs.genkan.greeter.wallpaperFile =
-  "/var/cache/genkan/wallpapers/objects/download-tahoe-beach-REPLACE/tahoe-beach.mov";
-```
-
-To use `GENKAN_WALLPAPER_DIR` instead, pass it in the compositor/Genkan launch
-command. Setting `systemd.services.greetd.environment.GENKAN_WALLPAPER_DIR` is
-not sufficient: greetd starts the greeter with a separate PAM environment and
-does not forward arbitrary daemon variables.
-
-Keep the greeter's media writable only by its provisioning identity or an
-administrator, not by arbitrary desktop users. The service must be able to
-read it. Downloads are an operator action, never a login/startup hook. A
-missing cache or poster uses the generated background without delaying
-authentication. Only the operator-facing `assets preview` command attempts to
-download a missing asset.
+Downloading as your desktop user does not populate the greeter's cache. Without
+the module wrapper, pass the printed media path explicitly to each consumer and
+keep the shared cache writable only by a dedicated provisioning identity/root.
+Setting `systemd.services.greetd.environment.GENKAN_WALLPAPER_DIR` alone is not
+sufficient: greetd does not forward arbitrary daemon variables into PAM sessions.
 
 ### Select cached media
 

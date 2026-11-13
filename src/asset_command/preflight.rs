@@ -169,10 +169,7 @@ pub(super) fn worker(max_bytes: u64, local: Option<&Path>, poster: Option<&Path>
         .ok_or("missing preflight key")?
         .to_owned();
     let asset = Asset::from_entry(&id, table)?;
-    let url = asset
-        .url
-        .as_deref()
-        .ok_or("this entry has no external source URL")?;
+    let url = asset.url.as_deref().unwrap_or("");
     if local.is_none()
         && (!(url.starts_with("https://") || url.starts_with("http://"))
             || url.chars().any(char::is_control))
