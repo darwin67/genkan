@@ -2,6 +2,7 @@
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 
@@ -10,6 +11,62 @@ let
   # Must match the GeoClue DesktopId used by src/geoclue.rs.
   wallpaperDesktopId = "genkan-wallpaper";
   greeter = cfg.greeter;
+  source = cfg.wallpaper.source;
+  stateDirectory = "/var/lib/genkan-wallpapers";
+  prepareArgs = [
+    "assets"
+    "prepare"
+    "--max-bytes"
+    (toString cfg.wallpaper.maxBytes)
+  ]
+  ++ lib.optional (source.catalog != null) source.catalog
+  ++ lib.optionals (source.url != null) [
+    "--url"
+    source.url
+  ]
+  ++ lib.optionals (source.file != null) [
+    "--file"
+    (toString source.file)
+  ]
+  ++ lib.optionals (source.sha256 != null) [
+    "--sha256"
+    source.sha256
+  ];
+  # greetd's PAM session does not inherit the daemon's environment. Both
+  # compositor launches and desktop consumers must use this executable.
+  launcher = pkgs.writeShellScript "genkan-prepared" ''
+    set -eu
+    case "''${1-}" in
+      login|greeter-session|lock|wallpaper)
+        explicit=false
+        for arg in "$@"; do
+          case "$arg" in
+            --wallpaper-file|--wallpaper-file=*|--file|--file=*) explicit=true ;;
+          esac
+        done
+        if ! "$explicit"; then
+          if selected=$(GENKAN_WALLPAPER_DIR=${stateDirectory} ${cfg.package}/bin/genkan assets selected); then
+            set -- "$@" --wallpaper-file "$selected"
+          else
+            echo "Genkan: no prepared wallpaper; check genkan-wallpaper.service. Using the media-free fallback." >&2
+          fi
+        fi
+        ;;
+    esac
+    exec ${cfg.package}/bin/genkan "$@"
+  '';
+  runtimePackage =
+    if source == null then
+      cfg.package
+    else
+      pkgs.symlinkJoin {
+        name = "genkan-prepared";
+        paths = [ cfg.package ];
+        postBuild = ''
+          rm "$out/bin/genkan"
+          ln -s ${launcher} "$out/bin/genkan"
+        '';
+      };
   quote = builtins.toJSON;
   outputConfig = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (name: output: ''
@@ -65,7 +122,7 @@ let
     spawn-at-startup ${
       lib.concatMapStringsSep " " quote (
         [
-          "${cfg.package}/bin/genkan"
+          "${runtimePackage}/bin/genkan"
           "greeter-session"
         ]
         ++ mediaArgs
@@ -220,6 +277,54 @@ in
     wallpaper = {
       enable = lib.mkEnableOption "Genkan desktop wallpaper runtime";
 
+      source = lib.mkOption {
+        default = null;
+        description = ''
+          Optional shared wallpaper provisioning. Choose exactly one catalog ID,
+          direct HTTP(S) URL, or local regular file. Media is copied, validated
+          and selected by an unprivileged system service, never during login or
+          lock. Desktop users can read but cannot modify the shared selection.
+        '';
+        type = lib.types.nullOr (
+          lib.types.submodule {
+            options = {
+              catalog = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                example = "iceland";
+                description = "ID from genkan assets list.";
+              };
+              url = lib.mkOption {
+                type = lib.types.nullOr (lib.types.strMatching "https?://[^[:space:]]+");
+                default = null;
+                description = "Direct media URL; redirects are not followed.";
+              };
+              file = lib.mkOption {
+                type = lib.types.nullOr lib.types.path;
+                default = null;
+                description = "Local media readable by the genkan-wallpapers system user.";
+              };
+              sha256 = lib.mkOption {
+                type = lib.types.nullOr (lib.types.strMatching "[0-9a-fA-F]{64}");
+                default = null;
+                description = "Optional trusted hexadecimal SHA-256; catalog authenticity pins remain mandatory.";
+              };
+            };
+          }
+        );
+      };
+      maxBytes = lib.mkOption {
+        type = lib.types.ints.between 4096 (16 * 1024 * 1024 * 1024);
+        default = 2 * 1024 * 1024 * 1024;
+        description = "Maximum source and expanded media size for provisioning.";
+      };
+      package = lib.mkOption {
+        type = lib.types.package;
+        readOnly = true;
+        default = runtimePackage;
+        description = "Playback package installed system-wide, also usable by explicit desktop/lock launch commands. Adds the last prepared selection unless --file or --wallpaper-file is supplied.";
+      };
+
       solar.enable = lib.mkEnableOption ''
         GeoClue-backed optional solar scheduling for the Genkan desktop
         wallpaper. Enabling this provisions GeoClue and authorizes the
@@ -234,8 +339,58 @@ in
     (lib.mkIf cfg.enable {
       # Idle policy is deliberately host-owned. Enabling this module must not
       # replace a desktop environment's locker or install an automatic hook.
-      environment.systemPackages = [ cfg.package ];
+      environment.systemPackages = [ runtimePackage ];
       security.pam.services.genkan-lock = { };
+    })
+
+    (lib.mkIf (source != null) {
+      assertions = [
+        {
+          assertion =
+            cfg.enable
+            &&
+              builtins.length (
+                builtins.filter (x: x != null) [
+                  source.catalog
+                  source.url
+                  source.file
+                ]
+              ) == 1;
+          message = "programs.genkan.wallpaper.source requires programs.genkan.enable and exactly one of catalog, url or file.";
+        }
+      ];
+      users.groups.genkan-wallpapers = { };
+      users.users.genkan-wallpapers = {
+        isSystemUser = true;
+        group = "genkan-wallpapers";
+      };
+      systemd.services.genkan-wallpaper = {
+        description = "Prepare and validate Genkan wallpaper";
+        wantedBy = [ "multi-user.target" ];
+        wants = [ "network-online.target" ];
+        after = [ "network-online.target" ];
+        before = [ "greetd.service" ];
+        environment.GENKAN_WALLPAPER_DIR = stateDirectory;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          User = "genkan-wallpapers";
+          Group = "genkan-wallpapers";
+          StateDirectory = "genkan-wallpapers";
+          StateDirectoryMode = "0755";
+          UMask = "0022";
+          ExecStart = utils.escapeSystemdExecArgs ([ "${cfg.package}/bin/genkan" ] ++ prepareArgs);
+          TimeoutStartSec = 750;
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = "read-only";
+          PrivateTmp = true;
+          PrivateDevices = true;
+          RestrictSUIDSGID = true;
+        };
+      };
+      # A failed refresh must not prevent login using the previous selection.
+      systemd.services.greetd.wants = lib.mkIf greeter.enable [ "genkan-wallpaper.service" ];
     })
 
     (lib.mkIf greeter.enable {
@@ -255,7 +410,7 @@ in
               [
                 "${pkgs.cage}/bin/cage"
                 "--"
-                "${cfg.package}/bin/genkan"
+                "${runtimePackage}/bin/genkan"
                 "login"
               ]
               ++ mediaArgs

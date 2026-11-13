@@ -75,6 +75,10 @@ wallpaper-package:
 wallpaper-empty-cache:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).wallpaper-empty-cache --print-build-logs
 
+.PHONY: wallpaper-provisioning
+wallpaper-provisioning:
+	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).wallpaper-provisioning --print-build-logs
+
 evidence:
 	nix build .#checks.$$(nix eval --raw --impure --expr builtins.currentSystem).preview-evidence --print-build-logs
 
@@ -96,7 +100,7 @@ build:
 package:
 	nix build
 
-verify: fmt lint test check-rfds package wallpaper-package wallpaper-empty-cache heic-assets heic-decode smoke wallpaper-smoke lock-smoke niri-smoke evidence
+verify: fmt lint test check-rfds package wallpaper-package wallpaper-empty-cache wallpaper-provisioning heic-assets heic-decode smoke wallpaper-smoke lock-smoke niri-smoke evidence
 
 verify: check-design
 
