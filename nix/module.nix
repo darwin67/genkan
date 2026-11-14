@@ -176,6 +176,11 @@ in
           "hawaii"
           "hong-kong"
           "san-francisco"
+          "westfjords"
+          "jodhpur"
+          "quarten"
+          "lake-como"
+          "manhattan-night"
         ];
         default = "tahoe-beach";
         description = "Login wallpaper, also used on the other outputs.";

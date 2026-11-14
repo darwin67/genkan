@@ -112,7 +112,10 @@ transfer completes. A separate `Validating` status covers integrity and media
 checks before installation; 100% means transferred, not yet installed.
 Redirected output uses plain completion and validation lines without redraws.
 
-Downloads require a direct HTTP(S) URL returning 200; redirects are rejected.
+Downloads require an HTTP(S) response returning 200. Only hash-pinned GitHub
+release sources matching the built-in catalog may resolve one HTTPS hop to
+`release-assets.githubusercontent.com`; other redirects remain rejected,
+including further CDN redirects. Signed CDN URLs are not stored in receipts.
 Preparation, including hashing and ZIP extraction, is resource-bounded.
 Curated sizes and hashes are verified, and a representative HEVC MOV or HEIC
 frame is validated before publication. A MOV download also generates its poster.
@@ -180,7 +183,9 @@ Operators can select another MOV with `--wallpaper <id>` (see
 `genkan assets list`), or use
 `--reduce-motion` to retain its static poster. The catalog also includes the
 original 4K Iceland, Greenland, Patagonia, Palau Jellies, Scotland, Liwa, Hawaii,
-Hong Kong, and San Francisco aerials, plus solar-metadata HEICs for Tahoe,
+Hong Kong, and San Francisco aerials, plus community aerials of Westfjords,
+Jodhpur, Quarten in the Swiss Alps, the Lake Como region, and Manhattan at night.
+It also includes solar-metadata HEICs for Tahoe,
 Catalina, Big Sur, Monterey Bay, and Earth from ISS. The `tahoe` HEIC replaces
 the former `tahoe-dynamic` and `tahoe-time-of-day` catalog choices;
 `tahoe-beach` remains the default MOV. Provision the cache
