@@ -207,7 +207,14 @@ cargo run --bin genkan -- assets preview my-wallpaper --reduce-motion
 | `assets preflight <key>` | Bounded range reads; one representative frame | Install nothing |
 | `assets download <key>` | Complete transfer; resource-bounded hashing, ZIP parsing, and frame validation | Atomically select validated media, metadata, and a generated MOV poster |
 
-Downloads require direct HTTP(S) responses with status 200 and reject redirects.
+Downloads require HTTP(S) responses with status 200. A GitHub release source
+whose key, URL, size, and SHA-256 match the built-in catalog may resolve one
+HTTPS hop to `release-assets.githubusercontent.com/github-production-release-asset/`.
+Resolution uses a HEAD request limited to 15 seconds and 64 KiB of headers;
+the CDN response must return 200, with no further redirects. Signed URLs remain
+ephemeral; receipts retain the stable source URL. Custom catalogs and cached
+receipts cannot grant this exception to a different source or pin. Other
+download redirects, and all preflight redirects, remain rejected.
 For download and preview, `--max-bytes` defaults to 2 GiB, accepts 4 KiB–16 GiB,
 and limits both the transfer and expanded media; transfers time out after
 600 seconds. Supplied

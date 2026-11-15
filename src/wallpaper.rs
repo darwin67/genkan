@@ -57,7 +57,7 @@ struct PlaybackSpec {
     crossfade: Duration,
 }
 
-const WALLPAPERS: [PlaybackSpec; 9] = [
+const WALLPAPERS: [PlaybackSpec; 19] = [
     PlaybackSpec {
         install_name: "tahoe-beach.mov",
         poster_name: "tahoe-beach-poster.jpg",
@@ -112,6 +112,66 @@ const WALLPAPERS: [PlaybackSpec; 9] = [
         duration: Duration::from_micros(428_694_933),
         crossfade: Duration::from_millis(2_000),
     },
+    PlaybackSpec {
+        install_name: "scotland.mov",
+        poster_name: "scotland-poster.jpg",
+        duration: Duration::from_micros(470_136_333),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "liwa.mov",
+        poster_name: "liwa-poster.jpg",
+        duration: Duration::from_micros(420_420_000),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "hawaii.mov",
+        poster_name: "hawaii-poster.jpg",
+        duration: Duration::from_micros(240_273_367),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "hong-kong.mov",
+        poster_name: "hong-kong-poster.jpg",
+        duration: Duration::from_micros(420_420_000),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "san-francisco.mov",
+        poster_name: "san-francisco-poster.jpg",
+        duration: Duration::from_micros(240_240_000),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "westfjords.mov",
+        poster_name: "westfjords-poster.jpg",
+        duration: Duration::from_micros(93_300_000),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "jodhpur.mov",
+        poster_name: "jodhpur-poster.jpg",
+        duration: Duration::from_micros(138_733_333),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "quarten.mov",
+        poster_name: "quarten-poster.jpg",
+        duration: Duration::from_micros(101_700_000),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "lake-como.mov",
+        poster_name: "lake-como-poster.jpg",
+        duration: Duration::from_micros(60_266_667),
+        crossfade: Duration::from_millis(2_000),
+    },
+    PlaybackSpec {
+        install_name: "manhattan-night.mov",
+        poster_name: "manhattan-night-poster.jpg",
+        duration: Duration::from_micros(71_533_333),
+        crossfade: Duration::from_millis(2_000),
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -126,6 +186,16 @@ pub(crate) enum Catalog {
     Greenland,
     Patagonia,
     PalauJellies,
+    Scotland,
+    Liwa,
+    Hawaii,
+    HongKong,
+    SanFrancisco,
+    Westfjords,
+    Jodhpur,
+    Quarten,
+    LakeComo,
+    ManhattanNight,
 }
 
 impl Catalog {
@@ -140,6 +210,16 @@ impl Catalog {
             Self::Greenland => 6,
             Self::Patagonia => 7,
             Self::PalauJellies => 8,
+            Self::Scotland => 9,
+            Self::Liwa => 10,
+            Self::Hawaii => 11,
+            Self::HongKong => 12,
+            Self::SanFrancisco => 13,
+            Self::Westfjords => 14,
+            Self::Jodhpur => 15,
+            Self::Quarten => 16,
+            Self::LakeComo => 17,
+            Self::ManhattanNight => 18,
         }
     }
 
@@ -2347,6 +2427,76 @@ mod tests {
                     "palau-jellies.mov",
                     "palau-jellies-poster.jpg",
                     428_694_933,
+                    2_000
+                ),
+                (
+                    "scotland".into(),
+                    "scotland.mov",
+                    "scotland-poster.jpg",
+                    470_136_333,
+                    2_000
+                ),
+                (
+                    "liwa".into(),
+                    "liwa.mov",
+                    "liwa-poster.jpg",
+                    420_420_000,
+                    2_000
+                ),
+                (
+                    "hawaii".into(),
+                    "hawaii.mov",
+                    "hawaii-poster.jpg",
+                    240_273_367,
+                    2_000
+                ),
+                (
+                    "hong-kong".into(),
+                    "hong-kong.mov",
+                    "hong-kong-poster.jpg",
+                    420_420_000,
+                    2_000
+                ),
+                (
+                    "san-francisco".into(),
+                    "san-francisco.mov",
+                    "san-francisco-poster.jpg",
+                    240_240_000,
+                    2_000
+                ),
+                (
+                    "westfjords".into(),
+                    "westfjords.mov",
+                    "westfjords-poster.jpg",
+                    93_300_000,
+                    2_000
+                ),
+                (
+                    "jodhpur".into(),
+                    "jodhpur.mov",
+                    "jodhpur-poster.jpg",
+                    138_733_333,
+                    2_000
+                ),
+                (
+                    "quarten".into(),
+                    "quarten.mov",
+                    "quarten-poster.jpg",
+                    101_700_000,
+                    2_000
+                ),
+                (
+                    "lake-como".into(),
+                    "lake-como.mov",
+                    "lake-como-poster.jpg",
+                    60_266_667,
+                    2_000
+                ),
+                (
+                    "manhattan-night".into(),
+                    "manhattan-night.mov",
+                    "manhattan-night-poster.jpg",
+                    71_533_333,
                     2_000
                 ),
             ]

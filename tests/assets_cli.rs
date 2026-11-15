@@ -43,7 +43,33 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
         listed_asset(&listing, "big-sur-1"),
         ["big-sur-1", "HEIC", "5120x2880", "89.6", "missing"]
     );
-    assert_eq!(listing.lines().count(), 17);
+    assert_eq!(
+        listed_asset(&listing, "tahoe"),
+        ["tahoe", "HEIC", "5120x2880", "86.5", "missing"]
+    );
+    assert_eq!(
+        listed_asset(&listing, "catalina"),
+        ["catalina", "HEIC", "6016x6016", "118.7", "missing"]
+    );
+    for id in [
+        "scotland",
+        "liwa",
+        "hawaii",
+        "hong-kong",
+        "san-francisco",
+        "westfjords",
+        "jodhpur",
+        "quarten",
+        "lake-como",
+        "manhattan-night",
+    ] {
+        let asset = listed_asset(&listing, id);
+        assert_eq!(&asset[..3], &[id, "MOV", "3840x2160"]);
+        assert_eq!(asset[4], "missing");
+    }
+    assert!(!listing.contains("tahoe-dynamic"));
+    assert!(!listing.contains("tahoe-time-of-day"));
+    assert_eq!(listing.lines().count(), 27);
     assert!(listing.lines().all(|line| line.len() <= 80));
     assert!(!listing.contains('\t'));
     assert!(!listing.contains("https://"));
@@ -51,6 +77,50 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
     let details = successful(genkan(directory.path()).args(["assets", "list", "--details"]));
     assert!(details.contains("Iceland"));
     assert!(details.contains("https://sylvan.apple.com/"));
+    for (id, name, source) in [
+        (
+            "hong-kong",
+            "Hong Kong",
+            "comp_HK_H004_C010_PSNK_v08_SDR_PS_20181009_SDR_4K_HEVC.mov",
+        ),
+        (
+            "san-francisco",
+            "San Francisco",
+            "comp_A007_C017_01156B_v02_SDR_PS_20180925_SDR_4K_HEVC.mov",
+        ),
+        (
+            "westfjords",
+            "Westfjords",
+            "video_i3_is_westfjords_20240616_004.4k-sdr.mov",
+        ),
+        (
+            "jodhpur",
+            "Jodhpur",
+            "video_i3_in_jodhpur_gulabsagar_jaswantthada_20241128_010_013.4k-sdr.mov",
+        ),
+        (
+            "quarten",
+            "Quarten",
+            "video_m3_ch_quarten_20250712_003.4k-sdr.mov",
+        ),
+        (
+            "lake-como",
+            "Lake Como",
+            "video_inspire_italy_como_cerano-dintelvi_006.4k-sdr.mov",
+        ),
+        (
+            "manhattan-night",
+            "Manhattan at Night",
+            "video_i3_nyc_manhattan_20250918_067.4k-sdr.mov",
+        ),
+    ] {
+        let entry = details
+            .split("\n\n")
+            .find(|entry| entry.split_whitespace().next() == Some(id))
+            .unwrap_or_else(|| panic!("missing details for {id}: {details}"));
+        assert!(entry.contains(name), "{entry}");
+        assert!(entry.contains(source), "{entry}");
+    }
     assert!(
         details.contains("Apple aerial artwork; no open-content license is asserted by Genkan.")
     );
@@ -808,6 +878,7 @@ fn zip_download_extracts_only_the_selected_heic_and_checks_archive_and_media_pin
 
 #[test]
 fn failed_downloads_preserve_existing_media_and_receipt() {
+    use sha2::{Digest, Sha256};
     let directory = tempfile::tempdir().unwrap();
     let bytes = include_bytes!("fixtures/asset-preflight/hevc.mov");
     let server = SourceServer::new(bytes.to_vec());
@@ -826,6 +897,13 @@ fn failed_downloads_preserve_existing_media_and_receipt() {
             vec!["--sha256".to_owned(), "0".repeat(64)],
         ),
         (server.url("/redirect"), vec![]),
+        (
+            server.url("/redirect"),
+            vec![
+                "--sha256".to_owned(),
+                format!("{:x}", Sha256::digest(bytes)),
+            ],
+        ),
         (server.url("/truncated"), vec![]),
         (html.url("/ok"), vec![]),
     ] {
@@ -867,6 +945,166 @@ fn failed_downloads_preserve_existing_media_and_receipt() {
             .unwrap()
             .status
             .success());
+    }
+}
+
+#[test]
+fn github_catalog_downloads_allow_only_one_pinned_https_release_asset_hop() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let bin = directory.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let curl = bin.join("curl");
+    // A transport fixture, without live GitHub/TLS dependencies. The audit is
+    // the network-boundary contract: rejected targets must never be contacted.
+    std::fs::write(
+        &curl,
+        r#"#!/bin/sh
+head=false
+headers=
+url=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --head) head=true ;;
+        --dump-header) shift; headers=$1 ;;
+        --url) shift; url=$1 ;;
+    esac
+    shift
+done
+printf '%s\n' "$url" >> "$GENKAN_TEST_REQUESTS"
+case "$url" in
+    https://github.com/*) response=$GENKAN_TEST_RESPONSE ;;
+    *) response=$(printf 'HTTP/1.1 302 Found\r\nLocation: https://example.invalid/second-hop\r\n\r\n') ;;
+esac
+if "$head"; then
+    printf '%s' "$response"
+else
+    printf '%s' "$response" > "$headers"
+fi
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let manifest: toml::Table = include_str!("../assets/wallpapers/manifest.toml")
+        .parse()
+        .unwrap();
+    let entry = manifest["wallpaper"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"].as_str() == Some("westfjords"))
+        .unwrap();
+    let source = entry["source_file_url"].as_str().unwrap();
+    let requests = directory.path().join("requests");
+    let allowed = "https://release-assets.githubusercontent.com/github-production-release-asset/285077363/fixture?jwt=private-test-token";
+    for target in [
+        "http://release-assets.githubusercontent.com/github-production-release-asset/fixture",
+        "https://release-assets.githubusercontent.com.evil.invalid/github-production-release-asset/fixture",
+        "https://release-assets.githubusercontent.com@evil.invalid/github-production-release-asset/fixture",
+        "https://release-assets.githubusercontent.com:444/github-production-release-asset/fixture",
+        "https://release-assets.githubusercontent.com/other-path/fixture",
+        "https://release-assets.githubusercontent.com/github-production-release-asset/../outside-prefix",
+        "https://release-assets.githubusercontent.com/github-production-release-asset/%2e%2e/outside-prefix",
+        "https://release-assets.githubusercontent.com/github-production-release-asset/.%2E/outside-prefix",
+        "https://release-assets.githubusercontent.com/github-production-release-asset/fixture\\@evil.invalid",
+        "/relative-target",
+        allowed,
+    ] {
+        std::fs::write(&requests, []).unwrap();
+        let output = genkan(directory.path())
+            .args(["assets", "download", "westfjords"])
+            .env("PATH", &path)
+            .env("GENKAN_TEST_REQUESTS", &requests)
+            .env(
+                "GENKAN_TEST_RESPONSE",
+                format!("HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 302\r\nlOcAtIoN: {target}\r\n\r\n"),
+            )
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{target}: {output:?}");
+        assert!(!directory.path().join("entries/westfjords.toml").exists());
+        let contacted = std::fs::read_to_string(&requests).unwrap();
+        let expected = if target == allowed {
+            // The approved CDN is contacted, but its second redirect is not.
+            format!("{source}\n{allowed}\n")
+        } else {
+            format!("{source}\n")
+        };
+        assert_eq!(contacted, expected, "{target}: {output:?}");
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("private-test-token"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private-test-token"));
+    }
+    // Prepare accepts an equivalent uppercase pin; casing must not turn a
+    // compiled-catalog source into an arbitrary, redirect-ineligible source.
+    std::fs::write(&requests, []).unwrap();
+    let output = genkan(directory.path())
+        .args(["assets", "prepare", "westfjords", "--sha256"])
+        .arg(entry["sha256"].as_str().unwrap().to_ascii_uppercase())
+        .env("PATH", &path)
+        .env("GENKAN_TEST_REQUESTS", &requests)
+        .env(
+            "GENKAN_TEST_RESPONSE",
+            format!("HTTP/2 302\r\nLocation: {allowed}\r\n\r\n"),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success()); // The CDN's second redirect still fails.
+    assert_eq!(
+        std::fs::read_to_string(&requests).unwrap(),
+        format!("{source}\n{allowed}\n")
+    );
+    // Neither a custom catalog nor a receipt may invent a new trusted pin or
+    // borrow a built-in identity for different bytes or a different source.
+    let catalog = directory.path().join("catalog.toml");
+    for (id, hash, size, url) in [
+        (
+            "westfjords",
+            "0".repeat(64),
+            entry["byte_size"].as_integer().unwrap(),
+            source.to_owned(),
+        ),
+        (
+            "westfjords",
+            entry["sha256"].as_str().unwrap().to_owned(),
+            entry["byte_size"].as_integer().unwrap() + 1,
+            source.to_owned(),
+        ),
+        (
+            "impostor",
+            entry["sha256"].as_str().unwrap().to_owned(),
+            entry["byte_size"].as_integer().unwrap(),
+            source.to_owned(),
+        ),
+        (
+            "westfjords",
+            entry["sha256"].as_str().unwrap().to_owned(),
+            entry["byte_size"].as_integer().unwrap(),
+            format!("{source}-changed"),
+        ),
+    ] {
+        std::fs::write(&catalog, format!("[assets.{id}]\nurl = {url:?}\nsha256 = {hash:?}\nbyte_size = {size}\nformat = 'mov'\n")).unwrap();
+        std::fs::write(&requests, []).unwrap();
+        let output = genkan(directory.path())
+            .args(["assets", "download", id, "--catalog"])
+            .arg(&catalog)
+            .env("PATH", &path)
+            .env("GENKAN_TEST_REQUESTS", &requests)
+            .env(
+                "GENKAN_TEST_RESPONSE",
+                format!("HTTP/2 302\r\nLocation: {allowed}\r\n\r\n"),
+            )
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        assert_eq!(
+            std::fs::read_to_string(&requests).unwrap(),
+            format!("{url}\n")
+        );
+        assert!(!directory.path().join(format!("entries/{id}.toml")).exists());
     }
 }
 

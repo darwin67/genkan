@@ -32,6 +32,23 @@ pub(super) fn configure_tls(
 
 struct Transfer(Child);
 
+impl Transfer {
+    fn spawn(mut command: Command) -> io::Result<Self> {
+        let parent = std::process::id() as i32;
+        // SAFETY: only async-signal-safe syscalls run between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                if crate::wallpaper::bind_to_parent(parent) {
+                    Ok(())
+                } else {
+                    Err(io::Error::from_raw_os_error(libc::ECHILD))
+                }
+            });
+        }
+        command.spawn().map(Self)
+    }
+}
+
 impl Drop for Transfer {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -149,6 +166,102 @@ fn verify(
     Ok(observed)
 }
 
+fn github_release_url(asset: &Asset) -> Result<Option<String>> {
+    let Some(url) = asset.url.as_deref().filter(|url| {
+        url.starts_with("https://github.com/") && url.contains("/releases/download/")
+    }) else {
+        return Ok(None);
+    };
+    // The exception is a property of the compiled catalog, not a flag that an
+    // arbitrary URL, custom catalog, or cached receipt can grant itself.
+    let trusted = catalog::declared(None)?.iter().any(|entry| {
+        entry.id == asset.id
+            && entry.url == asset.url
+            && entry.bytes.is_some()
+            && entry.bytes == asset.bytes
+            && text(entry, "sha256")
+                .zip(text(asset, "sha256"))
+                .is_some_and(|(expected, actual)| expected.eq_ignore_ascii_case(actual))
+            && text(entry, "archive_member") == text(asset, "archive_member")
+            && text(entry, "archive_sha256") == text(asset, "archive_sha256")
+    });
+    if !trusted {
+        return Ok(None);
+    }
+    let mut command = Command::new("curl");
+    command
+        .args([
+            "--disable",
+            "--globoff",
+            "--silent",
+            "--fail",
+            "--head",
+            "--proto",
+            "=https",
+            "--max-time",
+            "15",
+            "--connect-timeout",
+            "15",
+            "--url",
+            url,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut transfer = Transfer::spawn(command).map_err(|_| "curl is unavailable")?;
+    let mut headers = String::new();
+    transfer
+        .0
+        .stdout
+        .take()
+        .unwrap()
+        .take(65537)
+        .read_to_string(&mut headers)?;
+    if headers.len() > 65536 || !transfer.0.wait()?.success() {
+        return Err("GitHub release resolution failed; no media installed".into());
+    }
+    let response = headers
+        .rsplit("\r\n\r\n")
+        .find(|block| block.starts_with("HTTP/"))
+        .ok_or("missing GitHub release response")?;
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1));
+    if status == Some("200") {
+        return Ok(Some(url.to_owned()));
+    }
+    let mut locations = response.lines().filter_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("location").then(|| value.trim())
+    });
+    let location = locations.next().ok_or("missing GitHub release redirect")?;
+    if !matches!(status, Some("301" | "302" | "303" | "307" | "308"))
+        || locations.next().is_some()
+        || !location.starts_with(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/",
+        )
+        // Do not let URL normalization escape the authorized path. Exclude
+        // the query/fragment, and reject encoded dots as well as literal dots.
+        || location
+            .split(['?', '#'])
+            .next()
+            .unwrap()
+            .split('/')
+            .any(|segment| {
+                let segment = segment.replace("%2e", ".").replace("%2E", ".");
+                matches!(segment.as_str(), "." | "..")
+            })
+        || location.chars().any(char::is_control)
+        || location.contains('\\')
+    {
+        return Err("unsafe GitHub release redirect; no media installed".into());
+    }
+    // Keep signed URLs ephemeral: the receipt retains the stable catalog URL.
+    // fetch still rejects redirects, so the CDN cannot introduce a second hop.
+    Ok(Some(location.to_owned()))
+}
+
 fn fetch(url: &str, file: &mut File, max_bytes: u64, expected_size: Option<u64>) -> Result<()> {
     if !(url.starts_with("https://") || url.starts_with("http://"))
         || url.chars().any(char::is_control)
@@ -183,18 +296,7 @@ fn fetch(url: &str, file: &mut File, max_bytes: u64, expected_size: Option<u64>)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let _certificate = configure_tls(&mut command, url)?;
-    let parent = std::process::id() as i32;
-    // SAFETY: only async-signal-safe syscalls run between fork and exec.
-    unsafe {
-        command.pre_exec(move || {
-            if crate::wallpaper::bind_to_parent(parent) {
-                Ok(())
-            } else {
-                Err(io::Error::from_raw_os_error(libc::ECHILD))
-            }
-        });
-    }
-    let mut transfer = Transfer(command.spawn().map_err(|_| "curl is unavailable")?);
+    let mut transfer = Transfer::spawn(command).map_err(|_| "curl is unavailable")?;
     let mut progress = Progress {
         terminal: io::stderr().is_terminal(),
         total: expected_size,
@@ -496,8 +598,12 @@ pub(super) fn worker(stage: &Path, max_bytes: u64) -> Result<()> {
             return Err("local file exceeds --max-bytes; no media installed".into());
         }
     } else {
+        let resolved = github_release_url(&asset)?;
         fetch(
-            asset.url.as_deref().ok_or("missing download URL")?,
+            resolved
+                .as_deref()
+                .or(asset.url.as_deref())
+                .ok_or("missing download URL")?,
             &mut source,
             expected_size.unwrap_or(max_bytes).min(max_bytes),
             expected_size,
