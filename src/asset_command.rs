@@ -212,13 +212,20 @@ pub(crate) fn run(arguments: Arguments) -> Result<()> {
     let directory = crate::wallpaper::asset_directory()?;
     match arguments.command {
         Command::List { details } => {
-            if arguments.catalog.is_none() {
+            let grouped = arguments.catalog.is_none();
+            if grouped {
                 // ValueEnum covers only the legacy MOV IDs. Keep them usable
                 // by name, but don't advertise them in the default catalog.
                 assets
                     .retain(|asset| crate::wallpaper::Catalog::from_str(&asset.id, false).is_err());
             }
-            list(&assets, &directory, details, &mut std::io::stdout().lock())?
+            list(
+                &assets,
+                &directory,
+                details,
+                grouped,
+                &mut std::io::stdout().lock(),
+            )?
         }
         Command::Download {
             id,
@@ -281,7 +288,13 @@ fn find_asset(assets: Vec<Asset>, id: &str) -> Result<Asset> {
         .ok_or_else(|| format!("unknown wallpaper {id:?}; use 'genkan assets list'").into())
 }
 
-fn list(assets: &[Asset], directory: &Path, details: bool, output: &mut impl Write) -> Result<()> {
+fn list(
+    assets: &[Asset],
+    directory: &Path,
+    details: bool,
+    grouped: bool,
+    output: &mut impl Write,
+) -> Result<()> {
     let id_width = assets
         .iter()
         .map(|asset| asset.id.len())
@@ -293,42 +306,84 @@ fn list(assets: &[Asset], directory: &Path, details: bool, output: &mut impl Wri
         "{:<id_width$}  {:<6}  {:<11}  {:>7}  STATUS",
         "ID", "FORMAT", "RESOLUTION", "MiB"
     )?;
+    let mut sections = [
+        "Landscape",
+        "Cityscape",
+        "Underwater",
+        "Earth",
+        "Mac",
+        "HEIC",
+    ]
+    .map(|heading| (heading, Vec::new()));
+    let mut other = Vec::new();
     for asset in assets {
-        writeln!(
-            output,
-            "{:<id_width$}  {:<6}  {:<11}  {:>7}  {}",
-            asset.id,
-            asset.format.as_deref().unwrap_or("?").to_ascii_uppercase(),
-            format!(
-                "{}x{}",
-                asset.width.map_or_else(|| "?".into(), |n| n.to_string()),
-                asset.height.map_or_else(|| "?".into(), |n| n.to_string())
-            ),
-            asset
-                .bytes
-                .map_or_else(|| "?".into(), |n| format!("{:.1}", n as f64 / 1_048_576.0)),
-            if asset.path(directory).is_some_and(|path| path.is_file()) {
-                "installed"
-            } else {
-                "missing"
-            },
-        )?;
-        if details {
-            writeln!(output, "  Name:   {}", asset.name)?;
+        let category = if !grouped {
+            None
+        } else if apple_aerials().contains_key(&asset.id) {
+            // The built-in IDs carry Apple's section names. A custom ID with
+            // the same prefix is not an Apple aerial.
+            asset.id.split('-').nth(1)
+        } else {
+            asset.format.as_deref().filter(|format| *format == "heic")
+        };
+        if let Some((_, rows)) = sections
+            .iter_mut()
+            .find(|(heading, _)| category.is_some_and(|key| heading.eq_ignore_ascii_case(key)))
+        {
+            rows.push(asset);
+        } else {
+            other.push(asset);
+        }
+    }
+    for (index, (heading, rows)) in sections
+        .into_iter()
+        .chain([("Other wallpapers", other)])
+        .filter(|(_, rows)| !rows.is_empty())
+        .enumerate()
+    {
+        if grouped {
+            if !details || index == 0 {
+                writeln!(output)?;
+            }
+            writeln!(output, "{heading}")?;
+        }
+        for asset in rows {
             writeln!(
                 output,
-                "  Source: {}",
-                asset.url.as_deref().unwrap_or("local-only")
-            )?;
-            writeln!(
-                output,
-                "  Rights: {}\n",
+                "{:<id_width$}  {:<6}  {:<11}  {:>7}  {}",
+                asset.id,
+                asset.format.as_deref().unwrap_or("?").to_ascii_uppercase(),
+                format!(
+                    "{}x{}",
+                    asset.width.map_or_else(|| "?".into(), |n| n.to_string()),
+                    asset.height.map_or_else(|| "?".into(), |n| n.to_string())
+                ),
                 asset
-                    .metadata
-                    .get("rights")
-                    .and_then(toml::Value::as_str)
-                    .unwrap_or("not supplied")
+                    .bytes
+                    .map_or_else(|| "?".into(), |n| format!("{:.1}", n as f64 / 1_048_576.0)),
+                if asset.path(directory).is_some_and(|path| path.is_file()) {
+                    "installed"
+                } else {
+                    "missing"
+                },
             )?;
+            if details {
+                writeln!(output, "  Name:   {}", asset.name)?;
+                writeln!(
+                    output,
+                    "  Source: {}",
+                    asset.url.as_deref().unwrap_or("local-only")
+                )?;
+                writeln!(
+                    output,
+                    "  Rights: {}\n",
+                    asset
+                        .metadata
+                        .get("rights")
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or("not supplied")
+                )?;
+            }
         }
     }
     Ok(())

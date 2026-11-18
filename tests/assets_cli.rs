@@ -65,34 +65,48 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
             [id, "HEIC", "6016x6016", size, "missing"]
         );
     }
-    for (category, count) in [
-        ("macos-landscape-", 79),
-        ("macos-cityscape-", 30),
-        ("macos-underwater-", 21),
-        ("macos-earth-", 22),
-        ("macos-mac-", 4),
-    ] {
-        assert_eq!(
-            listing
-                .lines()
-                .filter(|line| line.starts_with(category))
-                .count(),
-            count
-        );
+    let sections = [
+        ("Landscape", "macos-landscape-", 79),
+        ("Cityscape", "macos-cityscape-", 30),
+        ("Underwater", "macos-underwater-", 21),
+        ("Earth", "macos-earth-", 22),
+        ("Mac", "macos-mac-", 4),
+        ("HEIC", "", 9),
+    ];
+    let mut blocks = listing.split("\n\n");
+    assert!(blocks.next().unwrap().starts_with("ID "));
+    for (heading, prefix, count) in sections {
+        let (actual_heading, rows) = blocks.next().unwrap().split_once('\n').unwrap();
+        assert_eq!(actual_heading, heading);
+        assert_eq!(rows.lines().count(), count, "{heading}");
+        for row in rows.lines() {
+            let mut columns = row.split_whitespace();
+            assert!(columns.next().unwrap().starts_with(prefix), "{row}");
+            assert_eq!(
+                columns.next(),
+                Some(if heading == "HEIC" { "HEIC" } else { "MOV" })
+            );
+        }
     }
+    assert!(blocks.next().is_none());
     assert!(!listing.contains("tahoe-beach"));
     assert!(!listing.contains("westfjords"));
     assert!(!listing.contains("tahoe-dynamic"));
     assert!(!listing.contains("tahoe-time-of-day"));
-    assert_eq!(listing.lines().count(), 166);
     assert!(listing.lines().all(|line| line.len() <= 90));
     assert!(!listing.contains('\t'));
     assert!(!listing.contains("https://"));
     assert!(!listing.contains("no open-content license"));
     let details = successful(genkan(directory.path()).args(["assets", "list", "--details"]));
-    let (_, details) = details.split_once('\n').unwrap();
-    let aerials: Vec<_> = details
+    let entries = details
         .split("\n\n")
+        .skip(1)
+        .map(|entry| match entry.split_once('\n') {
+            Some((first, rest)) if sections.iter().any(|(heading, ..)| first == *heading) => rest,
+            _ => entry,
+        });
+    let aerials: Vec<_> = entries
+        .clone()
         .filter(|entry| entry.starts_with("macos-"))
         .collect();
     assert_eq!(aerials.len(), 156);
@@ -113,8 +127,8 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
         );
     }
     for (id, _) in apple_heics {
-        let entry = details
-            .split("\n\n")
+        let entry = entries
+            .clone()
             .find(|entry| entry.split_whitespace().next() == Some(id))
             .unwrap();
         let source = entry
@@ -1256,12 +1270,22 @@ fn downloads_and_listing_share_home_xdg_and_override_cache_resolution() {
         if mode == "override" {
             download.env("GENKAN_WALLPAPER_DIR", home.join("override"));
         }
-        successful(download.args(["assets", "download", mode, "--url", &server.url("/ok")]));
+        let id = if mode == "override" {
+            "macos-cityscape-custom"
+        } else {
+            mode
+        };
+        successful(download.args(["assets", "download", id, "--url", &server.url("/ok")]));
         let cache = home.join(suffix);
-        assert!(cached_media(&cache, mode).is_file());
+        assert!(cached_media(&cache, id).is_file());
+        let listing = successful(genkan(&cache).args(["assets", "list"]));
+        let heics = listing
+            .split("\n\n")
+            .find_map(|section| section.strip_prefix("HEIC\n"))
+            .unwrap();
         assert_eq!(
-            listed_asset(&successful(genkan(&cache).args(["assets", "list"])), mode),
-            [mode, "HEIC", "8x8", "0.0", "installed"]
+            listed_asset(heics, id),
+            [id, "HEIC", "8x8", "0.0", "installed"]
         );
     }
 }
@@ -1294,6 +1318,7 @@ fn preflight_decodes_a_movie_with_remote_tail_metadata_without_full_download() {
         .unwrap();
     assert!(listing.status.success());
     let listing = String::from_utf8(listing.stdout).unwrap();
+    assert!(listing.lines().nth(1).unwrap().starts_with("mountains "));
     assert_eq!(
         listed_asset(&listing, "mountains"),
         ["mountains", "MOV", "96x64", "?", "missing"]

@@ -84,8 +84,9 @@ WALLPAPER=macos-landscape-sequoia-night make animated-dev
 ### Download wallpapers explicitly
 
 The default catalog offers all 156 macOS Tahoe aerial MOVs directly from Apple.
-Its dynamic HEICs include Apple-hosted Catalina, Monterey Graphic, and Ventura
-Graphic. The package contains no wallpaper media.
+`genkan assets list` groups them under Landscape, Cityscape, Underwater, Earth,
+and Mac. The separate HEIC section includes Apple-hosted Catalina, Monterey
+Graphic, and Ventura Graphic. The package contains no wallpaper media.
 Preview downloads a missing original before opening it; use download on its own
 to cache media without opening a window:
 

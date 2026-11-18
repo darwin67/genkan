@@ -203,7 +203,7 @@ cargo run --bin genkan -- assets preview my-wallpaper --reduce-motion
 
 | Command | Network and validation | Local effect |
 | --- | --- | --- |
-| `assets list` | Offline | Compact table; `--details` adds names, URLs, and rights |
+| `assets list` | Offline | Compact table grouped by Apple aerial category and media type; `--details` adds names, URLs, and rights |
 | `assets preview <key>` | Download and validate only if missing; cached preview is offline | Cache missing media, then open a simulated window; change no settings |
 | `assets preflight <key>` | Bounded range reads; one representative frame | Install nothing |
 | `assets download <key>` | Complete transfer; resource-bounded hashing, ZIP parsing, and frame validation | Atomically select validated media, metadata, and a generated MOV poster |
