@@ -4,7 +4,7 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use crate::{LoginArguments, Placement, PreviewFixture, WallpaperAppearance};
 
@@ -12,6 +12,7 @@ mod catalog;
 mod download;
 mod preflight;
 
+pub(crate) use catalog::apple_aerials;
 use catalog::Asset;
 
 const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -207,10 +208,16 @@ pub(crate) fn run(arguments: Arguments) -> Result<()> {
         let code = preflight::run(&asset, max_bytes)?;
         std::process::exit(code);
     }
-    let assets = catalog::load(arguments.catalog.as_deref())?;
+    let mut assets = catalog::load(arguments.catalog.as_deref())?;
     let directory = crate::wallpaper::asset_directory()?;
     match arguments.command {
         Command::List { details } => {
+            if arguments.catalog.is_none() {
+                // ValueEnum covers only the legacy MOV IDs. Keep them usable
+                // by name, but don't advertise them in the default catalog.
+                assets
+                    .retain(|asset| crate::wallpaper::Catalog::from_str(&asset.id, false).is_err());
+            }
             list(&assets, &directory, details, &mut std::io::stdout().lock())?
         }
         Command::Download {

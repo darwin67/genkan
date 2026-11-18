@@ -77,27 +77,29 @@ actions simulated, download the selected media first:
 ```sh
 cargo run --bin genkan -- assets download tahoe-beach
 make animated-dev
-cargo run --bin genkan -- assets download sequoia-night
-WALLPAPER=sequoia-night make animated-dev
+cargo run --bin genkan -- assets download macos-landscape-sequoia-night
+WALLPAPER=macos-landscape-sequoia-night make animated-dev
 ```
 
 ### Download wallpapers explicitly
 
-The package includes a curated upstream catalog, but no wallpaper MOVs, HEICs,
-or posters. Preview downloads a missing original before opening it; use download
-on its own to prepare media without opening a window:
+The default catalog offers all 156 macOS Tahoe aerial MOVs directly from Apple.
+Its dynamic HEICs include Apple-hosted Catalina, Monterey Graphic, and Ventura
+Graphic. The package contains no wallpaper media.
+Preview downloads a missing original before opening it; use download on its own
+to cache media without opening a window:
 
 ```sh
 genkan assets list
-genkan assets preview iceland
-genkan assets preview big-sur-1 --appearance dark
-genkan assets download iceland
+genkan assets preview macos-landscape-iceland-snow-caps
+genkan assets preview monterey-graphic --appearance dark
+genkan assets download macos-landscape-tahoe-day
 genkan assets download my-wallpaper --url "$SOURCE_URL" --sha256 "$SHA256"
 genkan assets preview my-wallpaper
 ```
 
-The list includes format, original resolution, size in MiB, and whether the file
-is cached in a compact aligned table. Use `genkan assets list --details` for
+The list includes format, resolution when known, size in MiB, and whether the
+file is cached. Use `genkan assets list --details` for
 full names, source URLs, and usage rights. Custom downloads retain their
 observed metadata and computed SHA-256 in the cache and appear in later
 list/preview commands. For a custom URL,
@@ -112,10 +114,7 @@ transfer completes. A separate `Validating` status covers integrity and media
 checks before installation; 100% means transferred, not yet installed.
 Redirected output uses plain completion and validation lines without redraws.
 
-Downloads require an HTTP(S) response returning 200. Only hash-pinned GitHub
-release sources matching the built-in catalog may resolve one HTTPS hop to
-`release-assets.githubusercontent.com`; other redirects remain rejected,
-including further CDN redirects. Signed CDN URLs are not stored in receipts.
+Downloads require a direct HTTP(S) response returning 200; redirects are not followed.
 Preparation, including hashing and ZIP extraction, is resource-bounded.
 Curated sizes and hashes are verified, and a representative HEVC MOV or HEIC
 frame is validated before publication. A MOV download also generates its poster.
@@ -150,7 +149,7 @@ download, not a guessed `mov/` or `heic/` path. For an uninstalled build, use
 Preflight is a separate, bounded partial-read check, not a download prerequisite:
 
 ```sh
-genkan assets preflight iceland
+genkan assets preflight macos-landscape-tahoe-day
 genkan assets preflight my-wallpaper --url "$SOURCE_URL"
 ```
 
@@ -178,18 +177,13 @@ services.greetd = {
 };
 ```
 
-The greeter selects Tahoe Beach by default and animates it only when cached.
-Operators can select another MOV with `--wallpaper <id>` (see
-`genkan assets list`), or use
-`--reduce-motion` to retain its static poster. The catalog also includes the
-original 4K Iceland, Greenland, Patagonia, Palau Jellies, Scotland, Liwa, Hawaii,
-Hong Kong, and San Francisco aerials, plus community aerials of Westfjords,
-Jodhpur, Quarten in the Swiss Alps, the Lake Como region, and Manhattan at night.
-It also includes solar-metadata HEICs for Tahoe,
-Catalina, Big Sur, Monterey Bay, and Earth from ISS. The `tahoe` HEIC replaces
-the former `tahoe-dynamic` and `tahoe-time-of-day` catalog choices;
-`tahoe-beach` remains the default MOV. Provision the cache
-explicitly under the greeter identity or set a shared absolute
+The greeter still selects `tahoe-beach` by default. Other legacy Apple MOV IDs also
+keep working when named explicitly; they no longer appear in `assets list`.
+Community MOVs are no longer built-in choices. To use an existing local copy,
+pass its absolute path to `--wallpaper-file` instead of its former ID.
+To use an Apple aerial, download its ID and pass it to `--wallpaper`; add
+`--reduce-motion` to show its cached poster instead of playing the video.
+Provision the cache explicitly under the greeter identity or set a shared absolute
 `GENKAN_WALLPAPER_DIR`; a download as your desktop user does not populate the
 greeter's cache. See [greeter provisioning](docs/deployment.md#wallpaper-configuration).
 Login never downloads, including when its selected asset is missing.
@@ -202,7 +196,7 @@ genkan wallpaper --file /absolute/path/to/wallpaper.heic
 ```
 
 This command is separate from login and lock and uses an existing local file.
-The installed `share/genkan/wallpapers` contains only the manifest, not media.
+The installed `share/genkan/wallpapers` contains catalog metadata only, not media.
 Files with Apple `solar` metadata can opt into GeoClue-backed city-level
 scheduling with `--solar`. See the
 [deployment guide](docs/deployment.md#desktop-wallpaper) for compositor support,

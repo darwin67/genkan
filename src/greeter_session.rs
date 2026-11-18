@@ -13,7 +13,7 @@ use crate::{parse_output_name, parse_wallpaper_file, wallpaper, WallpaperAppeara
 
 #[derive(Debug, Args)]
 pub struct Arguments {
-    #[arg(long, value_enum, default_value = "tahoe-beach")]
+    #[arg(long, value_parser = wallpaper::Catalog::parse, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
     #[arg(long, value_parser = parse_wallpaper_file)]
     wallpaper_file: Option<std::path::PathBuf>,
@@ -100,12 +100,7 @@ async fn stop(child: &mut Child) {
 fn media_arguments(arguments: &Arguments) -> Vec<OsString> {
     let mut media = vec![
         "--wallpaper".into(),
-        arguments
-            .wallpaper
-            .to_possible_value()
-            .unwrap()
-            .get_name()
-            .into(),
+        arguments.wallpaper.id().into(),
         "--appearance".into(),
         arguments
             .appearance

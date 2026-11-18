@@ -119,8 +119,8 @@ struct WallpaperArguments {
     /// Absolute local dynamic HEIC file (desktop solar scheduling is opt-in).
     #[arg(long, value_parser = parse_heic_wallpaper_file, conflicts_with_all = ["wallpaper", "wallpaper_file"])]
     file: Option<PathBuf>,
-    /// Select the same packaged wallpaper as login.
-    #[arg(long, value_enum, default_value = "tahoe-beach")]
+    /// Select a cached MOV ID from `genkan assets list`.
+    #[arg(long, value_parser = wallpaper::Catalog::parse, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
     /// Replace the catalog entry with an absolute local MOV or HEIC file.
     #[arg(long, value_parser = parse_wallpaper_file)]
@@ -182,8 +182,8 @@ struct LoginArguments {
     width: Option<u32>,
     #[arg(long, requires_all = ["windowed", "width"], value_parser = parse_dimension)]
     height: Option<u32>,
-    /// Select one of the packaged animated wallpapers.
-    #[arg(long, value_enum, default_value = "tahoe-beach")]
+    /// Select a cached MOV ID from `genkan assets list`.
+    #[arg(long, value_parser = wallpaper::Catalog::parse, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
     /// Replace the selected catalog entry with an absolute local MOV or HEIC file.
     #[arg(long, value_parser = parse_wallpaper_file)]
@@ -226,8 +226,8 @@ struct LockArguments {
     /// Descriptor that receives `READY` after compositor lock confirmation.
     #[arg(long, value_parser = parse_ready_fd)]
     ready_fd: Option<std::os::fd::RawFd>,
-    /// Select one of the packaged animated wallpapers.
-    #[arg(long, value_enum, default_value = "tahoe-beach")]
+    /// Select a cached MOV ID from `genkan assets list`.
+    #[arg(long, value_parser = wallpaper::Catalog::parse, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
     /// Replace the selected catalog entry with an absolute local MOV or HEIC file.
     #[arg(long, value_parser = parse_wallpaper_file)]
@@ -603,14 +603,7 @@ fn daemon_child_arguments(arguments: &LockArguments) -> Result<Vec<CString>, std
         CString::new("--ready-fd").expect("static argument"),
         CString::new("3").expect("static argument"),
         CString::new("--wallpaper").expect("static argument"),
-        CString::new(
-            arguments
-                .wallpaper
-                .to_possible_value()
-                .expect("catalog value has a CLI name")
-                .get_name(),
-        )
-        .expect("catalog names contain no NUL"),
+        CString::new(arguments.wallpaper.id()).expect("catalog names contain no NUL"),
     ];
     if let Some(path) = &arguments.wallpaper_file {
         child.push(CString::new("--wallpaper-file").expect("static argument"));
@@ -1154,15 +1147,20 @@ mod tests {
             "hawaii",
             "hong-kong",
             "san-francisco",
+            "macos-underwater-palau-jellies-blue",
+        ] {
+            assert!(try_parse_login(["genkan", "--wallpaper", name]).is_ok());
+        }
+        for name in [
             "westfjords",
             "jodhpur",
             "quarten",
             "lake-como",
             "manhattan-night",
+            "unknown",
         ] {
-            assert!(try_parse_login(["genkan", "--wallpaper", name]).is_ok());
+            assert!(try_parse_login(["genkan", "--wallpaper", name]).is_err());
         }
-        assert!(try_parse_login(["genkan", "--wallpaper", "unknown"]).is_err());
         assert!(try_parse_login(["genkan", "--animated-preview"]).is_err());
         // A reduced-motion animated preview is valid: MOV still shows its
         // poster, while HEIC schedules without dissolves.

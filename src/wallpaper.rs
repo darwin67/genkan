@@ -57,7 +57,7 @@ struct PlaybackSpec {
     crossfade: Duration,
 }
 
-const WALLPAPERS: [PlaybackSpec; 19] = [
+const WALLPAPERS: [PlaybackSpec; 14] = [
     PlaybackSpec {
         install_name: "tahoe-beach.mov",
         poster_name: "tahoe-beach-poster.jpg",
@@ -142,36 +142,6 @@ const WALLPAPERS: [PlaybackSpec; 19] = [
         duration: Duration::from_micros(240_240_000),
         crossfade: Duration::from_millis(2_000),
     },
-    PlaybackSpec {
-        install_name: "westfjords.mov",
-        poster_name: "westfjords-poster.jpg",
-        duration: Duration::from_micros(93_300_000),
-        crossfade: Duration::from_millis(2_000),
-    },
-    PlaybackSpec {
-        install_name: "jodhpur.mov",
-        poster_name: "jodhpur-poster.jpg",
-        duration: Duration::from_micros(138_733_333),
-        crossfade: Duration::from_millis(2_000),
-    },
-    PlaybackSpec {
-        install_name: "quarten.mov",
-        poster_name: "quarten-poster.jpg",
-        duration: Duration::from_micros(101_700_000),
-        crossfade: Duration::from_millis(2_000),
-    },
-    PlaybackSpec {
-        install_name: "lake-como.mov",
-        poster_name: "lake-como-poster.jpg",
-        duration: Duration::from_micros(60_266_667),
-        crossfade: Duration::from_millis(2_000),
-    },
-    PlaybackSpec {
-        install_name: "manhattan-night.mov",
-        poster_name: "manhattan-night-poster.jpg",
-        duration: Duration::from_micros(71_533_333),
-        crossfade: Duration::from_millis(2_000),
-    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -191,16 +161,29 @@ pub(crate) enum Catalog {
     Hawaii,
     HongKong,
     SanFrancisco,
-    Westfjords,
-    Jodhpur,
-    Quarten,
-    LakeComo,
-    ManhattanNight,
+    #[value(skip)]
+    Aerial(&'static str),
 }
 
 impl Catalog {
-    fn index(self) -> usize {
+    pub(crate) fn parse(id: &str) -> Result<Self, String> {
+        Self::from_str(id, false).or_else(|_| {
+            crate::asset_command::apple_aerials()
+                .get_key_value(id)
+                .map(|(key, _)| Self::Aerial(key))
+                .ok_or_else(|| format!("unknown MOV wallpaper {id:?}; use 'genkan assets list'"))
+        })
+    }
+
+    pub(crate) fn id(self) -> &'static str {
         match self {
+            Self::Aerial(id) => id,
+            legacy => legacy.spec().unwrap().install_name.trim_end_matches(".mov"),
+        }
+    }
+
+    fn spec(self) -> Option<&'static PlaybackSpec> {
+        let index = match self {
             Self::TahoeBeach => 0,
             Self::SequoiaSunrise => 1,
             Self::SequoiaMorning => 2,
@@ -215,16 +198,9 @@ impl Catalog {
             Self::Hawaii => 11,
             Self::HongKong => 12,
             Self::SanFrancisco => 13,
-            Self::Westfjords => 14,
-            Self::Jodhpur => 15,
-            Self::Quarten => 16,
-            Self::LakeComo => 17,
-            Self::ManhattanNight => 18,
-        }
-    }
-
-    fn spec(self) -> &'static PlaybackSpec {
-        &WALLPAPERS[self.index()]
+            Self::Aerial(_) => return None,
+        };
+        Some(&WALLPAPERS[index])
     }
 }
 
@@ -327,27 +303,31 @@ impl State {
     pub(crate) fn start(mut settings: Settings) -> Self {
         // Select the cache generation once, before opening either its poster
         // or media. A concurrent download cannot mix their generations.
-        if settings.override_path.is_none() {
-            settings.override_path =
-                cached_wallpaper_path(settings.catalog.spec().install_name).ok();
-        }
-        let poster = load_poster(settings.catalog, settings.override_path.as_deref())
+        let path = settings.override_path.take().map_or_else(
+            || cached_wallpaper_path(&format!("{}.mov", settings.catalog.id())),
+            Ok,
+        );
+        let poster = load_poster(settings.catalog, path.as_deref().ok())
             .map_err(|error| diagnostic(&error))
             .ok();
 
-        if let Some(path) = settings.heic_path().map(Path::to_owned) {
-            return Self::start_heic(settings, &path, poster);
+        if let Some(path) = path.as_deref().ok().filter(|path| is_heic_path(path)) {
+            return Self::start_heic(settings, path, poster);
         }
 
         if !settings.animate {
             return Self::poster_only(poster);
         }
 
-        let spec = settings.catalog.spec();
-        let result = settings
-            .override_path
-            .map_or_else(|| cached_wallpaper_path(spec.install_name), Ok)
-            .and_then(|path| Player::start(&path, spec.duration, spec.crossfade));
+        // New aerials use the stream's duration. If the demuxer cannot report
+        // one, don't seek early at an unrelated legacy wallpaper's boundary.
+        let (duration, crossfade) = settings
+            .catalog
+            .spec()
+            .map_or((Duration::MAX, Duration::from_secs(2)), |spec| {
+                (spec.duration, spec.crossfade)
+            });
+        let result = path.and_then(|path| Player::start(&path, duration, crossfade));
         match result {
             Ok(player) => Self {
                 player: Some(player),
@@ -2155,8 +2135,10 @@ fn load_poster(catalog: Catalog, override_path: Option<&Path>) -> Result<image::
             .and_then(|s| s.to_str())
             .ok_or("invalid wallpaper filename")?;
         movie.with_file_name(format!("{stem}-poster.jpg"))
+    } else if let Some(spec) = catalog.spec() {
+        cached_wallpaper_path(spec.poster_name)?
     } else {
-        cached_wallpaper_path(catalog.spec().poster_name)?
+        return Err("wallpaper cache is unavailable; using generated background".into());
     };
     let input = open_regular(&path).map_err(|_| {
         "wallpaper poster is not a readable regular file; using generated background"
@@ -2353,7 +2335,7 @@ mod tests {
         let transitions = Catalog::value_variants()
             .iter()
             .map(|catalog| {
-                let wallpaper = catalog.spec();
+                let wallpaper = catalog.spec().unwrap();
                 (
                     catalog.to_possible_value().unwrap().get_name().to_owned(),
                     wallpaper.install_name,
@@ -2462,41 +2444,6 @@ mod tests {
                     "san-francisco.mov",
                     "san-francisco-poster.jpg",
                     240_240_000,
-                    2_000
-                ),
-                (
-                    "westfjords".into(),
-                    "westfjords.mov",
-                    "westfjords-poster.jpg",
-                    93_300_000,
-                    2_000
-                ),
-                (
-                    "jodhpur".into(),
-                    "jodhpur.mov",
-                    "jodhpur-poster.jpg",
-                    138_733_333,
-                    2_000
-                ),
-                (
-                    "quarten".into(),
-                    "quarten.mov",
-                    "quarten-poster.jpg",
-                    101_700_000,
-                    2_000
-                ),
-                (
-                    "lake-como".into(),
-                    "lake-como.mov",
-                    "lake-como-poster.jpg",
-                    60_266_667,
-                    2_000
-                ),
-                (
-                    "manhattan-night".into(),
-                    "manhattan-night.mov",
-                    "manhattan-night-poster.jpg",
-                    71_533_333,
                     2_000
                 ),
             ]

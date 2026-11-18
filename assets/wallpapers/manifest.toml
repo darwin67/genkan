@@ -9,10 +9,10 @@ verified_at = "2026-11-14"
 
 [loop_analysis]
 # The original five values were re-derived on 2026-09-21 with ffmpeg 8.1.2;
-# the nine Apple aerials and five community aerials use ffmpeg 7.1.5. Their
+# the nine legacy Apple aerials use ffmpeg 7.1.5. Their
 # full-resolution lossless endpoint PNGs are scaled after extraction, as below.
 metric = "ssim"
-tool = "ffmpeg 8.1.2 (original five) and 7.1.5 (Apple and community aerials), with the `ssim` filter"
+tool = "ffmpeg 8.1.2 (original five) and 7.1.5 (legacy Apple aerials), with the `ssim` filter"
 comparison = "first decoded frame vs final decoded frame, each scaled to the entry's endpoint_comparison_width and endpoint_comparison_height"
 # Substitute SRC, ID, W and H. The frames are compared as decoded PNG pixels rather
 # than through an intermediate lossy format, so the result depends only on the
@@ -20,7 +20,7 @@ comparison = "first decoded frame vs final decoded frame, each scaled to the ent
 procedure = '''
 N=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 SRC)
 case ID in
-  iceland|greenland|patagonia|palau-jellies|scotland|liwa|hawaii|hong-kong|san-francisco|westfjords|jodhpur|quarten|lake-como|manhattan-night)
+  iceland|greenland|patagonia|palau-jellies|scotland|liwa|hawaii|hong-kong|san-francisco)
     ffmpeg -v error -y -i SRC -vf "select=eq(n\,0)" -vsync 0 -frames:v 1 first-full.png
     ffmpeg -v error -y -i SRC -vf "select=eq(n\,$((N-1)))" -vsync 0 -frames:v 1 last-full.png
     ffmpeg -v error -y -i first-full.png -vf scale=W:H first.png
@@ -45,7 +45,7 @@ caveat = "HEVC reference frames make short-seek extraction of the final frame un
 # golden-gate 14,386. Sequoia Sunrise and Golden Gate declare more frames than
 # decode (28,806 and 14,400), and selecting by those declared counts produces no
 # frame at all rather than a reproducible endpoint.
-reproducible_for = "tahoe-beach, sequoia-sunrise, sequoia-morning, sequoia-night, golden-gate, iceland, greenland, patagonia, palau-jellies, scotland, liwa, hawaii, hong-kong, san-francisco, westfjords, jodhpur, quarten, lake-como, manhattan-night"
+reproducible_for = "tahoe-beach, sequoia-sunrise, sequoia-morning, sequoia-night, golden-gate, iceland, greenland, patagonia, palau-jellies, scotland, liwa, hawaii, hong-kong, san-francisco"
 
 [[wallpaper]]
 id = "tahoe-beach"
@@ -733,261 +733,6 @@ endpoint_comparison_height = 540
 endpoint_ssim = 0.633680
 verification = "The complete source decoded without FFmpeg errors and yielded the final declared frame at index 7199. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.633680 using the aerial branch of [loop_analysis]. The endpoints are not seamless, so playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
 
-[[wallpaper]]
-id = "westfjords"
-name = "Westfjords"
-source_page_url = "https://aerialscreensaver.github.io/community-2026/entries.json"
-source_file_url = "https://github.com/AerialScreensaver/AerialCommunity/releases/download/community2026-4k-sdr/video_i3_is_westfjords_20240616_004.4k-sdr.mov"
-rights = "Jetson Creative community footage. Upstream license restricts use to personal screensavers as a component of the Aerials Screen Saver; other uses require permission. No open-content license is asserted by Genkan."
-attribution = "Joshua Michaels & Hal Bergman / Jetson Creative"
-license_url = "https://www.jetsoncreative.com/aeriallicense"
-install_name = "westfjords.mov"
-sha256 = "e9af62cba0de321156bf407013ed5100d23ba740ed662b119b204e8bc25ed362"
-nix_hash = "sha256-6a9iy6DeMhFWv0BwE+1RANI7p0DtZisRmyBOi8Je02I="
-byte_size = 179857471
-
-[wallpaper.media]
-container = "QuickTime / MOV"
-format_name = "mov,mp4,m4a,3gp,3g2,mj2"
-codec = "HEVC"
-codec_profile = "Main 10"
-codec_tag = "hvc1"
-pixel_format = "yuv420p10le"
-width = 3840
-height = 2160
-frame_rate = "30/1"
-time_base = "1/15360"
-frame_count = 2799
-duration_seconds = 93.300000
-stream_bit_rate = 15418114
-container_bit_rate = 15421862
-color_range = "tv"
-color_space = "bt709"
-color_transfer = "bt709"
-color_primaries = "bt709"
-audio_streams = 0
-
-[wallpaper.poster]
-file = "westfjords-poster.jpg"
-sha256 = "57f20d2f69f4b29241140203bb02598de10780817dd981d3300dcf91bb137b44"
-width = 3840
-height = 2160
-source_timestamp_seconds = 93.266667
-selection = "final decoded frame"
-
-[wallpaper.loop]
-mode = "held-final-frame-crossfade"
-direct_seek_seamless = false
-crossfade_milliseconds = 2000
-endpoint_comparison_width = 960
-endpoint_comparison_height = 540
-endpoint_ssim = 0.303082
-verification = "The complete source decoded without FFmpeg errors and yielded 2799 frames; the final decoded frame is at index 2798. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.303082 using the aerial branch of [loop_analysis]. Playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
-
-[[wallpaper]]
-id = "jodhpur"
-name = "Jodhpur — Jaswant Thada"
-source_page_url = "https://aerialscreensaver.github.io/community-2026/entries.json"
-source_file_url = "https://github.com/AerialScreensaver/AerialCommunity/releases/download/community2026-4k-sdr/video_i3_in_jodhpur_gulabsagar_jaswantthada_20241128_010_013.4k-sdr.mov"
-rights = "Jetson Creative community footage. Upstream license restricts use to personal screensavers as a component of the Aerials Screen Saver; other uses require permission. No open-content license is asserted by Genkan."
-attribution = "Joshua Michaels & Hal Bergman / Jetson Creative"
-license_url = "https://www.jetsoncreative.com/aeriallicense"
-install_name = "jodhpur.mov"
-sha256 = "68218270efa6e9096de14fed9e06b892045b81aace806d528f3e5c0e3ce2c9d2"
-nix_hash = "sha256-aCGCcO+m6Qlt4U/tnga4kgRbgarOgG1Sjz5cDjziydI="
-byte_size = 171666169
-
-[wallpaper.media]
-container = "QuickTime / MOV"
-format_name = "mov,mp4,m4a,3gp,3g2,mj2"
-codec = "HEVC"
-codec_profile = "Main 10"
-codec_tag = "hvc1"
-pixel_format = "yuv420p10le"
-width = 3840
-height = 2160
-frame_rate = "30/1"
-time_base = "1/15360"
-frame_count = 4162
-duration_seconds = 138.733333
-stream_bit_rate = 9895824
-container_bit_rate = 9899058
-color_range = "tv"
-color_space = "bt709"
-color_transfer = "bt709"
-color_primaries = "bt709"
-audio_streams = 0
-
-[wallpaper.poster]
-file = "jodhpur-poster.jpg"
-sha256 = "25a36c6823dd40f912c283d942617af41beec960a862f6e184d878ec6d9696fa"
-width = 3840
-height = 2160
-source_timestamp_seconds = 138.700000
-selection = "final decoded frame"
-
-[wallpaper.loop]
-mode = "held-final-frame-crossfade"
-direct_seek_seamless = false
-crossfade_milliseconds = 2000
-endpoint_comparison_width = 960
-endpoint_comparison_height = 540
-endpoint_ssim = 0.159237
-verification = "The complete source decoded without FFmpeg errors and yielded 4162 frames; the final decoded frame is at index 4161. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.159237 using the aerial branch of [loop_analysis]. Playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
-
-[[wallpaper]]
-id = "quarten"
-name = "Swiss Alps — Quarten"
-source_page_url = "https://aerialscreensaver.github.io/community-2026/entries.json"
-source_file_url = "https://github.com/AerialScreensaver/AerialCommunity/releases/download/community2026-4k-sdr/video_m3_ch_quarten_20250712_003.4k-sdr.mov"
-rights = "Jetson Creative community footage. Upstream license restricts use to personal screensavers as a component of the Aerials Screen Saver; other uses require permission. No open-content license is asserted by Genkan."
-attribution = "Joshua Michaels & Hal Bergman / Jetson Creative"
-license_url = "https://www.jetsoncreative.com/aeriallicense"
-install_name = "quarten.mov"
-sha256 = "a709d4af6b7916822d4ee914f02ce296ab4a2e7b2749968cf120dd6d5279d83f"
-nix_hash = "sha256-pwnUr2t5FoItTukU8CzilqtKLnsnSZaM8SDdbVJ52D8="
-byte_size = 92369535
-
-[wallpaper.media]
-container = "QuickTime / MOV"
-format_name = "mov,mp4,m4a,3gp,3g2,mj2"
-codec = "HEVC"
-codec_profile = "Main 10"
-codec_tag = "hvc1"
-pixel_format = "yuv420p10le"
-width = 3840
-height = 2160
-frame_rate = "30/1"
-time_base = "1/15360"
-frame_count = 3051
-duration_seconds = 101.700000
-stream_bit_rate = 7262627
-container_bit_rate = 7266040
-color_range = "tv"
-color_space = "bt709"
-color_transfer = "bt709"
-color_primaries = "bt709"
-audio_streams = 0
-
-[wallpaper.poster]
-file = "quarten-poster.jpg"
-sha256 = "6468f97d00eac28917764446e3458e7daeb8e8a3210014da66270bc4ab3e9766"
-width = 3840
-height = 2160
-source_timestamp_seconds = 101.666667
-selection = "final decoded frame"
-
-[wallpaper.loop]
-mode = "held-final-frame-crossfade"
-direct_seek_seamless = false
-crossfade_milliseconds = 2000
-endpoint_comparison_width = 960
-endpoint_comparison_height = 540
-endpoint_ssim = 0.323343
-verification = "The complete source decoded without FFmpeg errors and yielded 3051 frames; the final decoded frame is at index 3050. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.323343 using the aerial branch of [loop_analysis]. Playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
-
-[[wallpaper]]
-id = "lake-como"
-name = "Lake Como — Cerano d’Intelvi"
-source_page_url = "https://aerialscreensaver.github.io/community-2020/entries.json"
-source_file_url = "https://github.com/AerialScreensaver/AerialCommunity/releases/download/mw2-4k-sdr/video_inspire_italy_como_cerano-dintelvi_006.4k-sdr.mov"
-rights = "Jetson Creative community footage. Upstream license restricts use to personal screensavers as a component of the Aerials Screen Saver; other uses require permission. No open-content license is asserted by Genkan."
-attribution = "Joshua Michaels & Hal Bergman / Jetson Creative"
-license_url = "https://www.jetsoncreative.com/aeriallicense"
-install_name = "lake-como.mov"
-sha256 = "5f650121ca487e8dec4f345999cceea053261d996113ee6a49b72e79b1924b64"
-nix_hash = "sha256-X2UBIcpIfo3sTzRZmczuoFMmHZlhE+5qSbcuebGSS2Q="
-byte_size = 12901621
-
-[wallpaper.media]
-container = "QuickTime / MOV"
-format_name = "mov,mp4,m4a,3gp,3g2,mj2"
-codec = "HEVC"
-codec_profile = "Main 10"
-codec_tag = "hvc1"
-pixel_format = "yuv420p10le"
-width = 3840
-height = 2160
-frame_rate = "30/1"
-time_base = "1/15360"
-frame_count = 1808
-duration_seconds = 60.266667
-stream_bit_rate = 1709114
-container_bit_rate = 1712604
-color_range = "tv"
-color_space = "bt709"
-color_transfer = "bt709"
-color_primaries = "bt709"
-audio_streams = 0
-
-[wallpaper.poster]
-file = "lake-como-poster.jpg"
-sha256 = "6dee832097ff37432d4e72a25ab57ddae1825801fa3382aad6ea022952f80fe6"
-width = 3840
-height = 2160
-source_timestamp_seconds = 60.233333
-selection = "final decoded frame"
-
-[wallpaper.loop]
-mode = "held-final-frame-crossfade"
-direct_seek_seamless = false
-crossfade_milliseconds = 2000
-endpoint_comparison_width = 960
-endpoint_comparison_height = 540
-endpoint_ssim = 0.458986
-verification = "The complete source decoded without FFmpeg errors and yielded 1808 frames; the final decoded frame is at index 1807. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.458986 using the aerial branch of [loop_analysis]. Playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
-
-[[wallpaper]]
-id = "manhattan-night"
-name = "Manhattan at Night"
-source_page_url = "https://aerialscreensaver.github.io/community-2026/entries.json"
-source_file_url = "https://github.com/AerialScreensaver/AerialCommunity/releases/download/community2026-4k-sdr/video_i3_nyc_manhattan_20250918_067.4k-sdr.mov"
-rights = "Jetson Creative community footage. Upstream license restricts use to personal screensavers as a component of the Aerials Screen Saver; other uses require permission. No open-content license is asserted by Genkan."
-attribution = "Joshua Michaels & Hal Bergman / Jetson Creative"
-license_url = "https://www.jetsoncreative.com/aeriallicense"
-install_name = "manhattan-night.mov"
-sha256 = "2ed3e82b10f9ea43389ddec376bdca097e689eae192848374ac0bd8b777f53b3"
-nix_hash = "sha256-LtPoKxD56kM4nd7Ddr3KCX5onq4ZKEg3SsC9i3d/U7M="
-byte_size = 144764835
-
-[wallpaper.media]
-container = "QuickTime / MOV"
-format_name = "mov,mp4,m4a,3gp,3g2,mj2"
-codec = "HEVC"
-codec_profile = "Main 10"
-codec_tag = "hvc1"
-pixel_format = "yuv420p10le"
-width = 3840
-height = 2160
-frame_rate = "30/1"
-time_base = "1/15360"
-frame_count = 2146
-duration_seconds = 71.533333
-stream_bit_rate = 16186197
-container_bit_rate = 16189916
-color_range = "tv"
-color_space = "bt709"
-color_transfer = "bt709"
-color_primaries = "bt709"
-audio_streams = 0
-
-[wallpaper.poster]
-file = "manhattan-night-poster.jpg"
-sha256 = "04f7fcb8124186d4ace54af0abc99fd8b1cb9a0986b109ba635b88695c0705ab"
-width = 3840
-height = 2160
-source_timestamp_seconds = 71.500000
-selection = "final decoded frame"
-
-[wallpaper.loop]
-mode = "held-final-frame-crossfade"
-direct_seek_seamless = false
-crossfade_milliseconds = 2000
-endpoint_comparison_width = 960
-endpoint_comparison_height = 540
-endpoint_ssim = 0.190433
-verification = "The complete source decoded without FFmpeg errors and yielded 2146 frames; the final decoded frame is at index 2145. Full-resolution lossless endpoint PNGs scaled to 960x540 report All:0.190433 using the aerial branch of [loop_analysis]. Playback uses the existing held-final-frame 2 s crossfade, not a direct cut."
-
 # Dynamic HEIC catalog. Remote entries are downloaded explicitly from their
 # original sources, never by Nix or wallpaper playback. Repository entries are
 # authored test fixtures, excluded from the public catalog and production package.
@@ -1046,10 +791,13 @@ embedded_solar_appearance = { light = 0, dark = 15 }
 id = "catalina"
 name = "Catalina"
 delivery = "remote"
-provenance = "Apple's macOS Catalina dynamic island wallpaper, obtained from the Internet Archive apple-dynamic-wallpapers collection. All 8 top-level 6016x6016 photographs decoded with Genkan, including conversion from their Apple display ICC profile to sRGB. The Apple solar plist contains a 10-point schedule that reuses images 1 and 5, and light/dark indices 0/1. The archive is a third-party source, not an Apple-hosted distribution."
-source_page_url = "https://archive.org/details/apple-dynamic-wallpapers"
-source_file_url = "https://archive.org/download/apple-dynamic-wallpapers/Catalina.heic"
-rights = "Artwork distributed with macOS; third-party archived copy. No open-content license is asserted by Genkan."
+provenance = "Apple's macOS Catalina dynamic island wallpaper, from Apple's DesktopPicture MobileAsset catalog. The archived HEIC matches the SHA-256 of the former Internet Archive copy. All 8 top-level 6016x6016 photographs decoded with Genkan, including conversion from their Apple display ICC profile to sRGB. The Apple solar plist contains a 10-point schedule that reuses images 1 and 5, and light/dark indices 0/1."
+source_page_url = "https://mesu.apple.com/assets/macos/com_apple_MobileAsset_DesktopPicture/com_apple_MobileAsset_DesktopPicture.xml"
+source_file_url = "https://updates.cdn-apple.com/2025/mobileassets/072-29818/74AF556A-DC02-429B-894B-23AB61E2A5F9/com_apple_MobileAsset_DesktopPicture/59afad4cd59fa0713aff335c9337625a1f66f4ef.zip"
+archive_member = "AssetData/Catalina.heic"
+archive_byte_size = 124505642
+archive_sha256 = "af28ff0186557bd73ab23471f50dbdaa206efb789a0f74b6437afb5d4638e49c"
+rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
 install_name = "catalina.heic"
 sha256 = "c4b5701343ad010652307807586a7b1a2d9be0bf5724ac4eaf0a1f7e195a3a3e"
 nix_hash = "sha256-xLVwE0OtAQZSMHgHWGp7Gi2b4L9XJKxOrwoffhlaOj4="
@@ -1076,6 +824,92 @@ solar_points = [
   { index = 5, altitude = 25.0, azimuth = 250.0 },
   { index = 6, altitude = 10.0, azimuth = 260.0 },
   { index = 7, altitude = -9.0, azimuth = 280.0 },
+  { index = 1, altitude = -25.0, azimuth = 290.0 },
+]
+standalone_appearance = false
+embedded_h24_appearance = false
+embedded_solar_appearance = { light = 0, dark = 1 }
+
+[[dynamic_heic]]
+id = "monterey-graphic"
+name = "Monterey Graphic"
+delivery = "remote"
+provenance = "Original Apple HEIC from the macOS DesktopPicture MobileAsset catalog. Genkan decoded all 8 top-level 6016x6016 images. The Apple solar plist contains 10 points and light/dark indices 0/1."
+source_page_url = "https://mesu.apple.com/assets/macos/com_apple_MobileAsset_DesktopPicture/com_apple_MobileAsset_DesktopPicture.xml"
+source_file_url = "https://updates.cdn-apple.com/2025/mobileassets/072-29818/74AF556A-DC02-429B-894B-23AB61E2A5F9/com_apple_MobileAsset_DesktopPicture/d4c77cf4009c1bdab346ae382e6ba4dda4771044.zip"
+archive_member = "AssetData/Monterey Graphic.heic"
+archive_byte_size = 98039872
+archive_sha256 = "0e6e749784cf72ec4d746ed31e757218d7f3302bae1c22b37ae4dbb9a930097a"
+rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
+install_name = "monterey-graphic.heic"
+sha256 = "436b0e5140048a1307fc48f328a97c6879c2a7882661b0965e5e95790023446d"
+nix_hash = "sha256-Q2sOUUAEihMH/EjzKKl8aHnCp4gmYbCWXl6VeQAjRG0="
+byte_size = 98038775
+decode_verified = true
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 8
+image_item_ids = [37, 76, 114, 152, 190, 228, 266, 304]
+primary_item_id = 37
+width = 6016
+height = 6016
+color_space = "embedded ICC, converted to sRGB"
+
+[dynamic_heic.schedule]
+solar_points = [
+  { index = 0, altitude = 25.0, azimuth = 110.0 },
+  { index = 1, altitude = -25.0, azimuth = 70.0 },
+  { index = 2, altitude = -9.0, azimuth = 80.0 },
+  { index = 3, altitude = 0.0, azimuth = 90.0 },
+  { index = 4, altitude = 10.0, azimuth = 100.0 },
+  { index = 0, altitude = 25.0, azimuth = 250.0 },
+  { index = 5, altitude = 10.0, azimuth = 260.0 },
+  { index = 6, altitude = 0.0, azimuth = 270.0 },
+  { index = 7, altitude = -9.0, azimuth = 280.0 },
+  { index = 1, altitude = -25.0, azimuth = 290.0 },
+]
+standalone_appearance = false
+embedded_h24_appearance = false
+embedded_solar_appearance = { light = 0, dark = 1 }
+
+[[dynamic_heic]]
+id = "ventura-graphic"
+name = "Ventura Graphic"
+delivery = "remote"
+provenance = "Original Apple HEIC from the macOS DesktopPicture MobileAsset catalog. Genkan decoded all 5 top-level 6016x6016 images. The Apple solar plist contains 10 points and light/dark indices 0/1."
+source_page_url = "https://mesu.apple.com/assets/macos/com_apple_MobileAsset_DesktopPicture/com_apple_MobileAsset_DesktopPicture.xml"
+source_file_url = "https://updates.cdn-apple.com/2025/mobileassets/072-29818/74AF556A-DC02-429B-894B-23AB61E2A5F9/com_apple_MobileAsset_DesktopPicture/f6c545d6b10bb0210fff16d65aa64c27e7ad834c.zip"
+archive_member = "AssetData/Ventura Graphic.heic"
+archive_byte_size = 32020301
+archive_sha256 = "63a6307f33e05ac43c56aa0f722bb4c0c79e06aa9e0338b5a142b507da412074"
+rights = "Artwork distributed with macOS; no open-content license is asserted by Genkan."
+install_name = "ventura-graphic.heic"
+sha256 = "43c8540d23a0912866f67fce6882c978e2d8d8d6826483a8f3ca333166490303"
+nix_hash = "sha256-Q8hUDSOgkShm9n/OaILJeOLY2NaCZIOo88ozMWZJAwM="
+byte_size = 32020089
+decode_verified = true
+
+[dynamic_heic.structure]
+container = "HEIF"
+image_count = 5
+image_item_ids = [37, 76, 114, 152, 190]
+primary_item_id = 37
+width = 6016
+height = 6016
+color_space = "embedded ICC, converted to sRGB"
+
+[dynamic_heic.schedule]
+solar_points = [
+  { index = 0, altitude = 25.0, azimuth = 110.0 },
+  { index = 1, altitude = -25.0, azimuth = 70.0 },
+  { index = 2, altitude = -9.0, azimuth = 80.0 },
+  { index = 3, altitude = 0.0, azimuth = 90.0 },
+  { index = 4, altitude = 10.0, azimuth = 100.0 },
+  { index = 0, altitude = 25.0, azimuth = 250.0 },
+  { index = 4, altitude = 10.0, azimuth = 260.0 },
+  { index = 3, altitude = 0.0, azimuth = 270.0 },
+  { index = 2, altitude = -9.0, azimuth = 280.0 },
   { index = 1, altitude = -25.0, azimuth = 290.0 },
 ]
 standalone_appearance = false

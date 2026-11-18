@@ -143,6 +143,7 @@ let
       wallpaperDirectory=$out/share/genkan/wallpapers
       mkdir -p "$wallpaperDirectory"
       install -m 0444 ${../assets/wallpapers/manifest.toml} "$wallpaperDirectory/manifest.toml"
+      install -m 0444 ${../assets/wallpapers/macos-tahoe-aerials.toml} "$wallpaperDirectory/macos-tahoe-aerials.toml"
       ln -s ${avatarDirectory} $out/share/genkan/avatars
 
       wrapProgram $out/bin/genkan \
