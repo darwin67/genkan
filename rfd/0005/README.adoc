@@ -92,8 +92,8 @@ link:../../docs/design-system/README.md[`docs/design-system`]:
   type styles, spacing, radii, and sizes. Tokens are plain Rust data with no
   iced dependency, so the iced greeter and the lock's CPU renderer consume the
   same values.
-. *Components*: iced builders for every recurring piece of the login and lock
-  screens, each taking a semantic variant rather than raw sizes or colors.
+. *Components*: recurring pieces of login and lock, built for each renderer
+  using shared tokens, styles, and presentation helpers where applicable.
 . *Screen regions*: a fixed set of named regions anchored to the screen edges,
   so a control's position is a property of the screen template rather than of
   the current authentication phase.
@@ -101,7 +101,7 @@ link:../../docs/design-system/README.md[`docs/design-system`]:
 The visual direction is the macOS Tahoe login window and lock screen, as
 amended in link:../0001/README.adoc[RFD 1]. After a restart, Tahoe's login
 window uses the same layout as its lock screen, so login and lock share one
-composition and differ only in what lock omits.
+composition while retaining their own authentication behavior.
 
 The lock renderer does not adopt iced widgets (see
 <<alternatives-considered>>). It adopts the token layer and a small set of
@@ -143,9 +143,10 @@ them instead of relying on compositor support.
 
 == Components
 
-Components live in `src/design/components/` and are the only place that
-applies tokens to iced widgets. Each has guidelines and a preview in
-`docs/design-system/components/`.
+Login assembles iced components in `src/app/view.rs` and
+`src/app/account_tile.rs`. Lock draws its overlays in `src/locker/render.rs`.
+Both use the shared presentation layer in `src/design/`. Component guidelines
+and static previews live in `docs/design-system/components/`.
 
 [cols="1,3",options="header"]
 |===
@@ -154,8 +155,8 @@ applies tokens to iced widgets. Each has guidelines and a preview in
 |`StatusBar` |The top-right row: session item and power item (login only), keyboard layout, and network status. An item whose menu is open is highlighted.
 |`Clock` |Short date above the large glass time, from one formatting source shared by login and lock.
 |`Avatar` |A picture clipped to the circle under the ring, or initials over the avatar gradient while loading or on any failure; the focus ring when focused in an account row. Initials come from one shared, renderer-independent function. Pictures are specified in link:../0007/README.adoc[RFD 7].
-|`PasswordField` |The grey glass pill that collects every PAM response. Placeholder when empty, dots for secret input, text for visible input, an outlined submit circle once there is input, a Caps Lock glyph while Caps Lock is on, and a horizontal shake that clears it on rejection.
-|`StatusMessage` |PAM text centered on the line under the pill, or above it for a prompt. Absent unless PAM sends text.
+|`PasswordField` |The grey glass pill that collects PAM responses. Login shows visible input as text; lock masks all input. Shared cues include the submit arrow, Caps Lock glyph, and rejection shake when reduced motion is off.
+|`StatusMessage` |Visible or long prompts above the pill; PAM notices, progress, and the lock retry hint below it.
 |`AccountRow` |Avatars with names in a centered row for choosing an account; names truncate with an ellipsis.
 |`Menu` |The session and power dropdowns from status-bar items, with a heading, a highlighted item, and a check mark on the selected item.
 |`Alert` |The Restart and Shut Down confirmation over `scrim-modal`, with Cancel focused initially.
@@ -189,7 +190,7 @@ do not show authentication show the wallpaper only.
 
 == Lock renderer adoption
 
-`src/locker/mod.rs` keeps its CPU renderer. That renderer keeps response text
+`src/locker/render.rs` keeps response text
 out of the glyph pipeline and draws only masked characters, and this RFD
 preserves that boundary. It changes as follows:
 
@@ -200,9 +201,8 @@ preserves that boundary. It changes as follows:
   clock, and the identity region exactly as login does.
 * The wallpaper is no longer dimmed.
 
-Rendering the lock overlay at the output's logical size instead of the current
-fixed canvas, and fractional-scale support, are tracked with
-link:../0006/README.adoc[RFD 6].
+link:../0006/README.adoc[RFD 6] added output-sized rendering and fractional-scale
+support to lock.
 
 == Typeface
 

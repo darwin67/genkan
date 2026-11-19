@@ -76,9 +76,10 @@ independently verified transition values.
 
 The wallpaper fills the output using aspect-preserving cover semantics: scale
 until both dimensions are covered, center the frame, and crop overflow. Genkan
-does not stretch the image or expose letterboxing. The existing darkening layer
-remains above the video and below all controls so foreground contrast does not
-depend on a favorable frame.
+does not stretch the image or expose letterboxing. The original design included
+a global darkening layer, shown below for historical context.
+link:../0005/README.adoc[RFD 5] superseded it with undimmed wallpaper, local
+control material, and a scrim only for modal alerts.
 
 [source,text]
 ----
@@ -117,7 +118,7 @@ selected poster ----------------------------------------+
 generated fallback -------------------------------------+
                                                         |
                                                         v
-                                             darkening layer and UI
+                                             wallpaper behind the UI
 ----
 
 GStreamer plugin and codec requirements become explicit Nix runtime
@@ -136,7 +137,7 @@ Presentation failures do not close the greeter or disable any interaction.
 
 == Asset and packaging model
 
-Production packages install only the catalog manifest under
+Production packages install only catalog metadata under
 `share/genkan/wallpapers`: no MOVs, HEICs, posters, or prepopulated cache. Nix
 builds and the development shell do not fetch upstream artwork. Source JPEGs
 remain test-only visual references, and authored MOV/HEIC fixtures exercise the
@@ -206,10 +207,11 @@ saved overrides need it.
 
 === Provisioning and recovery
 
-Operators must explicitly provision the greeter's cache under its own identity
-or set a shared absolute override; a desktop user's cache is not automatically
-available to greetd. Login, lock, and wallpaper playback never download
-missing media. An empty cache uses the generated background in those runtimes;
+The link:../../docs/deployment.md#cache-selection-and-greeter-provisioning[NixOS module can prepare media before greetd starts].
+Without that module option, provision the greeter's cache under its own identity
+or pass an explicit path to shared media; a desktop user's cache is not
+automatically available to greetd. Login, lock, and wallpaper playback never
+download missing media. An empty cache uses the generated background in those runtimes;
 the operator-facing `assets preview` command instead downloads a missing asset
 before opening its window.
 
@@ -293,15 +295,16 @@ preferable to queuing stale frames or delaying interaction.
 
 Motion remains behind all controls and does not encode state or instructions.
 The static setting provides equivalent information because the video is purely
-decorative. The global darkening treatment must satisfy the existing text,
-focus, boundary, dialog, and menu contrast targets across representative bright
-and dark frames from the selected video.
+decorative. The original contrast criterion assumed global wallpaper darkening.
+That treatment no longer applies after link:../0005/README.adoc[RFD 5]; contrast
+must be assessed on the current undimmed presentation with its local control
+material and modal scrim.
 
-The current generated-background contrast model is not sufficient evidence for
-photographic video. Tests will sample at least the brightest, darkest, and
-highest-local-contrast retained frames, including frames behind each major
-foreground region. Renderer-aware compositing checks remain the numeric source
-of truth; screenshots support visual review without replacing those checks.
+Generated-background contrast tests do not establish contrast over photographic
+video. The link:../../docs/deferred.md#wallpaper-contrast-frame-corpus[representative frame corpus]
+and link:../../docs/deferred.md#wallpaper-control-and-text-contrast[contrast verification]
+remain deferred. Renderer-aware compositing checks are the numeric source of
+truth; screenshots support visual review without replacing those checks.
 
 == Security and failure boundaries
 

@@ -151,17 +151,19 @@ implementation checklist.
 
 The iced login window is rendered through winit, which supports
 `wp_fractional_scale_v1`. The background client and the session lock
-(link:../0003/README.adoc[RFD 3]) currently request only integer buffer scales.
-Both gain `wp_fractional_scale_v1` and `wp_viewporter` support when the
-compositor offers them: they render at the exact device size and set the
-viewport to the logical size, falling back to integer scales otherwise.
+(link:../0003/README.adoc[RFD 3]) use `wp_fractional_scale_v1` and
+`wp_viewporter` when the compositor offers both. They render at the preferred
+fractional scale and set the viewport to the logical size, falling back to
+integer buffer scales otherwise.
 
 === Naming the authentication output
 
-`--authentication-output` accepts a connector name today. The lock and the Cage
-deployment gain the same make, model, and serial matching that niri uses, so an
-administrator can name the monitor once ("Dell Inc. DELL U3223QE …") in both the
-niri window rule and Genkan's own arguments.
+Spanning login and lock accept connector names with `--authentication-output`
+and also match make, model, and serial when the compositor provides that
+metadata. This lets an administrator use the same persistent name
+("Dell Inc. DELL U3223QE …") in niri's window rule and Genkan's own arguments.
+See link:../../docs/deployment.md#outputs[output selection] for matching and
+fallback behavior.
 
 === Deployment
 

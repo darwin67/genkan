@@ -1,9 +1,9 @@
 # Genkan
 
 Genkan is a graphical [greetd](https://sr.ht/~kennylevinsen/greetd/)
-frontend for Linux, built with Rust and iced. It runs fullscreen under Cage on
-a Wayland login VT while greetd remains responsible for PAM authentication and
-starting the selected desktop session.
+frontend for Linux, built with Rust and iced. It runs fullscreen under Cage
+or niri on a Wayland login VT while greetd remains responsible for PAM
+authentication and starting the selected desktop session.
 
 ## Screenshots
 
@@ -163,31 +163,29 @@ custom TOML catalogs, preflight limits and exit codes, and preview/test workflow
 
 ## Install with NixOS
 
-Add Genkan as a flake input and configure greetd to launch the package under
-Cage. A minimal host configuration and the required AccountsService, session,
-graphics, PAM, and power-policy details are in the
-[deployment guide](docs/deployment.md).
+Add Genkan as a flake input, then import its NixOS module and enable the greeter:
 
 ```nix
-services.greetd = {
-  enable = true;
-  settings.default_session = {
-    user = "greeter";
-    command = "${pkgs.cage}/bin/cage -- ${genkanPackage}/bin/genkan login";
+{ genkan, ... }:
+{
+  imports = [ genkan.nixosModules.default ];
+  programs.genkan = {
+    enable = true;
+    greeter.enable = true;
   };
-};
+}
 ```
 
-The greeter still selects `tahoe-beach` by default. Other legacy Apple MOV IDs also
-keep working when named explicitly; they no longer appear in `assets list`.
-Community MOVs are no longer built-in choices. To use an existing local copy,
-pass its absolute path to `--wallpaper-file` instead of its former ID.
-To use an Apple aerial, download its ID and pass it to `--wallpaper`; add
-`--reduce-motion` to show its cached poster instead of playing the video.
-Provision the cache explicitly under the greeter identity or set a shared absolute
-`GENKAN_WALLPAPER_DIR`; a download as your desktop user does not populate the
-greeter's cache. See [greeter provisioning](docs/deployment.md#wallpaper-configuration).
-Login never downloads, including when its selected asset is missing.
+The module configures greetd and defaults to Cage. To choose niri, set
+`programs.genkan.greeter.compositor = "niri"`. See the
+[deployment guide](docs/deployment.md) for wiring the flake input, enabling a
+Wayland desktop session, and configuring the host's power policy.
+
+Without prepared media, the greeter shows a generated background. Set
+`programs.genkan.wallpaper.source.catalog` to a wallpaper ID from
+`genkan assets list` to let the module prepare it before greetd starts. Login
+itself never downloads media. See [wallpaper provisioning](docs/deployment.md#cache-selection-and-greeter-provisioning)
+for URLs, local files, and manual caches.
 
 Logged-in users on a supported compositor can run a dynamic HEIC wallpaper as
 a dedicated non-interactive background client:
@@ -204,11 +202,9 @@ scheduling with `--solar`. See the
 solar behavior, and autostart examples.
 
 With multiple outputs, Genkan presents authentication on one monitor and keeps
-the others as unobstructed animated wallpaper. It chooses the first available
-external connector by type and numeric suffix (`DP-2` before `DP-10`), falling
-back to an internal `eDP-`, `LVDS-`, or `DSI-` panel; pass
-`--authentication-output DP-2` to either `login` or `lock` to prefer a specific
-connector instead, including an internal panel.
+the others as unobstructed wallpaper. Set `programs.genkan.greeter.authenticationOutput`
+to prefer a connector such as `DP-2` or a persistent monitor name. See
+[output selection](docs/deployment.md#outputs) for matching and fallback behavior.
 
 ## Session-lock development status
 
@@ -235,16 +231,16 @@ supported compositors, swayidle setup, and fail-closed recovery.
 
 ## Validation
 
-Run the complete local verification suite with:
+Run the local verification suite with:
 
 ```sh
 nix develop --command make verify
 ```
 
-This checks formatting, Clippy, Rust and shell regressions, RFD metadata,
-reference images, the Nix package, and packaged graphics startup under nested
-Cage and headless Weston, plus compositor lock confirmation and explicit test
-unlock under nested headless Sway.
+This runs formatting, lint, Rust and shell tests, documentation checks,
+packaging and wallpaper provisioning checks, and headless compositor smoke
+tests. The [NixOS VM checks](docs/development.md#nixos-vm-checks) run separately
+and require an x86_64 Linux host with KVM.
 
 ## License
 

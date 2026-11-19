@@ -1,5 +1,9 @@
 # Deployment and greetd Configuration
 
+Use the Genkan NixOS module to configure greetd. It runs the greeter under Cage
+by default; select niri if you want per-output scale, rotation, and position
+settings for the login screen.
+
 ## Install a prebuilt release
 
 [GitHub Releases](https://github.com/darwin67/genkan/releases) provides prebuilt
@@ -51,59 +55,40 @@ Bind Genkan as a flake input and pass it to the host module:
 
 ## Host configuration
 
-Run the package fullscreen under Cage and expose at least one Wayland desktop
-entry to the pre-authentication service:
+In `configuration.nix`, import the module and enable the greeter. Enable a
+Wayland desktop session separately; this example uses niri for the logged-in
+session and keeps Cage as the greeter compositor.
 
 ```nix
-{ config, genkan, pkgs, ... }:
-
-let
-  genkanPackage = genkan.packages.${pkgs.stdenv.hostPlatform.system}.default;
-in
-
-services.greetd = {
-  enable = true;
-  settings.default_session = {
-    user = "greeter";
-    command = "${pkgs.cage}/bin/cage -- ${genkanPackage}/bin/genkan login";
-  };
-};
-
-services.accounts-daemon.enable = true;
-hardware.graphics.enable = true;
-
-services.displayManager.sessionPackages = [ pkgs.niri ];
-systemd.services.greetd.environment.XDG_DATA_DIRS =
-  "${config.services.displayManager.sessionData.desktops}/share";
-
-# Do not replace the active greeter during nixos-rebuild switch.
-systemd.services.greetd.restartIfChanged = false;
-```
-
-On a multi-monitor layout, the Cage window continues to render wallpaper over
-the full desktop while Genkan places authentication on one output. By default
-it deterministically chooses an external connector by type and numeric suffix
-(`DP-2` before `DP-10`), then falls back to an internal `eDP-`, `LVDS-`, or
-`DSI-` panel when no external named output is available. To prefer a
-particular connector, add `--authentication-output DP-2` after `genkan login`;
-internal panels can also be selected explicitly. If that connector is absent,
-the same default fallback still applies. Genkan
-re-evaluates this placement when outputs are connected, removed, rearranged, or
-rescaled while the greeter is running.
-
-To install the session locker and define its dedicated PAM service using the
-host's normal authentication policy, import and enable the opt-in module:
-
-```nix
+{ genkan, ... }:
 {
   imports = [ genkan.nixosModules.default ];
-  programs.genkan.enable = true;
+  programs.genkan = {
+    enable = true;
+    greeter.enable = true;
+  };
+  programs.niri.enable = true;
 }
 ```
 
-The module does not configure an idle manager or replace a desktop
-environment's own locker. Its private authentication worker is unprivileged
-and is not installed setuid.
+The module enables AccountsService and graphics and gives greetd the host's
+Wayland session directory. Remove any old manually configured
+`services.greetd.settings.default_session.command` so the module can set it.
+For niri on the login VT as well, see [niri greeter configuration](#greeter).
+For monitor selection on either compositor, see [Outputs](#outputs).
+
+The module sets `systemd.services.greetd.restartIfChanged = false` so switching
+generations does not terminate an active desktop session or replace the running
+greeter. greetd keeps its generation-specific command in memory even after
+logout. To activate a changed greeter config or binary, restart greetd when no
+desktop session is active, or reboot. Restarting greetd while a desktop session
+is active terminates it.
+
+For the package and its dedicated lock PAM policy without changing the greeter,
+import the same module and set `programs.genkan.enable = true` without enabling
+the greeter. The module does not configure an idle manager or replace a desktop
+environment's own locker. Its private authentication worker is unprivileged and
+is not installed setuid.
 
 The supported production lock runtime requires Linux 5.9 or newer and glibc
 2.34 or newer for pidfd, `close_range`, and descriptor-safe `posix_spawn`
@@ -323,14 +308,8 @@ arbitrary KDL, so they cannot introduce includes or launch bindings:
 }
 ```
 
-Use `niri msg outputs` to get connector and make/model/serial names. Matching
-is case-insensitive, with `Unknown` for missing fields, just like niri. Login
-in spanning mode and `genkan lock --authentication-output "…"` accept the same
-names: wlroots output-management metadata supplies serials under Cage, and
-niri's read-only IPC supplies them under niri. A compositor exposing neither
-source still supports connector selection; descriptions are not parsed as
-identities. If the monitor is absent, spanning login and lock use their normal
-fallback; niri places compositor-mode login on the focused available output.
+See [Outputs](#outputs) for finding a monitor's connector or persistent name
+and for what happens when the preferred monitor is absent.
 
 The module generates this output block, for example:
 
@@ -372,22 +351,9 @@ startup parse error. See the [investigation](../rfd/0006/INVESTIGATION.adoc)
 for the actual fallback and startup measurements. Never point greetd directly
 at a user-writable niri config.
 
-When it configures either greeter, the module sets
-`systemd.services.greetd.restartIfChanged = false`, enables AccountsService and
-graphics, and passes the host's Wayland session directory. A generation switch
-does not kill an active session or replace the on-screen greeter. greetd keeps
-its generation-specific command in memory, including after logout. Changes to
-the immutable greeter config or binary therefore require a **greetd daemon
-restart or reboot**. Do not restart greetd while a desktop session is active;
-that would terminate the session this setting protects. This is not the
-desktop's live-reloaded config. Desktop output configuration and graphics/VRAM
-limits remain host policy.
-
-Wallpaper and lock negotiate fractional-scale plus viewporter support and
-render at the compositor's preferred size (in 1/120 increments), with logical
-viewport destinations. Compositors without both protocols retain integer
-buffers. This reduces allocation and avoids integer-scale downsampling at
-1.275, 1.3, and 1.2 without changing lock ownership or unlock authorization.
+The greeter uses its own immutable config, not the desktop's live-reloaded
+config. See [Host configuration](#host-configuration) for applying a new greeter
+generation without terminating an active desktop session.
 
 ### Session
 
@@ -482,14 +448,25 @@ switch-events {
 
 ### Outputs
 
-`niri msg outputs` lists each connector with its make, model, and serial.
-niri's `output` blocks accept either form, but `--authentication-output`
-currently takes the connector name, such as `DP-3`. Connector numbers can
-change with docks and cable order, so recheck them after changing hardware.
+Set `programs.genkan.greeter.authenticationOutput` for either greeter, or pass
+`--authentication-output` to standalone spanning login or `genkan lock`. Use a
+connector such as `DP-3`, or a persistent `make model serial` name such as
+`Dell Inc. DELL U3223QE YOUR-SERIAL`. Run `niri msg outputs` in a niri session
+to see both forms. Persistent names are useful when connector numbers change
+with docks or cables.
 
-Fractional output scales work. The lock and wallpaper currently render at the
-next whole scale and niri scales them down, which uses more memory than
-rendering at the exact size; fractional-scale support is planned in RFD 6.
+Spanning login and lock match names case-insensitively, using `Unknown` for
+missing fields. They get monitor identities from wlroots output management or
+niri's read-only IPC; without either source, use a connector name. If the
+preferred monitor is absent or unset, they choose an external connector by type
+and numeric suffix (`DP-2` before `DP-10`), then fall back to an internal panel
+when no external named output is available. The niri greeter instead lets niri
+place the login window on the focused available output when its preferred
+monitor is absent or unset.
+
+Wallpaper and lock render at the compositor's preferred fractional scale when
+it offers both the fractional-scale and viewporter protocols. They use logical
+viewport destinations and fall back to integer buffers otherwise.
 
 ## Accounts and sessions
 
