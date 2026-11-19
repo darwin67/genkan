@@ -41,11 +41,14 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
         [
             "macos-landscape-tahoe-day",
             "MOV",
-            "?x?",
+            "3840x2160",
             "445.4",
             "installed"
         ]
     );
+    let mac_blue = listed_asset(&listing, "macos-mac-blue");
+    assert_eq!(mac_blue[2], "5632x3524");
+    assert_eq!(mac_blue[4], "missing");
     assert_eq!(
         listed_asset(&listing, "big-sur-1"),
         ["big-sur-1", "HEIC", "5120x2880", "89.6", "missing"]
@@ -85,6 +88,13 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
             assert_eq!(
                 columns.next(),
                 Some(if heading == "HEIC" { "HEIC" } else { "MOV" })
+            );
+            let (width, height) = columns.next().unwrap().split_once('x').unwrap();
+            assert!(
+                [width, height]
+                    .into_iter()
+                    .all(|dimension| dimension.parse::<u32>().is_ok_and(|pixels| pixels > 0)),
+                "{row}"
             );
         }
     }
