@@ -25,6 +25,11 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
     std::fs::create_dir(directory.path().join("mov")).unwrap();
     // Availability does not decode the file; listing is cheap and display-free.
     std::fs::write(directory.path().join("mov/tahoe-beach.mov"), []).unwrap();
+    std::fs::write(
+        directory.path().join("mov/macos-landscape-tahoe-day.mov"),
+        [],
+    )
+    .unwrap();
     let output = genkan(directory.path())
         .args(["assets", "list"])
         .output()
@@ -32,12 +37,14 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
     assert!(output.status.success(), "{:?}", output);
     let listing = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
-        listed_asset(&listing, "tahoe-beach"),
-        ["tahoe-beach", "MOV", "3840x2160", "162.3", "installed"]
-    );
-    assert_eq!(
-        listed_asset(&listing, "iceland"),
-        ["iceland", "MOV", "3840x2160", "754.1", "missing"]
+        listed_asset(&listing, "macos-landscape-tahoe-day"),
+        [
+            "macos-landscape-tahoe-day",
+            "MOV",
+            "?x?",
+            "445.4",
+            "installed"
+        ]
     );
     assert_eq!(
         listed_asset(&listing, "big-sur-1"),
@@ -47,83 +54,92 @@ fn list_is_compact_reports_availability_and_keeps_details_optional() {
         listed_asset(&listing, "tahoe"),
         ["tahoe", "HEIC", "5120x2880", "86.5", "missing"]
     );
-    assert_eq!(
-        listed_asset(&listing, "catalina"),
-        ["catalina", "HEIC", "6016x6016", "118.7", "missing"]
-    );
-    for id in [
-        "scotland",
-        "liwa",
-        "hawaii",
-        "hong-kong",
-        "san-francisco",
-        "westfjords",
-        "jodhpur",
-        "quarten",
-        "lake-como",
-        "manhattan-night",
-    ] {
-        let asset = listed_asset(&listing, id);
-        assert_eq!(&asset[..3], &[id, "MOV", "3840x2160"]);
-        assert_eq!(asset[4], "missing");
+    let apple_heics = [
+        ("catalina", "118.7"),
+        ("monterey-graphic", "93.5"),
+        ("ventura-graphic", "30.5"),
+    ];
+    for (id, size) in apple_heics {
+        assert_eq!(
+            listed_asset(&listing, id),
+            [id, "HEIC", "6016x6016", size, "missing"]
+        );
     }
+    let sections = [
+        ("Landscape", "macos-landscape-", 79),
+        ("Cityscape", "macos-cityscape-", 30),
+        ("Underwater", "macos-underwater-", 21),
+        ("Earth", "macos-earth-", 22),
+        ("Mac", "macos-mac-", 4),
+        ("HEIC", "", 9),
+    ];
+    let mut blocks = listing.split("\n\n");
+    assert!(blocks.next().unwrap().starts_with("ID "));
+    for (heading, prefix, count) in sections {
+        let (actual_heading, rows) = blocks.next().unwrap().split_once('\n').unwrap();
+        assert_eq!(actual_heading, heading);
+        assert_eq!(rows.lines().count(), count, "{heading}");
+        for row in rows.lines() {
+            let mut columns = row.split_whitespace();
+            assert!(columns.next().unwrap().starts_with(prefix), "{row}");
+            assert_eq!(
+                columns.next(),
+                Some(if heading == "HEIC" { "HEIC" } else { "MOV" })
+            );
+        }
+    }
+    assert!(blocks.next().is_none());
+    assert!(!listing.contains("tahoe-beach"));
+    assert!(!listing.contains("westfjords"));
     assert!(!listing.contains("tahoe-dynamic"));
     assert!(!listing.contains("tahoe-time-of-day"));
-    assert_eq!(listing.lines().count(), 27);
-    assert!(listing.lines().all(|line| line.len() <= 80));
+    assert!(listing.lines().all(|line| line.len() <= 90));
     assert!(!listing.contains('\t'));
     assert!(!listing.contains("https://"));
     assert!(!listing.contains("no open-content license"));
     let details = successful(genkan(directory.path()).args(["assets", "list", "--details"]));
-    assert!(details.contains("Iceland"));
-    assert!(details.contains("https://sylvan.apple.com/"));
-    for (id, name, source) in [
-        (
-            "hong-kong",
-            "Hong Kong",
-            "comp_HK_H004_C010_PSNK_v08_SDR_PS_20181009_SDR_4K_HEVC.mov",
-        ),
-        (
-            "san-francisco",
-            "San Francisco",
-            "comp_A007_C017_01156B_v02_SDR_PS_20180925_SDR_4K_HEVC.mov",
-        ),
-        (
-            "westfjords",
-            "Westfjords",
-            "video_i3_is_westfjords_20240616_004.4k-sdr.mov",
-        ),
-        (
-            "jodhpur",
-            "Jodhpur",
-            "video_i3_in_jodhpur_gulabsagar_jaswantthada_20241128_010_013.4k-sdr.mov",
-        ),
-        (
-            "quarten",
-            "Quarten",
-            "video_m3_ch_quarten_20250712_003.4k-sdr.mov",
-        ),
-        (
-            "lake-como",
-            "Lake Como",
-            "video_inspire_italy_como_cerano-dintelvi_006.4k-sdr.mov",
-        ),
-        (
-            "manhattan-night",
-            "Manhattan at Night",
-            "video_i3_nyc_manhattan_20250918_067.4k-sdr.mov",
-        ),
-    ] {
-        let entry = details
-            .split("\n\n")
-            .find(|entry| entry.split_whitespace().next() == Some(id))
-            .unwrap_or_else(|| panic!("missing details for {id}: {details}"));
-        assert!(entry.contains(name), "{entry}");
-        assert!(entry.contains(source), "{entry}");
+    let entries = details
+        .split("\n\n")
+        .skip(1)
+        .map(|entry| match entry.split_once('\n') {
+            Some((first, rest)) if sections.iter().any(|(heading, ..)| first == *heading) => rest,
+            _ => entry,
+        });
+    let aerials: Vec<_> = entries
+        .clone()
+        .filter(|entry| entry.starts_with("macos-"))
+        .collect();
+    assert_eq!(aerials.len(), 156);
+    let mut urls = std::collections::HashSet::new();
+    for entry in aerials {
+        let url = entry
+            .lines()
+            .find_map(|line| line.strip_prefix("  Source: "))
+            .unwrap();
+        assert!(
+            url.starts_with("https://sylvan.apple.com/") && url.ends_with(".mov"),
+            "{entry}"
+        );
+        assert!(urls.insert(url), "duplicate source: {entry}");
+        assert!(
+            entry.contains("Apple artwork; no open-content license is asserted."),
+            "{entry}"
+        );
     }
-    assert!(
-        details.contains("Apple aerial artwork; no open-content license is asserted by Genkan.")
-    );
+    for (id, _) in apple_heics {
+        let entry = entries
+            .clone()
+            .find(|entry| entry.split_whitespace().next() == Some(id))
+            .unwrap();
+        let source = entry
+            .lines()
+            .find_map(|line| line.strip_prefix("  Source: "))
+            .unwrap();
+        assert!(
+            source.starts_with("https://updates.cdn-apple.com/") && source.ends_with(".zip"),
+            "{entry}"
+        );
+    }
 
     for id in [
         "missing",
@@ -877,6 +893,80 @@ fn zip_download_extracts_only_the_selected_heic_and_checks_archive_and_media_pin
 }
 
 #[test]
+fn a_pinned_heic_remains_installed_when_its_source_moves_into_an_archive() {
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::Ordering;
+
+    let directory = tempfile::tempdir().unwrap();
+    let catalog = directory.path().join("catalog.toml");
+    let heic = include_bytes!("fixtures/dynamic-heic/synthetic-all-properties.heic");
+    let server = SourceServer::new(heic.to_vec());
+    let old_url = server.url("/old.heic");
+    let new_url = server.url("/new.zip");
+    let old = format!(
+        "[assets.dynamic]\nurl = {old_url:?}\nformat = 'heic'\nbyte_size = {}\nsha256 = '{:x}'\n",
+        heic.len(),
+        Sha256::digest(heic)
+    );
+    std::fs::write(&catalog, &old).unwrap();
+    successful(
+        genkan(directory.path())
+            .args(["assets", "download", "dynamic", "--catalog"])
+            .arg(&catalog),
+    );
+    let media = cached_media(directory.path(), "dynamic");
+    let transferred = server.served.load(Ordering::Relaxed);
+
+    // The new transport is intentionally not a valid archive: any attempt to
+    // redownload instead of reusing verified bytes will fail.
+    let new = old.replace(&old_url, &new_url)
+        + &format!(
+            "archive_member = 'dynamic.heic'\narchive_byte_size = {}\narchive_sha256 = '{}'\n",
+            heic.len(),
+            "0".repeat(64)
+        );
+    let list = || {
+        successful(
+            genkan(directory.path())
+                .args(["assets", "list", "--details", "--catalog"])
+                .arg(&catalog),
+        )
+    };
+    std::fs::write(&catalog, format!("{new}width = 9\nheight = 8\n")).unwrap();
+    assert_eq!(listed_asset(&list(), "dynamic")[4], "missing");
+    std::fs::write(&catalog, format!("{new}width = 8\nheight = 8\n")).unwrap();
+    let listing = list();
+    assert_eq!(listed_asset(&listing, "dynamic")[4], "installed");
+    assert!(listing.contains(&new_url) && !listing.contains(&old_url));
+    successful(
+        genkan(directory.path())
+            .args(["assets", "prepare", "dynamic", "--catalog"])
+            .arg(&catalog),
+    );
+    assert_eq!(
+        std::fs::read_link(directory.path().join("selected")).unwrap(),
+        media
+    );
+    assert_eq!(server.served.load(Ordering::Relaxed), transferred);
+
+    let mut corrupt = heic.to_vec();
+    corrupt[0] ^= 1;
+    std::fs::write(media, corrupt).unwrap();
+    assert_eq!(listed_asset(&list(), "dynamic")[4], "missing");
+    let output = output_with_timeout(
+        genkan(directory.path())
+            .args(["assets", "prepare", "dynamic", "--catalog"])
+            .arg(&catalog),
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("SHA-256"),
+        "{output:?}"
+    );
+    assert!(server.served.load(Ordering::Relaxed) > transferred);
+}
+
+#[test]
 fn failed_downloads_preserve_existing_media_and_receipt() {
     use sha2::{Digest, Sha256};
     let directory = tempfile::tempdir().unwrap();
@@ -938,7 +1028,7 @@ fn failed_downloads_preserve_existing_media_and_receipt() {
         .status
         .success());
     assert!(!directory.path().join("entries/large.toml").exists());
-    for key in ["../escape", "tahoe-beach"] {
+    for key in ["../escape", "tahoe-beach", "macos-mac-blue"] {
         assert!(!genkan(directory.path())
             .args(["assets", "download", key, "--url", &server.url("/ok")])
             .output()
@@ -949,162 +1039,24 @@ fn failed_downloads_preserve_existing_media_and_receipt() {
 }
 
 #[test]
-fn github_catalog_downloads_allow_only_one_pinned_https_release_asset_hop() {
-    use std::os::unix::fs::PermissionsExt;
+fn retired_community_movies_are_not_builtin_downloads() {
     let directory = tempfile::tempdir().unwrap();
-    let bin = directory.path().join("bin");
-    std::fs::create_dir(&bin).unwrap();
-    let curl = bin.join("curl");
-    // A transport fixture, without live GitHub/TLS dependencies. The audit is
-    // the network-boundary contract: rejected targets must never be contacted.
-    std::fs::write(
-        &curl,
-        r#"#!/bin/sh
-head=false
-headers=
-url=
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --head) head=true ;;
-        --dump-header) shift; headers=$1 ;;
-        --url) shift; url=$1 ;;
-    esac
-    shift
-done
-printf '%s\n' "$url" >> "$GENKAN_TEST_REQUESTS"
-case "$url" in
-    https://github.com/*) response=$GENKAN_TEST_RESPONSE ;;
-    *) response=$(printf 'HTTP/1.1 302 Found\r\nLocation: https://example.invalid/second-hop\r\n\r\n') ;;
-esac
-if "$head"; then
-    printf '%s' "$response"
-else
-    printf '%s' "$response" > "$headers"
-fi
-"#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = std::env::join_paths(
-        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
-    let manifest: toml::Table = include_str!("../assets/wallpapers/manifest.toml")
-        .parse()
-        .unwrap();
-    let entry = manifest["wallpaper"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["id"].as_str() == Some("westfjords"))
-        .unwrap();
-    let source = entry["source_file_url"].as_str().unwrap();
-    let requests = directory.path().join("requests");
-    let allowed = "https://release-assets.githubusercontent.com/github-production-release-asset/285077363/fixture?jwt=private-test-token";
-    for target in [
-        "http://release-assets.githubusercontent.com/github-production-release-asset/fixture",
-        "https://release-assets.githubusercontent.com.evil.invalid/github-production-release-asset/fixture",
-        "https://release-assets.githubusercontent.com@evil.invalid/github-production-release-asset/fixture",
-        "https://release-assets.githubusercontent.com:444/github-production-release-asset/fixture",
-        "https://release-assets.githubusercontent.com/other-path/fixture",
-        "https://release-assets.githubusercontent.com/github-production-release-asset/../outside-prefix",
-        "https://release-assets.githubusercontent.com/github-production-release-asset/%2e%2e/outside-prefix",
-        "https://release-assets.githubusercontent.com/github-production-release-asset/.%2E/outside-prefix",
-        "https://release-assets.githubusercontent.com/github-production-release-asset/fixture\\@evil.invalid",
-        "/relative-target",
-        allowed,
+    for id in [
+        "westfjords",
+        "jodhpur",
+        "quarten",
+        "lake-como",
+        "manhattan-night",
     ] {
-        std::fs::write(&requests, []).unwrap();
-        let output = genkan(directory.path())
-            .args(["assets", "download", "westfjords"])
-            .env("PATH", &path)
-            .env("GENKAN_TEST_REQUESTS", &requests)
-            .env(
-                "GENKAN_TEST_RESPONSE",
-                format!("HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 302\r\nlOcAtIoN: {target}\r\n\r\n"),
-            )
+        let result = genkan(directory.path())
+            .args(["assets", "download", id, "--max-bytes", "4096"])
             .output()
             .unwrap();
-        assert!(!output.status.success(), "{target}: {output:?}");
-        assert!(!directory.path().join("entries/westfjords.toml").exists());
-        let contacted = std::fs::read_to_string(&requests).unwrap();
-        let expected = if target == allowed {
-            // The approved CDN is contacted, but its second redirect is not.
-            format!("{source}\n{allowed}\n")
-        } else {
-            format!("{source}\n")
-        };
-        assert_eq!(contacted, expected, "{target}: {output:?}");
-        assert!(!String::from_utf8_lossy(&output.stderr).contains("private-test-token"));
-        assert!(!String::from_utf8_lossy(&output.stdout).contains("private-test-token"));
-    }
-    // Prepare accepts an equivalent uppercase pin; casing must not turn a
-    // compiled-catalog source into an arbitrary, redirect-ineligible source.
-    std::fs::write(&requests, []).unwrap();
-    let output = genkan(directory.path())
-        .args(["assets", "prepare", "westfjords", "--sha256"])
-        .arg(entry["sha256"].as_str().unwrap().to_ascii_uppercase())
-        .env("PATH", &path)
-        .env("GENKAN_TEST_REQUESTS", &requests)
-        .env(
-            "GENKAN_TEST_RESPONSE",
-            format!("HTTP/2 302\r\nLocation: {allowed}\r\n\r\n"),
-        )
-        .output()
-        .unwrap();
-    assert!(!output.status.success()); // The CDN's second redirect still fails.
-    assert_eq!(
-        std::fs::read_to_string(&requests).unwrap(),
-        format!("{source}\n{allowed}\n")
-    );
-    // Neither a custom catalog nor a receipt may invent a new trusted pin or
-    // borrow a built-in identity for different bytes or a different source.
-    let catalog = directory.path().join("catalog.toml");
-    for (id, hash, size, url) in [
-        (
-            "westfjords",
-            "0".repeat(64),
-            entry["byte_size"].as_integer().unwrap(),
-            source.to_owned(),
-        ),
-        (
-            "westfjords",
-            entry["sha256"].as_str().unwrap().to_owned(),
-            entry["byte_size"].as_integer().unwrap() + 1,
-            source.to_owned(),
-        ),
-        (
-            "impostor",
-            entry["sha256"].as_str().unwrap().to_owned(),
-            entry["byte_size"].as_integer().unwrap(),
-            source.to_owned(),
-        ),
-        (
-            "westfjords",
-            entry["sha256"].as_str().unwrap().to_owned(),
-            entry["byte_size"].as_integer().unwrap(),
-            format!("{source}-changed"),
-        ),
-    ] {
-        std::fs::write(&catalog, format!("[assets.{id}]\nurl = {url:?}\nsha256 = {hash:?}\nbyte_size = {size}\nformat = 'mov'\n")).unwrap();
-        std::fs::write(&requests, []).unwrap();
-        let output = genkan(directory.path())
-            .args(["assets", "download", id, "--catalog"])
-            .arg(&catalog)
-            .env("PATH", &path)
-            .env("GENKAN_TEST_REQUESTS", &requests)
-            .env(
-                "GENKAN_TEST_RESPONSE",
-                format!("HTTP/2 302\r\nLocation: {allowed}\r\n\r\n"),
-            )
-            .output()
-            .unwrap();
-        assert!(!output.status.success(), "{output:?}");
-        assert_eq!(
-            std::fs::read_to_string(&requests).unwrap(),
-            format!("{url}\n")
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("unknown wallpaper"),
+            "{result:?}"
         );
-        assert!(!directory.path().join(format!("entries/{id}.toml")).exists());
     }
 }
 
@@ -1318,12 +1270,22 @@ fn downloads_and_listing_share_home_xdg_and_override_cache_resolution() {
         if mode == "override" {
             download.env("GENKAN_WALLPAPER_DIR", home.join("override"));
         }
-        successful(download.args(["assets", "download", mode, "--url", &server.url("/ok")]));
+        let id = if mode == "override" {
+            "macos-cityscape-custom"
+        } else {
+            mode
+        };
+        successful(download.args(["assets", "download", id, "--url", &server.url("/ok")]));
         let cache = home.join(suffix);
-        assert!(cached_media(&cache, mode).is_file());
+        assert!(cached_media(&cache, id).is_file());
+        let listing = successful(genkan(&cache).args(["assets", "list"]));
+        let heics = listing
+            .split("\n\n")
+            .find_map(|section| section.strip_prefix("HEIC\n"))
+            .unwrap();
         assert_eq!(
-            listed_asset(&successful(genkan(&cache).args(["assets", "list"])), mode),
-            [mode, "HEIC", "8x8", "0.0", "installed"]
+            listed_asset(heics, id),
+            [id, "HEIC", "8x8", "0.0", "installed"]
         );
     }
 }
@@ -1356,6 +1318,7 @@ fn preflight_decodes_a_movie_with_remote_tail_metadata_without_full_download() {
         .unwrap();
     assert!(listing.status.success());
     let listing = String::from_utf8(listing.stdout).unwrap();
+    assert!(listing.lines().nth(1).unwrap().starts_with("mountains "));
     assert_eq!(
         listed_asset(&listing, "mountains"),
         ["mountains", "MOV", "96x64", "?", "missing"]

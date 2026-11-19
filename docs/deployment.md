@@ -165,8 +165,8 @@ non-interactive background-layer surface per output:
 genkan wallpaper --file /home/alice/Pictures/dynamic.heic
 ```
 
-The package installs only the
-[wallpaper manifest](../assets/wallpapers/manifest.toml) under
+The package installs the [wallpaper manifest](../assets/wallpapers/manifest.toml)
+and [Tahoe aerial catalog](../assets/wallpapers/macos-tahoe-aerials.toml) under
 `share/genkan/wallpapers`, not MOVs, HEICs, or posters. Use an existing local
 file or explicitly run `genkan assets download <key>` before selecting a
 catalog wallpaper. Downloads use curated upstream sources, not an R2 mirror;
@@ -540,13 +540,16 @@ are test-only references. Download and preview as your desktop user with:
 
 ```sh
 genkan assets list
-genkan assets preview tahoe-beach
+genkan assets preview macos-landscape-tahoe-day
 ```
 
 `assets preview` downloads the original if missing, then opens a simulated
 window without changing wallpaper settings. Cached previews stay offline.
-Use `genkan assets download tahoe-beach` to prepare it without a window, or
-`genkan assets list --details` for full names, source URLs, and usage rights.
+Use `genkan assets download macos-landscape-tahoe-day` to cache it without a
+window, then select it with `--wallpaper macos-landscape-tahoe-day`. The listing
+shows Apple's full Tahoe MOV set and the existing HEICs; `--details` adds names,
+source URLs, and rights. Legacy Apple MOV IDs, including `tahoe-beach`, remain valid
+when named explicitly.
 
 Download preparation, including hashing and ZIP parsing, is resource-bounded.
 The downloader verifies curated sizes and SHA-256 pins, validates a
@@ -569,7 +572,7 @@ On NixOS, import `genkan.nixosModules.default` and let Genkan own preparation:
 programs.genkan = {
   enable = true;
   greeter.enable = true;
-  wallpaper.source.catalog = "iceland";
+  wallpaper.source.catalog = "macos-landscape-tahoe-day";
 };
 ```
 
@@ -577,14 +580,15 @@ Choose exactly one source; no per-wallpaper package or downstream downloader is 
 
 | `programs.genkan.wallpaper.source` | Example |
 | --- | --- |
-| `catalog` | `"iceland"` (IDs from `genkan assets list`) |
+| `catalog` | `"macos-landscape-tahoe-day"` (IDs from `genkan assets list`) |
 | `url` | `"https://example.org/original.mov"` (direct HTTP(S), no redirects) |
 | `file` | `/path/to/original.heic` or `"/srv/wallpapers/original.mov"` |
 
 `source.sha256` optionally supplies a trusted 64-digit hexadecimal SHA-256.
-Omitting it for a custom source records a computed integrity hash, not proof of
-upstream authenticity. Catalog size, archive, and hash checks cannot be disabled
-or overridden. `wallpaper.maxBytes` defaults to 2 GiB (range 4 KiB–16 GiB).
+The Apple aerial catalog declares byte sizes, not upstream SHA-256 pins; a
+computed hash records identity, not upstream authenticity. Catalog size,
+archive, and supplied hash checks cannot be disabled or overridden.
+`wallpaper.maxBytes` defaults to 2 GiB (range 4 KiB–16 GiB).
 Media must pass Genkan's existing bounded MOV/HEIC inspection and representative
 frame decoding; MOV posters are generated automatically. This is not an exhaustive
 decode of every frame or a promise of compositor/hardware support.

@@ -1,8 +1,7 @@
 //! Catalog metadata is supplied by the curator, never inferred from a URL suffix.
 
 use std::path::{Path, PathBuf};
-
-use clap::ValueEnum;
+use std::sync::OnceLock;
 
 use crate::wallpaper;
 
@@ -32,7 +31,29 @@ impl Asset {
     }
 
     pub fn movie(&self) -> wallpaper::Catalog {
-        wallpaper::Catalog::from_str(&self.id, false).unwrap_or_default()
+        wallpaper::Catalog::parse(&self.id).unwrap_or_default()
+    }
+
+    // A source move can change the transport, including its archive, without
+    // changing the installed HEIC. The caller must still verify the file bytes.
+    pub fn heic_pin_for_source_move(&self, cached: &Self) -> Option<(u64, &str)> {
+        if self.format.as_deref() != Some("heic")
+            || self.format != cached.format
+            || self.url.is_none()
+            || cached.url.is_none()
+            || self.url == cached.url
+            || self.width.is_some_and(|width| Some(width) != cached.width)
+            || self
+                .height
+                .is_some_and(|height| Some(height) != cached.height)
+        {
+            return None;
+        }
+        let bytes = self.bytes.filter(|bytes| Some(*bytes) == cached.bytes)?;
+        let pin = self.metadata.get("sha256")?.as_str()?;
+        let cached_hash = cached.metadata.get("sha256")?.as_str()?;
+        pin.eq_ignore_ascii_case(cached_hash)
+            .then_some((bytes, pin))
     }
 
     pub fn from_entry(id: &str, entry: toml::Table) -> Result<Self> {
@@ -149,6 +170,22 @@ pub(super) fn load(path: Option<&Path>) -> Result<Vec<Asset>> {
                         let mut metadata = cached.metadata;
                         metadata.extend(asset.metadata.clone());
                         *asset = Asset::from_entry(id, metadata)?;
+                    } else if let (Some((bytes, pin)), Some(generation)) = (
+                        asset.heic_pin_for_source_move(&cached),
+                        wallpaper::cache_generation(&cached.metadata),
+                    ) {
+                        let verified = cached
+                            .path(&directory)
+                            .and_then(|path| wallpaper::open_wallpaper(&path).ok())
+                            .is_some_and(|mut file| {
+                                super::download::verify(&mut file, Some(bytes), Some(pin), bytes)
+                                    .is_ok()
+                            });
+                        if verified {
+                            asset
+                                .metadata
+                                .insert("cache_generation".into(), generation.into());
+                        }
                     }
                 } else if path.is_none() {
                     assets.push(cached);
@@ -170,6 +207,20 @@ pub(super) fn read_table(path: &Path) -> Result<toml::Table> {
         return Err("asset catalog exceeds 1 MiB".into());
     }
     Ok(input.parse()?)
+}
+
+pub(crate) fn apple_aerials() -> &'static toml::Table {
+    static AERIALS: OnceLock<toml::Table> = OnceLock::new();
+    AERIALS.get_or_init(|| {
+        let mut catalog: toml::Table =
+            include_str!("../../assets/wallpapers/macos-tahoe-aerials.toml")
+                .parse()
+                .expect("valid built-in Apple aerial catalog");
+        match catalog.remove("assets") {
+            Some(toml::Value::Table(assets)) => assets,
+            _ => panic!("missing built-in Apple aerials"),
+        }
+    })
 }
 
 pub(super) fn declared(path: Option<&Path>) -> Result<Vec<Asset>> {
@@ -195,8 +246,16 @@ pub(super) fn declared(path: Option<&Path>) -> Result<Vec<Asset>> {
             .collect();
     }
 
+    let mut assets = apple_aerials()
+        .iter()
+        .map(|(id, entry)| {
+            let entry = entry.as_table().ok_or("invalid built-in Apple aerial")?;
+            Asset::from_entry(id, entry.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     let manifest: toml::Table = include_str!("../../assets/wallpapers/manifest.toml").parse()?;
-    let mut assets = Vec::new();
+    // Keep legacy declarations for explicit commands and hash-pinned sources.
+    // The default listing hides the old MOVs; the HEICs remain discoverable.
     for (key, format, geometry) in [
         ("wallpaper", "mov", "media"),
         ("dynamic_heic", "heic", "structure"),

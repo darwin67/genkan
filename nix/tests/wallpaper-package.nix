@@ -17,8 +17,9 @@ pkgs.runCommand "genkan-wallpaper-package-check"
   ''
     set -eu
     directory=${genkan}/share/genkan/wallpapers
-    test "$(find "$directory" -mindepth 1 -printf '%P\n')" = manifest.toml
+    test "$(find "$directory" -mindepth 1 -printf '%P\n' | sort)" = "$(printf '%s\n' macos-tahoe-aerials.toml manifest.toml)"
     test -s "$directory/manifest.toml"
+    test -s "$directory/macos-tahoe-aerials.toml"
     if grep -F GENKAN_WALLPAPER_DIR ${genkan}/bin/genkan; then
       echo "production wrapper must not override the user's wallpaper cache" >&2
       exit 1

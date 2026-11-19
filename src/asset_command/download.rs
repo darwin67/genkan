@@ -150,7 +150,7 @@ fn identity(file: &mut File, max_bytes: u64) -> Result<(u64, String)> {
     Ok((bytes, format!("{:x}", hash.finalize())))
 }
 
-fn verify(
+pub(super) fn verify(
     file: &mut File,
     bytes: Option<u64>,
     hash: Option<&str>,
@@ -164,102 +164,6 @@ fn verify(
         return Err("download SHA-256 differs from catalog metadata".into());
     }
     Ok(observed)
-}
-
-fn github_release_url(asset: &Asset) -> Result<Option<String>> {
-    let Some(url) = asset.url.as_deref().filter(|url| {
-        url.starts_with("https://github.com/") && url.contains("/releases/download/")
-    }) else {
-        return Ok(None);
-    };
-    // The exception is a property of the compiled catalog, not a flag that an
-    // arbitrary URL, custom catalog, or cached receipt can grant itself.
-    let trusted = catalog::declared(None)?.iter().any(|entry| {
-        entry.id == asset.id
-            && entry.url == asset.url
-            && entry.bytes.is_some()
-            && entry.bytes == asset.bytes
-            && text(entry, "sha256")
-                .zip(text(asset, "sha256"))
-                .is_some_and(|(expected, actual)| expected.eq_ignore_ascii_case(actual))
-            && text(entry, "archive_member") == text(asset, "archive_member")
-            && text(entry, "archive_sha256") == text(asset, "archive_sha256")
-    });
-    if !trusted {
-        return Ok(None);
-    }
-    let mut command = Command::new("curl");
-    command
-        .args([
-            "--disable",
-            "--globoff",
-            "--silent",
-            "--fail",
-            "--head",
-            "--proto",
-            "=https",
-            "--max-time",
-            "15",
-            "--connect-timeout",
-            "15",
-            "--url",
-            url,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut transfer = Transfer::spawn(command).map_err(|_| "curl is unavailable")?;
-    let mut headers = String::new();
-    transfer
-        .0
-        .stdout
-        .take()
-        .unwrap()
-        .take(65537)
-        .read_to_string(&mut headers)?;
-    if headers.len() > 65536 || !transfer.0.wait()?.success() {
-        return Err("GitHub release resolution failed; no media installed".into());
-    }
-    let response = headers
-        .rsplit("\r\n\r\n")
-        .find(|block| block.starts_with("HTTP/"))
-        .ok_or("missing GitHub release response")?;
-    let status = response
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1));
-    if status == Some("200") {
-        return Ok(Some(url.to_owned()));
-    }
-    let mut locations = response.lines().filter_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("location").then(|| value.trim())
-    });
-    let location = locations.next().ok_or("missing GitHub release redirect")?;
-    if !matches!(status, Some("301" | "302" | "303" | "307" | "308"))
-        || locations.next().is_some()
-        || !location.starts_with(
-            "https://release-assets.githubusercontent.com/github-production-release-asset/",
-        )
-        // Do not let URL normalization escape the authorized path. Exclude
-        // the query/fragment, and reject encoded dots as well as literal dots.
-        || location
-            .split(['?', '#'])
-            .next()
-            .unwrap()
-            .split('/')
-            .any(|segment| {
-                let segment = segment.replace("%2e", ".").replace("%2E", ".");
-                matches!(segment.as_str(), "." | "..")
-            })
-        || location.chars().any(char::is_control)
-        || location.contains('\\')
-    {
-        return Err("unsafe GitHub release redirect; no media installed".into());
-    }
-    // Keep signed URLs ephemeral: the receipt retains the stable catalog URL.
-    // fetch still rejects redirects, so the CDN cannot introduce a second hop.
-    Ok(Some(location.to_owned()))
 }
 
 fn fetch(url: &str, file: &mut File, max_bytes: u64, expected_size: Option<u64>) -> Result<()> {
@@ -435,15 +339,17 @@ pub(super) fn run(asset: Asset, directory: &Path, max_bytes: u64) -> Result<std:
     let receipt_path = directory.join("entries").join(format!("{}.toml", asset.id));
     if receipt_path.is_file() {
         let receipt = catalog::read_table(&receipt_path)?;
-        if receipt.get("url") == asset.metadata.get("url")
-            && receipt.get("local_file") == asset.metadata.get("local_file")
-            && local_identity.as_ref().is_none_or(|(_, hash)| {
-                receipt.get("sha256").and_then(toml::Value::as_str) == Some(hash)
-            })
+        let cached = Asset::from_entry(&asset.id, receipt)?;
+        let moved_heic = asset.heic_pin_for_source_move(&cached).is_some();
+        if (cached.url == asset.url || moved_heic)
+            && cached.metadata.get("local_file") == asset.metadata.get("local_file")
+            && local_identity
+                .as_ref()
+                .is_none_or(|(_, hash)| text(&cached, "sha256") == Some(hash))
         {
-            let cached = Asset::from_entry(&asset.id, receipt)?;
             let declarations_match = ["format", "width", "height", "archive_member"]
                 .into_iter()
+                .filter(|key| !moved_heic || *key != "archive_member")
                 .all(|key| {
                     asset
                         .metadata
@@ -598,12 +504,8 @@ pub(super) fn worker(stage: &Path, max_bytes: u64) -> Result<()> {
             return Err("local file exceeds --max-bytes; no media installed".into());
         }
     } else {
-        let resolved = github_release_url(&asset)?;
         fetch(
-            resolved
-                .as_deref()
-                .or(asset.url.as_deref())
-                .ok_or("missing download URL")?,
+            asset.url.as_deref().ok_or("missing download URL")?,
             &mut source,
             expected_size.unwrap_or(max_bytes).min(max_bytes),
             expected_size,

@@ -187,7 +187,8 @@ responsive layouts, for example `WIDTH=1080 HEIGHT=1920 make lock-dev`.
 
 ## Download and inspect wallpapers
 
-The curated catalog uses original upstream sources; Nix does not fetch them.
+The default catalog lists Apple’s 156 original macOS Tahoe MOVs alongside the
+dynamic HEICs. Legacy Apple MOV IDs still work explicitly; Nix fetches no media.
 `assets preview` downloads a missing asset before opening its window; cached
 previews, login, lock, and wallpaper playback stay offline. Use the Cargo form
 below for an uninstalled build:
@@ -195,32 +196,26 @@ below for an uninstalled build:
 ```sh
 cargo run --bin genkan -- assets list
 cargo run --bin genkan -- assets list --details
-cargo run --bin genkan -- assets preview iceland
+cargo run --bin genkan -- assets preview macos-landscape-iceland-snow-caps
 cargo run --bin genkan -- assets download my-wallpaper --url "$SOURCE_URL"
 cargo run --bin genkan -- assets preview my-wallpaper --reduce-motion
 ```
 
 | Command | Network and validation | Local effect |
 | --- | --- | --- |
-| `assets list` | Offline | Compact table; `--details` adds names, URLs, and rights |
+| `assets list` | Offline | Compact table grouped by Apple aerial category and media type; `--details` adds names, URLs, and rights |
 | `assets preview <key>` | Download and validate only if missing; cached preview is offline | Cache missing media, then open a simulated window; change no settings |
 | `assets preflight <key>` | Bounded range reads; one representative frame | Install nothing |
 | `assets download <key>` | Complete transfer; resource-bounded hashing, ZIP parsing, and frame validation | Atomically select validated media, metadata, and a generated MOV poster |
 
-Downloads require HTTP(S) responses with status 200. A GitHub release source
-whose key, URL, size, and SHA-256 match the built-in catalog may resolve one
-HTTPS hop to `release-assets.githubusercontent.com/github-production-release-asset/`.
-Resolution uses a HEAD request limited to 15 seconds and 64 KiB of headers;
-the CDN response must return 200, with no further redirects. Signed URLs remain
-ephemeral; receipts retain the stable source URL. Custom catalogs and cached
-receipts cannot grant this exception to a different source or pin. Other
-download redirects, and all preflight redirects, remain rejected.
+Downloads require a direct HTTP(S) response with status 200. Neither downloads
+nor preflight follow redirects.
 For download and preview, `--max-bytes` defaults to 2 GiB, accepts 4 KiB–16 GiB,
 and limits both the transfer and expanded media; transfers time out after
 600 seconds. Supplied
-byte sizes and SHA-256 pins must match before publication. For custom URLs,
-`--sha256 HASH` is optional; without it, the computed hash is an observation,
-not a trusted upstream pin. Custom keys cannot replace keys in the selected
+byte sizes and SHA-256 pins must match before publication. Apple’s Tahoe MOV
+entries declare byte sizes but no upstream hashes. Without a trusted pin, the
+computed hash is an observation. Custom keys cannot replace keys in the selected
 catalog. Observed format, dimensions, byte size, and hash persist in cache
 `entries/<key>.toml` receipts and are available to subsequent list/preview
 commands. A matching verified cache entry can be reused.
@@ -332,12 +327,14 @@ or power actions real. Download the selected originals into your cache first:
 ```sh
 cargo run --bin genkan -- assets download tahoe-beach
 make animated-dev
-cargo run --bin genkan -- assets download sequoia-sunrise
-WALLPAPER=sequoia-sunrise make animated-dev
+cargo run --bin genkan -- assets download macos-landscape-sequoia-sunrise
+WALLPAPER=macos-landscape-sequoia-sunrise make animated-dev
 ```
 
 `--wallpaper-file` accepts an existing absolute MOV or HEIC file. MOV looping
-uses the actual stream duration; HEIC uses its own scheduling metadata.
+uses the reported stream duration. A Tahoe catalog MOV with no reported
+duration plays to the end and holds its last frame instead of looping. HEIC
+uses its own scheduling metadata.
 For downloaded files, use the absolute path printed by download, not
 a hardcoded cache layout. URIs, playlists, and GStreamer pipeline descriptions
 are not accepted.

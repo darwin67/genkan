@@ -15,7 +15,8 @@ let
       {
         programs.genkan.package = lib.mkForce raw;
         programs.genkan.greeter.enable = true;
-        programs.genkan.wallpaper.source.catalog = "iceland";
+        programs.genkan.greeter.wallpaper = "macos-mac-blue";
+        programs.genkan.wallpaper.source.catalog = "macos-landscape-tahoe-day";
       }
     ];
   };
@@ -55,7 +56,14 @@ assert service.serviceConfig.NoNewPrivileges;
 assert builtins.elem "greetd.service" service.before;
 assert builtins.elem "genkan-wallpaper.service" cfg.systemd.services.greetd.wants;
 assert !(builtins.elem "genkan-wallpaper.service" cfg.systemd.services.greetd.requires);
-assert lib.hasInfix "iceland" service.serviceConfig.ExecStart;
+assert lib.hasInfix "macos-landscape-tahoe-day" service.serviceConfig.ExecStart;
+assert lib.hasInfix "macos-mac-blue" cfg.services.greetd.settings.default_session.command;
+assert builtins.all system.options.programs.genkan.greeter.wallpaper.type.check [
+  "iceland"
+  "greenland"
+  "patagonia"
+  "palau-jellies"
+];
 assert lib.hasInfix "--url" urlConfig.systemd.services.genkan-wallpaper.serviceConfig.ExecStart;
 assert lib.hasInfix "--file" fileConfig.systemd.services.genkan-wallpaper.serviceConfig.ExecStart;
 # The unit must preserve literal percent and dollar characters, not interpret

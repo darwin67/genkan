@@ -165,25 +165,14 @@ in
         description = "Preferred connector or niri make/model/serial monitor name.";
       };
       wallpaper = lib.mkOption {
-        type = lib.types.enum [
-          "tahoe-beach"
-          "sequoia-sunrise"
-          "sequoia-morning"
-          "sequoia-night"
-          "golden-gate"
-          "scotland"
-          "liwa"
-          "hawaii"
-          "hong-kong"
-          "san-francisco"
-          "westfjords"
-          "jodhpur"
-          "quarten"
-          "lake-como"
-          "manhattan-night"
-        ];
+        type = lib.types.enum (
+          map (entry: entry.id) (builtins.fromTOML (builtins.readFile ../assets/wallpapers/manifest.toml)).wallpaper
+          ++ builtins.attrNames (builtins.fromTOML (
+            builtins.readFile ../assets/wallpapers/macos-tahoe-aerials.toml
+          )).assets
+        );
         default = "tahoe-beach";
-        description = "Login wallpaper, also used on the other outputs.";
+        description = "Cached login MOV ID from genkan assets list or a legacy Apple MOV ID, also used on the other outputs.";
       };
       wallpaperFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
@@ -301,7 +290,7 @@ in
               catalog = lib.mkOption {
                 type = lib.types.nullOr lib.types.str;
                 default = null;
-                example = "iceland";
+                example = "macos-landscape-tahoe-day";
                 description = "ID from genkan assets list.";
               };
               url = lib.mkOption {
