@@ -1,4 +1,8 @@
+<img src="assets/icon/genkan.svg" alt="Genkan icon" width="96">
+
 # Genkan
+
+A greetd login screen and session lock that follows macOS.
 
 Genkan is a graphical [greetd](https://sr.ht/~kennylevinsen/greetd/)
 frontend for Linux, built with Rust and iced. It runs fullscreen under Cage
