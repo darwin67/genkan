@@ -8,12 +8,15 @@ Enter the pinned Nix shell before running Cargo or Make targets:
 nix develop
 ```
 
-The Makefile provides `dev`, `animated-dev`, `lock-dev`, `check`, `fmt`, `fmt-fix`, `lint`,
-`test`, `scripts-test`, `check-rfds`, `smoke`, `wallpaper-smoke`, `lock-smoke`,
-`lock-vm`, `heic-assets`, `heic-decode`, `evidence`, `update-reference-images`,
-`wallpaper-package`, `wallpaper-empty-cache`, `hardware-smoke`, `e2e`, `build`,
-`package`, `verify`, `changelog`, `next-version`, and `clean` targets. `fuzz` is
-an opt-in nightly target.
+| Task | Make targets |
+| --- | --- |
+| Preview | `dev`, `animated-dev`, `lock-dev` |
+| Build and check | `check`, `fmt`, `fmt-fix`, `lint`, `test`, `scripts-test`, `check-rfds`, `check-design`, `build`, `package`, `verify`, `clean` |
+| Packaged smoke checks | `smoke`, `wallpaper-smoke`, `lock-smoke`, `niri-smoke`, `evidence` |
+| Wallpaper and fixtures | `wallpaper-package`, `wallpaper-empty-cache`, `wallpaper-provisioning`, `heic-assets`, `heic-decode` |
+| Regenerate assets | `update-reference-images`, `update-avatars` |
+| Separate checks | `e2e`, `lock-vm`, `niri-vm` (KVM); `hardware-smoke` (physical graphics); `fuzz` (nightly Rust) |
+| Release tooling | `changelog`, `next-version` |
 
 ## Releasing Genkan
 
@@ -370,11 +373,15 @@ Runtime playback never downloads media or invokes a shell. With an empty cache,
 
 ## Verification
 
-Run all local checks:
+Run the local suite for formatting, lint, tests, packaging, headless compositor
+smoke checks, and preview evidence:
 
 ```sh
 make verify
 ```
+
+`make verify` does not run the separate [NixOS VM checks](#nixos-vm-checks),
+the physical hardware smoke, or fuzzing.
 
 Run `make test` (including its invocation by `make verify`) in the foreground.
 A background shell job can inherit ignored SIGINT and spuriously fail the
@@ -414,6 +421,9 @@ that never happened. Screenshot evidence cannot distinguish a fabricated uniform
 frame from a real dissolve, so this bounds the failure modes rather than proving
 the renderer's internal path.
 
+`make niri-smoke` checks the generated greeter configuration and exercises
+wallpaper and lock under nested niri at fractional scale.
+
 `make check-rfds` also validates the wallpaper catalog manifest. The loop
 analysis must record the method that produced each `endpoint_ssim`, the
 reproducible set must name exactly the catalog entries, every entry must record
@@ -423,10 +433,12 @@ check validates the recorded claims rather than re-measuring them, so it stays
 cheap enough for every change; it does not fetch upstream media.
 
 `make wallpaper-package` checks that the production wallpaper tree contains
-only the manifest and the runtime closure contains neither catalog artwork nor
-a test cache. `make wallpaper-empty-cache` checks the unmodified production
-wrapper with empty HOME, XDG, and override caches: preview remains usable,
-opens no artwork, and starts no downloader or network request.
+only the two catalog TOML files and the runtime closure contains neither
+catalog artwork nor a test cache. `make wallpaper-empty-cache` checks the
+unmodified production wrapper with empty HOME, XDG, and override caches:
+preview remains usable, opens no artwork, and starts no downloader or network
+request. `make wallpaper-provisioning` checks the NixOS preparation unit and
+the playback wrapper's selection and explicit override behavior.
 
 `make heic-assets` verifies the byte sizes and SHA-256 hashes of the authored,
 repository-delivered HEIC fixtures. `make heic-decode` opens those fixtures
@@ -435,17 +447,21 @@ against the manifest's `structure.image_count`. A fixture declaring
 `decode_verified = false` fails rather than being skipped. These checks use an
 explicit test cache; remote catalog records are not downloaded or revalidated.
 
-Authentication changes should also run the x86_64 NixOS VM test:
+### NixOS VM checks
 
-```sh
-make e2e
-```
+CI runs these separately from `make verify`. To run them locally, use an
+x86_64 Linux host with KVM and choose the check for the behavior you changed:
 
-The VM boots real greetd 0.10.3 with its NixOS PAM configuration. A
-feature-gated driver submits an incorrect password, cancels and recreates the
-greetd session, authenticates successfully, and starts a marker session. It
-verifies the launched user and serialized session environment; it does not
-exercise iced rendering or input automation.
+| Behavior | Command |
+| --- | --- |
+| greetd/PAM retry, cancellation, and session launch | `make e2e` |
+| Session-lock lifecycle, input isolation, before-sleep readiness, and simulated resume | `make lock-vm` |
+| niri greeter authentication, session handoff, and crash recovery | `make niri-vm` |
+| GeoClue-backed solar scheduling | `nix build .#checks.x86_64-linux.geoclue-solar-vm --print-build-logs` |
+
+`make e2e` uses real greetd 0.10.3 with NixOS PAM and a feature-gated driver to
+verify the launched user and session environment. It does not exercise iced
+rendering or input automation.
 
 ## Physical graphics smoke
 

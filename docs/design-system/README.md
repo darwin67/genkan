@@ -9,7 +9,7 @@ Component previews in `components/` expect `tokens.json` compiled to CSS custom 
 - **Follow macOS.** Match its layout, proportions, type and behaviour. Deviate only where greetd or Linux needs something macOS lacks, and then use a macOS idiom: a menu-bar item, a menu, an alert.
 - **Never dim the wallpaper.** Legibility comes from soft text shadows and blurred glass behind small controls, not from darkening the picture.
 - **Small and low.** The identity column sits `identity-bottom` above the bottom edge and stays small: a `avatar-size` avatar, a `type-name` name and a `field-width` pill.
-- **Login and lock are one product.** Both use the same tokens, the same clock and the same pill. Lock drops only the session and power items.
+- **Login and lock share one composition.** Both use the same tokens, clock and pill. Session and power controls belong to login; lock has its own masking and retry behavior.
 - **Nothing depends on hover.** Every action is reachable from the keyboard in reading order.
 
 ## Color
@@ -30,8 +30,8 @@ The clock is centered `clock-top` from the top. The status bar sits `bar-inset-t
 
 ## Behaviour
 
-- A wrong password shakes the pill horizontally and clears it. No error text appears unless PAM sends a message, which goes on the line below the pill.
-- A later PAM prompt shows its text above the pill and takes visible input when PAM says it is not secret.
+- A rejected response clears the pill and shakes it unless reduced motion is on. Lock shows “Press Return to try again”; notices and progress appear below the pill on both screens.
+- Visible prompts and prompts too long for the pill go above it. Login shows input for prompts PAM marks as visible; lock masks every response.
 - The submit arrow appears only once there is input. The Caps Lock glyph appears beside it while Caps Lock is on.
 - Restart and Shut Down open an Alert whose Cancel button has initial focus.
 

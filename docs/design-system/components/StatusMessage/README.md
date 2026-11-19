@@ -1,7 +1,7 @@
 # StatusMessage
 
-PAM's own text, centered on the line directly under (or, for a prompt, above) the pill.
+Prompt text that does not belong in the placeholder appears above the pill. PAM notices and application status go below it, including authentication progress and “Press Return to try again” on lock after a failed attempt. The lock retry hint does not depend on PAM sending a notice.
 
-It uses `type-message` in `text-primary` with a soft shadow, wraps at `message-width`, and appears only when PAM sends text. A rejected password on its own shows no message: the pill shakes instead, as on macOS.
+Message text uses `type-message` with a soft shadow and wraps at `message-width`.
 
-**Provide.** The message, and whether it is a prompt (above) or a notice (below).
+**Provide.** The message and whether it is a prompt (above) or a notice or status (below).
