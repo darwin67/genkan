@@ -226,11 +226,21 @@ For example, Sway accepts:
 exec genkan wallpaper --file /home/alice/Pictures/dynamic.heic
 ```
 
-Use the equivalent `spawn-at-startup` or `exec-once` mechanism for the selected
-compositor. Disable any competing wallpaper process. Genkan deliberately does
-not install a generic systemd user service or wrap the validated desktop
-session command: a UID-wide user manager may not identify the intended Wayland
-session, and wallpaper startup must not delay desktop startup.
+Plain `exec` starts the wallpaper at the next Sway session startup; `swaymsg reload`
+does not run it. To start the wallpaper in the current session, run this once
+after stopping any competing wallpaper process:
+
+```sh
+swaymsg exec 'genkan wallpaper --file /home/alice/Pictures/dynamic.heic'
+```
+
+Avoid `exec_always` unless you manage the previous instance: each reload can
+start another wallpaper process. For other compositors, use their equivalent
+`spawn-at-startup` or `exec-once` mechanism and disable any competing wallpaper
+process. Genkan deliberately does not install a generic systemd user service or
+wrap the validated desktop session command: a UID-wide user manager may not
+identify the intended Wayland session, and wallpaper startup must not delay
+desktop startup.
 
 `--reduce-motion` keeps time-of-day scheduling but changes frames immediately
 instead of dissolving. `--appearance light` or `--appearance dark` selects
