@@ -15,6 +15,33 @@ The Makefile provides `dev`, `animated-dev`, `lock-dev`, `check`, `fmt`, `fmt-fi
 `package`, `verify`, `changelog`, `next-version`, and `clean` targets. `fuzz` is
 an opt-in nightly target.
 
+## Releasing Genkan
+
+**Squash-merge the `release/next` PR after its checks pass** to publish a
+GitHub release. If `main` has advanced, wait for `Prepare release PR` to refresh
+the proposal and its checks. git-cliff starts at `v0.1.0`, then chooses major for
+breaking changes, minor for features, and patch for other included commits. The
+PR adds a changelog entry without rewriting released notes, and keeps Cargo's
+manifest and both lockfiles in sync.
+
+One-time GitHub setup: install a GitHub App with **Contents: read/write** and
+**Pull requests: read/write** on this repository. In the `RELEASE` Actions
+environment, set `RELEASE_APP_ID` to the app ID and `RELEASE_APP_SECRET` to its
+private key. Allow `main` to use the environment. The app opens the PR so normal
+PR checks run; publishing uses the workflow's own GitHub token.
+
+To enforce freshness at merge time, require the **Release proposal freshness**
+status check on `main` and enable **Require branches to be up to date before
+merging**. If a stale proposal is merged anyway, publishing stops before tagging.
+Revert only that squash commit through a PR, then rerun **Prepare release PR**.
+
+`Publish GitHub release` builds the exact merge commit for both Linux targets
+before publishing either download. If it fails, rerun the failed jobs; an
+incomplete upload remains a draft. If `main` advances while a release is still
+building, the next release PR waits for its tag. After publishing, run
+`Prepare release PR` manually from `main` to pick up those commits without
+waiting for another push. See [installing a prebuilt release](deployment.md#install-a-prebuilt-release).
+
 ## Shared presentation
 
 `src/design/` owns the bundled Inter typeface, glyphs, styles, text fitting,

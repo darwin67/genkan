@@ -64,6 +64,76 @@ test_conventional_commit_description() {
     run_commit_check "$repository" "$base" "$invalid"
 }
 
+test_release_metadata() (
+  local repository="$tmp_dir/release" metadata="$repo_root/scripts/release-metadata.py"
+  mkdir -p "$repository/fuzz"
+  cd "$repository"
+  cp "$repo_root/cliff.toml" .
+  printf '[package]\nname = "genkan"\nversion = "0.1.0"\n' > Cargo.toml
+  printf '[[package]]\nname = "genkan"\nversion = "0.1.0"\n' > Cargo.lock
+  cp Cargo.lock fuzz/Cargo.lock
+  git init -q -b main
+  git config user.name Test
+  git config user.email test@example.com
+  git add .
+  git commit -qm 'feat: initial application'
+
+  local tag
+  tag=$(python3 "$metadata" prepare)
+  [[ $tag == v0.1.0 ]] || fail "first release was $tag"
+  # Deliberately edit the reviewed wording so regeneration from Git differs.
+  printf '\n- Maintainer-written installation advice.\n' >> CHANGELOG.md
+  cp CHANGELOG.md released.md
+  git add CHANGELOG.md
+  git commit -qm "chore(release): $tag"
+  python3 "$metadata" check-base
+  tag=$(python3 "$metadata" prepare)
+  [[ -z $tag ]] || fail "prepared another release before the first tag"
+  git tag v0.1.0
+  tag=$(python3 "$metadata" prepare)
+  [[ -z $tag ]] || fail "prepared another release with no new changes"
+
+  git commit --allow-empty -qm 'fix: recover from a bad session entry'
+  git tag v9.8.7-rc.1
+  tag=$(python3 "$metadata" prepare)
+  [[ $tag == v0.1.1 ]] || fail "patch release was $tag"
+  diff -u <(sed -n '/^## \[0\.1\.0\]/,$p' released.md) \
+    <(sed -n '/^## \[0\.1\.0\]/,$p' CHANGELOG.md)
+
+  # The proposal gets squash-merged after an intervening feature. It still has
+  # internally consistent version files, but its notes cover the wrong base.
+  git switch -qc release/next
+  git add CHANGELOG.md Cargo.toml Cargo.lock fuzz/Cargo.lock
+  git commit -qm "chore(release): $tag"
+  git switch -q main
+  git commit --allow-empty -qm 'feat: add a new session option'
+  git switch -qc stale-test-merge
+  git merge --no-edit --quiet release/next
+  expect_failure "Stale release proposal" python3 "$metadata" check-base
+  git switch -q main
+  git switch -qc stale-squash
+  git merge --squash --quiet release/next
+  git commit -qm "chore(release): $tag"
+  expect_failure "Stale release proposal" python3 "$metadata" check-base
+  git switch -q main
+
+  tag=$(python3 "$metadata" prepare)
+  [[ $tag == v0.2.0 ]] || fail "feature release was $tag"
+  python3 "$metadata" notes "chore(release): $tag" > notes.md
+  grep -Fq 'Add a new session option' notes.md || fail "missing current release notes"
+  if grep -Eq 'Initial application|release-base:' notes.md; then
+    fail "current release notes include history or internal metadata"
+  fi
+  expect_failure "Release PR title does not match" python3 "$metadata" notes 'chore(release): v0.2.1'
+  git restore -- fuzz/Cargo.lock
+  expect_failure "fuzz/Cargo.lock does not match" python3 "$metadata" notes "chore(release): $tag"
+
+  git restore -- Cargo.toml Cargo.lock CHANGELOG.md
+  git commit --allow-empty -qm 'feat!: drop obsolete configuration'
+  tag=$(python3 "$metadata" prepare)
+  [[ $tag == v1.0.0 ]] || fail "breaking release was $tag"
+)
+
 make_drm_fixture() {
   local fixture=$1
   mkdir -p \
@@ -1214,6 +1284,7 @@ EOF
 }
 
 test_conventional_commit_description
+test_release_metadata
 test_vendor_level_hardware_coverage
 test_vulkan_discovery_timeout
 test_sway_query_failure_is_not_masked
