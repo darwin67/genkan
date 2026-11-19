@@ -12,8 +12,8 @@ mod catalog;
 mod download;
 mod preflight;
 
-pub(crate) use catalog::apple_aerials;
 use catalog::Asset;
+pub(crate) use catalog::{apple_aerials, heic_id};
 
 const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 

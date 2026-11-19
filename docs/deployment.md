@@ -184,16 +184,12 @@ Nix does not fetch artwork. A wallpaper process never downloads media. See
 [wallpaper configuration](#wallpaper-configuration) for cache paths and
 greeter provisioning.
 
-`--wallpaper` selects the same MOV catalog as login; `--reduce-motion` shows
-its poster. `--wallpaper-file` accepts an absolute MOV or HEIC override, with
-the same appearance and reduced-motion arguments as login. `--skip-output`
-omits a connector or persistent monitor name. No decoder starts when every
-output is skipped.
-
-For a downloaded HEIC, use the absolute media path printed by download with
-`--file`; do not assume it lives under the cache's `heic/` directory.
-Previously published versions are retained, so saved absolute file overrides
-keep selecting the same version after a replacement download.
+`--wallpaper` selects cached MOVs and HEICs from the same catalog as login. For
+example, run `genkan assets download catalina`, then
+`genkan wallpaper --wallpaper catalina`. `--wallpaper-file` overrides the ID with
+an absolute MOV or HEIC path. Appearance and reduced motion work as in login.
+`--skip-output` omits a connector or persistent monitor name. No decoder starts
+when every output is skipped.
 
 `--file` retains the desktop HEIC interface and is required with `--solar`.
 It accepts an existing absolute regular `.heic` or `.heif` file. URIs, FIFOs, devices, and
@@ -226,11 +222,21 @@ For example, Sway accepts:
 exec genkan wallpaper --file /home/alice/Pictures/dynamic.heic
 ```
 
-Use the equivalent `spawn-at-startup` or `exec-once` mechanism for the selected
-compositor. Disable any competing wallpaper process. Genkan deliberately does
-not install a generic systemd user service or wrap the validated desktop
-session command: a UID-wide user manager may not identify the intended Wayland
-session, and wallpaper startup must not delay desktop startup.
+Plain `exec` starts the wallpaper at the next Sway session startup; `swaymsg reload`
+does not run it. To start the wallpaper in the current session, run this once
+after stopping any competing wallpaper process:
+
+```sh
+swaymsg exec 'genkan wallpaper --file /home/alice/Pictures/dynamic.heic'
+```
+
+Avoid `exec_always` unless you manage the previous instance: each reload can
+start another wallpaper process. For other compositors, use their equivalent
+`spawn-at-startup` or `exec-once` mechanism and disable any competing wallpaper
+process. Genkan deliberately does not install a generic systemd user service or
+wrap the validated desktop session command: a UID-wide user manager may not
+identify the intended Wayland session, and wallpaper startup must not delay
+desktop startup.
 
 `--reduce-motion` keeps time-of-day scheduling but changes frames immediately
 instead of dissolving. `--appearance light` or `--appearance dark` selects
@@ -683,8 +689,21 @@ background when the poster is unavailable. After playback begins, a failure
 retains the last displayed frame instead of briefly replacing it with the
 poster.
 
-`login` and `lock` also accept an absolute local MOV or dynamic HEIC through
-`--wallpaper-file`. For a custom download, run:
+Select a catalog HEIC by ID after downloading it into the cache of the account
+that runs Genkan:
+
+```sh
+genkan assets download catalina
+genkan login --wallpaper catalina --appearance dark
+genkan lock --wallpaper catalina --reduce-motion
+```
+
+An ID uses the published cache generation at playback startup. A missing HEIC
+uses the generated background, without downloading anything. Desktop solar
+scheduling still requires an explicit `--file` and `--solar`.
+
+To use a local or custom MOV or HEIC, pass an absolute `--wallpaper-file` to
+override the ID. For a custom download, run:
 
 ```sh
 genkan assets download my-wallpaper --url "$SOURCE_URL" --sha256 "$SHA256"
@@ -703,8 +722,8 @@ Saved absolute overrides remain valid after replacements and keep selecting
 their original published version; change the override only to select a newer
 version.
 
-A HEIC override uses the same parser, time-of-day scheduler, and RGBA frame path
-as the desktop wallpaper, but never requests location. `--appearance light` or
+HEIC playback by ID or file uses the same time-of-day scheduler and RGBA frame
+format. Login and lock never request location. `--appearance light` or
 `--appearance dark` selects a static appearance image; `automatic` (the default)
 uses a valid `h24` time schedule when present and otherwise falls back to the
 appearance metadata's light image, then the primary image. For a HEIC,

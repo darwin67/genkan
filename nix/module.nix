@@ -12,6 +12,7 @@ let
   wallpaperDesktopId = "genkan-wallpaper";
   greeter = cfg.greeter;
   source = cfg.wallpaper.source;
+  wallpaperManifest = builtins.fromTOML (builtins.readFile ../assets/wallpapers/manifest.toml);
   stateDirectory = "/var/lib/genkan-wallpapers";
   prepareArgs = [
     "assets"
@@ -166,13 +167,14 @@ in
       };
       wallpaper = lib.mkOption {
         type = lib.types.enum (
-          map (entry: entry.id) (builtins.fromTOML (builtins.readFile ../assets/wallpapers/manifest.toml)).wallpaper
+          map (entry: entry.id) wallpaperManifest.wallpaper
+          ++ map (entry: entry.id) (lib.filter (entry: entry.delivery != "repository") wallpaperManifest.dynamic_heic)
           ++ builtins.attrNames (builtins.fromTOML (
             builtins.readFile ../assets/wallpapers/macos-tahoe-aerials.toml
           )).assets
         );
         default = "tahoe-beach";
-        description = "Cached login MOV ID from genkan assets list or a legacy Apple MOV ID, also used on the other outputs.";
+        description = "Cached MOV or catalog HEIC ID for the greeter, also used on the other outputs.";
       };
       wallpaperFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;

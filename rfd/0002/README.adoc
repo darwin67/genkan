@@ -198,12 +198,14 @@ This is not a promise of simultaneous display changes across processes or
 filesystem durability after power loss.
 
 Conventional `mov/` and `heic/` directories remain supported for explicitly
-provisioned local/test files, not as downloaded-media destinations. Use the
-absolute media path printed by download with `--wallpaper-file`, rather than
-constructing a path. Published generations are retained so in-flight previews,
-deferred HEIC opens, and saved absolute overrides remain valid. Replacements may
-occupy additional disk space; remove an unused version only when no readers or
-saved overrides need it.
+provisioned local/test files, not as downloaded-media destinations. Select a
+downloaded catalog MOV or HEIC with `--wallpaper <key>`. For a custom download
+or to pin a particular version, use the absolute media path printed by download
+with `--wallpaper-file`, rather than constructing a path. Desktop solar scheduling
+still requires an explicit `--file` with `--solar`. Published generations are
+retained so in-flight previews, deferred HEIC opens, and saved absolute overrides
+remain valid. Remove an unused version only when no readers or saved overrides
+need it.
 
 === Provisioning and recovery
 

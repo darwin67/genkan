@@ -63,7 +63,9 @@ assert builtins.all system.options.programs.genkan.greeter.wallpaper.type.check 
   "greenland"
   "patagonia"
   "palau-jellies"
+  "catalina"
 ];
+assert !(system.options.programs.genkan.greeter.wallpaper.type.check "synthetic-all-properties");
 assert lib.hasInfix "--url" urlConfig.systemd.services.genkan-wallpaper.serviceConfig.ExecStart;
 assert lib.hasInfix "--file" fileConfig.systemd.services.genkan-wallpaper.serviceConfig.ExecStart;
 # The unit must preserve literal percent and dollar characters, not interpret

@@ -682,6 +682,7 @@ struct Runtime {
     media: crate::wallpaper::State,
     media_started: bool,
     media_settings: crate::wallpaper::Settings,
+    cached_heic: Option<Result<PathBuf, String>>,
     file: Option<PathBuf>,
     skip_output: Option<String>,
     appearance: AppearancePreference,
@@ -735,6 +736,7 @@ pub fn run(config: Config) -> Result<(), Error> {
         media: crate::wallpaper::State::disabled(),
         media_started: false,
         media_settings: config.wallpaper,
+        cached_heic: None,
         file: config.file,
         skip_output: config.skip_output,
         started_at: Instant::now(),
@@ -894,7 +896,8 @@ impl Runtime {
             return Ok(());
         }
         if !self.media_started {
-            self.media = crate::wallpaper::State::start(self.media_settings.clone());
+            self.media =
+                crate::wallpaper::State::start_desktop(&self.media_settings, &mut self.cached_heic);
             self.decoder = self.file.clone().map(Decoder::spawn).transpose()?;
             self.media_started = true;
         }
