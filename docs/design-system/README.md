@@ -39,6 +39,15 @@ The clock is centered `clock-top` from the top. The status bar sits `bar-inset-t
 
 Status-bar items, the power glyph, the submit arrow, the Caps Lock glyph and the menu check mark are simple stroked line icons in the current text color. Apple's SF Symbols cannot ship on Linux; do not copy them.
 
+## Brand
+
+Genkan's mark is a shoji door slid partway open, with light from inside showing through the gap: the entrance of a home, lit for whoever arrives. It is the project's icon, not part of the login or lock screen, which stay free of branding.
+
+- Use [`assets/icon/genkan.svg`](../../assets/icon/genkan.svg) at every size.
+- [`assets/icon/social-preview.png`](../../assets/icon/social-preview.png) is the repository's 1280×640 social preview: the icon beside the name and the tagline "A greetd login screen and session lock that follows macOS." Upload it under the repository's Settings → Social preview.
+- The light fades from `#7ab0ff` into `accent` (`#2f6fe0`). The rest of the mark is drawn in colors the screens do not use, so they stay out of `tokens.json`: tile `#3a3f4a` to `#1c1e23`, paper `#f4f8fd`, lattice and frame `#2a2d34`, kick panel `#566070`. Do not recolor the mark, redraw it as an outline, or add text inside the tile.
+- Leave clear space of at least a quarter of the icon's width around it, and set the name "Genkan" in Inter beside or below it.
+
 ## Writing
 
 Use macOS wording where macOS has it: "Enter Password", "Sleep", "Restart…", "Shut Down…", and alert questions such as "Are you sure you want to shut down your computer now?". Show PAM text as given, and never echo a response or credential.
