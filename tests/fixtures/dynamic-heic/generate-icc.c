@@ -6,13 +6,14 @@
  * These fixtures carry a self-authored profile instead of a third-party one, so
  * the repository redistributes no profile it does not own.
  *
- * usage: generate-icc OUTPUT.heic linear|unsupported|sixk
+ * usage: generate-icc OUTPUT.heic linear|padded|unsupported|sixk
  *
  *   linear       8x8, five solid colors, with a linear-light matrix-shaper RGB
  *                profile. Its colorants are the sRGB/Rec.709 primaries adapted
  *                to the ICC D50 connection space, so the only difference from
  *                sRGB is the tone curve. Converting it to sRGB therefore has a
  *                predictable, observable result.
+ *   padded       same as linear, with four zero bytes after the profile in colr.
  *   unsupported  8x8, one solid color, with a profile whose data color space is
  *                CMYK. The decoder must refuse it rather than display it with
  *                unspecified color.
@@ -27,6 +28,7 @@
  *   cc $(pkg-config --cflags libheif) generate-icc.c \
  *     $(pkg-config --libs libheif) -lm -o generate-icc
  *   ./generate-icc synthetic-icc.heic linear
+ *   ./generate-icc synthetic-icc-padded.heic padded
  *   ./generate-icc synthetic-icc-unsupported.heic unsupported
  *   ./generate-icc synthetic-icc-6k.heic sixk
  */
@@ -267,16 +269,24 @@ int main(int argc, char **argv)
     size_t color_index;
     int width;
     int height;
+    int padded;
+    int linear;
 
     if (argc != 3) {
-        fail("usage: generate-icc OUTPUT.heic linear|unsupported|sixk");
+        fail("usage: generate-icc OUTPUT.heic linear|padded|unsupported|sixk");
     }
+    padded = strcmp(argv[2], "padded") == 0;
+    linear = strcmp(argv[2], "linear") == 0 || padded;
 
     memset(profile, 0, sizeof(profile));
 
-    if (strcmp(argv[2], "linear") == 0) {
+    if (linear) {
         profile_size = build_matrix_shaper_profile(
             profile, 1.0, "Genkan linear-light Rec.709 test profile");
+        /* The ICC header still declares only the profile, not the container padding. */
+        if (padded) {
+            profile_size += 4;
+        }
         width = 8;
         height = 8;
     } else if (strcmp(argv[2], "unsupported") == 0) {
@@ -313,7 +323,7 @@ int main(int argc, char **argv)
     }
     check(heif_encoder_set_lossless(encoder, 1));
 
-    if (strcmp(argv[2], "linear") == 0) {
+    if (linear) {
         for (color_index = 0;
              color_index < sizeof(linear_colors) / sizeof(linear_colors[0]);
              color_index++) {

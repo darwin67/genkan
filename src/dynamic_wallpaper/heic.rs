@@ -576,27 +576,26 @@ const ICC_TEXT_TYPES: [&[u8; 4]; 3] = [b"mluc", b"desc", b"text"];
 /// across tags or across the records inside one tag, so a profile that fits the
 /// byte ceiling can still make it materialize far more memory than the profile
 /// occupies. The parser also reads the declared profile extent without
-/// requiring it to match the bytes it was handed, so a profile can describe one
-/// size and occupy another.
+/// checking it against the bytes it was handed. Validate and return the same
+/// declared slice for parsing, excluding any trailing container padding.
 ///
 /// This walk establishes the extent, the tag count, the bounds of every tag,
 /// the decoded text budget, and the localization-record budget, and rejects
 /// anything it cannot account for. It reads only offsets and lengths, never
 /// allocates, and therefore runs in time proportional to the tag count.
-fn preflight_icc_profile(bytes: &[u8], limits: &Limits) -> Result<(), Error> {
+fn preflight_icc_profile<'a>(bytes: &'a [u8], limits: &Limits) -> Result<&'a [u8], Error> {
     const HEADER_BYTES: usize = 128;
     const TAG_ENTRY_BYTES: usize = 12;
 
     if bytes.len() < HEADER_BYTES + 4 {
         return Err(Error::UnsupportedColor("malformed embedded ICC profile"));
     }
-    // The header's first field is the profile's own length. The parser reads it
-    // but never compares it with the bytes it was given, so a profile can
-    // declare any extent at all; require agreement.
     let declared = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-    if usize::try_from(declared).ok() != Some(bytes.len()) {
-        return Err(Error::UnsupportedColor("embedded ICC profile extent"));
-    }
+    let bytes = usize::try_from(declared)
+        .ok()
+        .filter(|&len| len >= HEADER_BYTES + 4)
+        .and_then(|len| bytes.get(..len))
+        .ok_or(Error::UnsupportedColor("embedded ICC profile extent"))?;
     let tag_count = u32::from_be_bytes([
         bytes[HEADER_BYTES],
         bytes[HEADER_BYTES + 1],
@@ -655,7 +654,7 @@ fn preflight_icc_profile(bytes: &[u8], limits: &Limits) -> Result<(), Error> {
         }
         charge_icc_text(tag, &mut text_bytes, &mut text_records, limits)?;
     }
-    Ok(())
+    Ok(bytes)
 }
 
 /// Charges the text one tag will make the profile parser allocate.
@@ -832,7 +831,7 @@ impl IccTransform {
         if bytes.is_empty() || bytes.len() > limits.max_color_profile_bytes {
             return Err(Error::UnsupportedColor("embedded ICC profile size"));
         }
-        preflight_icc_profile(bytes, limits)?;
+        let bytes = preflight_icc_profile(bytes, limits)?;
         let source = ColorProfile::new_from_slice(bytes)
             .map_err(|_| Error::UnsupportedColor("malformed embedded ICC profile"))?;
         if source.color_space != DataColorSpace::Rgb {
@@ -2549,6 +2548,28 @@ mod tests {
                     .unwrap(),
                 expected,
             );
+        }
+    }
+
+    #[test]
+    fn embedded_icc_padding_does_not_change_decoded_frames() {
+        let name = "synthetic-icc-padded.heic";
+        let mut expected_profile = fixture_profile("synthetic-icc.heic");
+        expected_profile.extend_from_slice(&[0; 4]);
+        assert_eq!(fixture_profile(name), expected_profile);
+
+        let padded = Document::open(&fixture(name)).unwrap();
+        let original = Document::open(&fixture("synthetic-icc.heic")).unwrap();
+        assert_eq!(padded.item_ids().count(), original.item_ids().count());
+        for position in 0..original.item_ids().count() {
+            let item = ImageReference::from_position(position);
+            let actual = padded.decode(item).expect("decode the padded profile");
+            let expected = original.decode(item).unwrap();
+            assert_eq!(
+                (actual.width, actual.height),
+                (expected.width, expected.height)
+            );
+            assert_eq!(actual.pixels, expected.pixels);
         }
     }
 
