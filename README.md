@@ -134,6 +134,10 @@ remove an unused version only when no readers or saved overrides need it.
 The next explicit download cleans only abandoned, unpublished staging, never
 previously published versions. Playback performs no cache cleanup.
 
+After `genkan assets download catalina`, select it with `--wallpaper catalina`
+on `login`, `lock`, or `wallpaper`. An absolute `--wallpaper-file` still takes
+precedence, and desktop solar mode still needs `--file --solar`.
+
 The cache is the absolute `GENKAN_WALLPAPER_DIR`, otherwise an absolute
 `XDG_CACHE_HOME` plus `/genkan/wallpapers`, otherwise an absolute `HOME` plus
 `/.cache/genkan/wallpapers`. Listing, login, lock, and wallpaper playback never

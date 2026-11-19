@@ -101,8 +101,15 @@ struct VerifyWallpapersArguments {
 #[derive(Debug, Args)]
 struct HeicWorkerArguments {
     /// Absolute local dynamic HEIC file.
-    #[arg(long)]
-    file: PathBuf,
+    #[arg(
+        long,
+        required_unless_present = "wallpaper",
+        conflicts_with = "wallpaper"
+    )]
+    file: Option<PathBuf>,
+    /// Downloaded HEIC to resolve in the worker, off the lock-owning thread.
+    #[arg(long, value_parser = parse_heic_id)]
+    wallpaper: Option<&'static str>,
     /// Static appearance selection for the decoded frame.
     #[arg(long, value_enum, default_value = "automatic")]
     appearance: WallpaperAppearance,
@@ -119,7 +126,7 @@ struct WallpaperArguments {
     /// Absolute local dynamic HEIC file (desktop solar scheduling is opt-in).
     #[arg(long, value_parser = parse_heic_wallpaper_file, conflicts_with_all = ["wallpaper", "wallpaper_file"])]
     file: Option<PathBuf>,
-    /// Select a cached MOV ID from `genkan assets list`.
+    /// Select a cached MOV or catalog HEIC ID from `genkan assets list`.
     #[arg(long, value_parser = wallpaper::Catalog::parse, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
     /// Replace the catalog entry with an absolute local MOV or HEIC file.
@@ -135,7 +142,7 @@ struct WallpaperArguments {
     #[arg(long, value_enum, default_value = "automatic")]
     appearance: WallpaperAppearance,
     /// Opt into GeoClue-backed solar scheduling when the file provides it.
-    #[arg(long, requires = "file")]
+    #[arg(long, requires = "file", conflicts_with_all = ["wallpaper", "wallpaper_file"])]
     solar: bool,
 }
 
@@ -182,7 +189,7 @@ struct LoginArguments {
     width: Option<u32>,
     #[arg(long, requires_all = ["windowed", "width"], value_parser = parse_dimension)]
     height: Option<u32>,
-    /// Select a cached MOV ID from `genkan assets list`.
+    /// Select a cached MOV or catalog HEIC ID from `genkan assets list`.
     #[arg(long, value_parser = wallpaper::Catalog::parse, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
     /// Replace the selected catalog entry with an absolute local MOV or HEIC file.
@@ -226,7 +233,7 @@ struct LockArguments {
     /// Descriptor that receives `READY` after compositor lock confirmation.
     #[arg(long, value_parser = parse_ready_fd)]
     ready_fd: Option<std::os::fd::RawFd>,
-    /// Select a cached MOV ID from `genkan assets list`.
+    /// Select a cached MOV or catalog HEIC ID from `genkan assets list`.
     #[arg(long, value_parser = wallpaper::Catalog::parse, default_value = "tahoe-beach")]
     wallpaper: wallpaper::Catalog,
     /// Replace the selected catalog entry with an absolute local MOV or HEIC file.
@@ -315,6 +322,10 @@ fn parse_output_name(value: &str) -> Result<String, String> {
     }
 }
 
+fn parse_heic_id(value: &str) -> Result<&'static str, String> {
+    asset_command::heic_id(value).ok_or_else(|| format!("unknown HEIC wallpaper {value:?}"))
+}
+
 fn parse_wallpaper_file(value: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
     if !path.is_absolute() {
@@ -391,7 +402,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Assets(arguments) => asset_command::run(arguments)?,
         Command::GreeterSession(arguments) => greeter_session::run(arguments)?,
         Command::HeicWorker(arguments) => wallpaper::run_heic_worker(
-            &arguments.file,
+            arguments.wallpaper.map_or_else(
+                || wallpaper::HeicSource::File(arguments.file.as_deref().expect("file required")),
+                wallpaper::HeicSource::Cached,
+            ),
             appearance_preference(arguments.appearance),
             arguments.reduce_motion,
             arguments.parent_pid,
@@ -451,13 +465,15 @@ fn appearance_preference(
 fn run_wallpaper(arguments: WallpaperArguments) -> Result<(), Box<dyn std::error::Error>> {
     let appearance = appearance_preference(arguments.appearance);
     let file = arguments.file.or(arguments.wallpaper_file);
-    let is_heic = file.as_deref().is_some_and(wallpaper::is_heic_path);
+    let is_heic_file = file.as_deref().is_some_and(wallpaper::is_heic_path);
+    let animate = !is_heic_file
+        && (arguments.wallpaper.selects_heic(file.as_deref()) || !arguments.reduce_motion);
     desktop_wallpaper::run(desktop_wallpaper::Config {
-        file: file.clone().filter(|_| is_heic),
+        file: file.clone().filter(|_| is_heic_file),
         wallpaper: wallpaper::Settings {
             catalog: arguments.wallpaper,
-            override_path: file.filter(|_| !is_heic),
-            animate: !is_heic && !arguments.reduce_motion,
+            override_path: file.filter(|_| !is_heic_file),
+            animate,
             reduced_motion: arguments.reduce_motion,
             appearance,
         },
@@ -492,9 +508,8 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
     };
     let preview = arguments.preview.is_some();
     let is_heic = arguments
-        .wallpaper_file
-        .as_deref()
-        .is_some_and(wallpaper::is_heic_path);
+        .wallpaper
+        .selects_heic(arguments.wallpaper_file.as_deref());
     let animate_wallpaper = login_wallpaper_animate(
         is_heic,
         preview,
@@ -541,9 +556,8 @@ fn run_login(arguments: LoginArguments) -> iced::Result {
 
 fn lock_config(arguments: LockArguments) -> locker::Config {
     let is_heic = arguments
-        .wallpaper_file
-        .as_deref()
-        .is_some_and(wallpaper::is_heic_path);
+        .wallpaper
+        .selects_heic(arguments.wallpaper_file.as_deref());
     locker::Config {
         authentication_output: arguments.authentication_output,
         wallpaper: wallpaper::Settings {
@@ -1179,6 +1193,30 @@ mod tests {
         assert!(!animate_wallpaper(true, false, false));
         assert!(animate_wallpaper(true, false, true));
         assert!(!animate_wallpaper(false, true, false));
+    }
+
+    #[test]
+    fn catalog_heics_are_selectable_without_enabling_solar_or_selecting_fixtures() {
+        for command in ["login", "lock", "wallpaper", "greeter-session"] {
+            for key in ["catalina", "monterey-graphic", "ventura-graphic"] {
+                assert!(Arguments::try_parse_from(["genkan", command, "--wallpaper", key]).is_ok());
+            }
+            assert!(Arguments::try_parse_from([
+                "genkan",
+                command,
+                "--wallpaper",
+                "synthetic-all-properties"
+            ])
+            .is_err());
+            assert!(Arguments::try_parse_from([
+                "genkan",
+                command,
+                "--wallpaper",
+                "catalina",
+                "--solar"
+            ])
+            .is_err());
+        }
     }
 
     #[test]

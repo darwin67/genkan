@@ -38,7 +38,10 @@ fn worker_command() -> Command {
 /// Spawns the real worker with its stdout piped for a caller that reads the
 /// relay protocol.
 fn spawn_worker(arguments: &[&str]) -> Child {
-    let mut command = worker_command();
+    spawn_worker_with(worker_command(), arguments)
+}
+
+fn spawn_worker_with(mut command: Command, arguments: &[&str]) -> Child {
     command
         .arg("heic-worker")
         .args(arguments)
@@ -355,6 +358,68 @@ fn worker_decodes_a_scheduled_frame() {
     );
 
     worker.kill_and_reap();
+}
+
+#[test]
+fn cached_heic_requires_a_published_generation_and_decodes_its_media() {
+    let cache = tempfile::tempdir().unwrap();
+    let entries = cache.path().join("entries");
+    let generation = cache.path().join("objects/download-catalina-test");
+    std::fs::create_dir(&entries).unwrap();
+    std::fs::create_dir_all(&generation).unwrap();
+    std::fs::copy(
+        fixture("synthetic-all-properties.heic"),
+        generation.join("catalina.heic"),
+    )
+    .unwrap();
+    let start = || {
+        let mut command = worker_command();
+        command.env("GENKAN_WALLPAPER_DIR", cache.path());
+        ChildGuard::new(spawn_worker_with(
+            command,
+            &[
+                "--wallpaper",
+                "catalina",
+                "--appearance",
+                "dark",
+                "--reduce-motion",
+            ],
+        ))
+    };
+
+    let receipt = entries.join("catalina.toml");
+    for contents in [
+        None,
+        Some("format = 'mov'\ncache_generation = 'download-catalina-test'"),
+        Some("format = 'heic'\ncache_generation = '../download-catalina-test'"),
+    ] {
+        if let Some(contents) = contents {
+            std::fs::write(&receipt, contents).unwrap();
+        }
+        let mut worker = start();
+        assert_eq!(ProtocolReader::new(&worker.stdout()).read_tag(), FAILED_TAG);
+        assert!(worker.reap().success());
+    }
+
+    std::fs::write(
+        &receipt,
+        "format = 'heic'\ncache_generation = 'download-catalina-test'",
+    )
+    .unwrap();
+    let mut cached = start();
+    let mut direct = ChildGuard::new(spawn_worker(&[
+        "--file",
+        fixture("synthetic-all-properties.heic").to_str().unwrap(),
+        "--appearance",
+        "dark",
+        "--reduce-motion",
+    ]));
+    assert_eq!(
+        ProtocolReader::new(&cached.stdout()).read_frame(),
+        ProtocolReader::new(&direct.stdout()).read_frame(),
+    );
+    cached.kill_and_reap();
+    direct.kill_and_reap();
 }
 
 #[test]

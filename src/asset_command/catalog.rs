@@ -223,6 +223,25 @@ pub(crate) fn apple_aerials() -> &'static toml::Table {
     })
 }
 
+fn manifest_entries(kind: &str) -> impl Iterator<Item = &'static toml::Value> {
+    static MANIFEST: OnceLock<toml::Table> = OnceLock::new();
+    MANIFEST.get_or_init(|| {
+        include_str!("../../assets/wallpapers/manifest.toml")
+            .parse()
+            .expect("valid built-in wallpaper manifest")
+    })[kind]
+        .as_array()
+        .expect("built-in wallpaper entries")
+        .iter()
+        .filter(|entry| entry.get("delivery").and_then(toml::Value::as_str) != Some("repository"))
+}
+
+pub(crate) fn heic_id(id: &str) -> Option<&'static str> {
+    manifest_entries("dynamic_heic")
+        .filter_map(|entry| entry.get("id")?.as_str())
+        .find(|&key| key == id)
+}
+
 pub(super) fn declared(path: Option<&Path>) -> Result<Vec<Asset>> {
     if let Some(path) = path {
         let table = read_table(path)?;
@@ -253,21 +272,13 @@ pub(super) fn declared(path: Option<&Path>) -> Result<Vec<Asset>> {
             Asset::from_entry(id, entry.clone())
         })
         .collect::<Result<Vec<_>>>()?;
-    let manifest: toml::Table = include_str!("../../assets/wallpapers/manifest.toml").parse()?;
     // Keep legacy declarations for explicit commands and hash-pinned sources.
     // The default listing hides the old MOVs; the HEICs remain discoverable.
     for (key, format, geometry) in [
         ("wallpaper", "mov", "media"),
         ("dynamic_heic", "heic", "structure"),
     ] {
-        for entry in manifest
-            .get(key)
-            .and_then(toml::Value::as_array)
-            .ok_or("missing packaged catalog")?
-        {
-            if entry.get("delivery").and_then(toml::Value::as_str) == Some("repository") {
-                continue;
-            }
+        for entry in manifest_entries(key) {
             let id = entry
                 .get("id")
                 .and_then(toml::Value::as_str)

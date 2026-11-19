@@ -121,8 +121,15 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     [[ -n "''${socket:-}" && -n "''${ipc:-}" ]]
     export XDG_RUNTIME_DIR="$runtime"
     export WAYLAND_DISPLAY=$(basename "$socket")
-    WAYLAND_DEBUG=client ${genkan}/bin/genkan wallpaper \
-      --file ${../../tests/fixtures/dynamic-heic/synthetic-all-properties.heic} \
+    # Seed a published download receipt without fetching third-party artwork.
+    wallpaper_cache="$runtime/wallpaper-cache"
+    mkdir -p "$wallpaper_cache"/{entries,objects/download-catalina-test}
+    cp ${../../tests/fixtures/dynamic-heic/synthetic-all-properties.heic} \
+      "$wallpaper_cache/objects/download-catalina-test/catalina.heic"
+    printf '%s\n' 'format = "heic"' 'cache_generation = "download-catalina-test"' \
+      > "$wallpaper_cache/entries/catalina.toml"
+    GENKAN_WALLPAPER_DIR="$wallpaper_cache" WAYLAND_DEBUG=client ${genkan}/bin/genkan wallpaper \
+      --wallpaper catalina --appearance light \
       --reduce-motion >"$wallpaper_log" 2>&1 &
     wallpaper_pid=$!
 
@@ -130,6 +137,7 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
       output=$1
       destination=$2
       expected_size=$3
+      expected_color=''${4:-'^(F[A-F]0[0-5]0[0-5]|0[0-5]F[A-F]0[0-5]|0[0-5]0[0-5]F[A-F]|F[A-F]F[A-F]F[A-F])$'}
       for _ in $(seq 1 100); do
         kill -0 "$wallpaper_pid"
         rm -f "$destination"
@@ -144,7 +152,7 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
         )
         size=$(identify -format '%wx%h' "$destination")
         colors=$(identify -format '%k' "$destination")
-        if [[ "''${pixel:-}" =~ ^(F[A-F]0[0-5]0[0-5]|0[0-5]F[A-F]0[0-5]|0[0-5]0[0-5]F[A-F]|F[A-F]F[A-F]F[A-F])$ \
+        if [[ "$pixel" =~ $expected_color \
           && "$size" == "$expected_size" && "$colors" -eq 1 ]]; then
           return
         fi
@@ -323,6 +331,27 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     capture_wallpaper HEADLESS-2 "$restored_two" 360x800
     grep -Eq 'wl_buffer#[0-9]+\.release\(\)' "$wallpaper_log"
 
+    # Replace the receipt only after both wallpaper surfaces have gone away.
+    # The replacement could not produce the original, uniform red frame.
+    first_line=$(( $(wc -l < "$wallpaper_log") + 1 ))
+    swaymsg -s "$ipc" 'output HEADLESS-2 disable; output HEADLESS-1 disable' >/dev/null
+    for _ in $(seq 1 100); do
+      removed=$(tail -n +"$first_line" "$wallpaper_log" \
+        | grep -Ec 'zwlr_layer_surface_v1#[0-9]+\.destroy\(' || true)
+      [[ "$removed" -eq 2 ]] && break
+      kill -0 "$wallpaper_pid"
+      sleep 0.05
+    done
+    [[ "$removed" -eq 2 ]]
+    mkdir "$wallpaper_cache/objects/download-catalina-replacement"
+    cp "$pattern_heic" "$wallpaper_cache/objects/download-catalina-replacement/catalina.heic"
+    printf '%s\n' 'format = "heic"' 'cache_generation = "download-catalina-replacement"' \
+      > "$wallpaper_cache/entries/catalina.next"
+    mv "$wallpaper_cache/entries/catalina.next" "$wallpaper_cache/entries/catalina.toml"
+    swaymsg -s "$ipc" 'output HEADLESS-1 enable; output HEADLESS-2 enable' >/dev/null
+    capture_wallpaper HEADLESS-1 "$restored_one" 800x450 '^F[A-F]0[0-5]0[0-5]$'
+    capture_wallpaper HEADLESS-2 "$restored_two" 360x800 '^F[A-F]0[0-5]0[0-5]$'
+
     # Compare a nonuniform fixture against an independently scaled cover
     # reference on both landscape and transformed portrait outputs.
     kill "$wallpaper_pid"
@@ -332,10 +361,11 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     magick "$pattern_heic[0]" -filter point -resize '360x800^' \
       -gravity center -extent 360x800 "$pattern_expected_two"
     # The restarted run keeps WAYLAND_DEBUG so geometry transactions remain
-    # observable for the cover and ultrawide evidence below.
+    # observable. The explicit file must also take precedence over an uncached ID.
     pattern_first_line=$(( $(wc -l < "$wallpaper_log") + 1 ))
-    WAYLAND_DEBUG=client ${genkan}/bin/genkan wallpaper --file "$pattern_heic" \
-      --reduce-motion >>"$wallpaper_log" 2>&1 &
+    GENKAN_WALLPAPER_DIR="$runtime/empty-cache" WAYLAND_DEBUG=client \
+      ${genkan}/bin/genkan wallpaper --wallpaper catalina --wallpaper-file "$pattern_heic" \
+        --reduce-motion >>"$wallpaper_log" 2>&1 &
     wallpaper_pid=$!
     # A fresh client allocates new surface IDs, so rebind the landscape and
     # portrait surfaces before asserting their geometry transactions.
@@ -375,6 +405,10 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     }
     capture_pattern HEADLESS-1 "$restored_one" "$pattern_expected_one" 7200
     capture_pattern HEADLESS-2 "$restored_two" "$pattern_expected_two" 5760
+    if grep -Fq 'no cached HEIC' "$wallpaper_log"; then
+      echo "explicit HEIC override unexpectedly looked up its catalog ID" >&2
+      exit 1
+    fi
     # Retain the simultaneous scale-1 landscape and scale-2 transformed
     # portrait presentation as mixed-scale evidence.
     cp "$restored_one" "$mixed_scale_one"

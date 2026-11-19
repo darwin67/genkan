@@ -163,6 +163,8 @@ pub(crate) enum Catalog {
     SanFrancisco,
     #[value(skip)]
     Aerial(&'static str),
+    #[value(skip)]
+    Heic(&'static str),
 }
 
 impl Catalog {
@@ -171,15 +173,20 @@ impl Catalog {
             crate::asset_command::apple_aerials()
                 .get_key_value(id)
                 .map(|(key, _)| Self::Aerial(key))
-                .ok_or_else(|| format!("unknown MOV wallpaper {id:?}; use 'genkan assets list'"))
+                .or_else(|| crate::asset_command::heic_id(id).map(Self::Heic))
+                .ok_or_else(|| format!("unknown wallpaper {id:?}; use 'genkan assets list'"))
         })
     }
 
     pub(crate) fn id(self) -> &'static str {
         match self {
-            Self::Aerial(id) => id,
+            Self::Aerial(id) | Self::Heic(id) => id,
             legacy => legacy.spec().unwrap().install_name.trim_end_matches(".mov"),
         }
+    }
+
+    pub(crate) fn selects_heic(self, override_path: Option<&Path>) -> bool {
+        override_path.map_or(matches!(self, Self::Heic(_)), is_heic_path)
     }
 
     fn spec(self) -> Option<&'static PlaybackSpec> {
@@ -198,7 +205,7 @@ impl Catalog {
             Self::Hawaii => 11,
             Self::HongKong => 12,
             Self::SanFrancisco => 13,
-            Self::Aerial(_) => return None,
+            Self::Aerial(_) | Self::Heic(_) => return None,
         };
         Some(&WALLPAPERS[index])
     }
@@ -217,12 +224,19 @@ pub(crate) struct Settings {
     pub(crate) appearance: AppearancePreference,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum HeicSource<'a> {
+    File(&'a Path),
+    Cached(&'a str),
+}
+
 impl Settings {
-    /// The local dynamic HEIC override, if one was supplied.
-    pub(crate) fn heic_path(&self) -> Option<&Path> {
-        self.override_path
-            .as_deref()
-            .filter(|path| is_heic_path(path))
+    fn heic_source(&self) -> Option<HeicSource<'_>> {
+        match (self.override_path.as_deref(), self.catalog) {
+            (Some(path), _) if is_heic_path(path) => Some(HeicSource::File(path)),
+            (None, Catalog::Heic(id)) => Some(HeicSource::Cached(id)),
+            _ => None,
+        }
     }
 }
 
@@ -237,7 +251,7 @@ pub(crate) fn is_heic_path(path: &Path) -> bool {
 
 /// Whether these settings select an animated dynamic HEIC source.
 pub(crate) fn selects_dynamic_heic(settings: &Settings) -> bool {
-    settings.animate && settings.heic_path().is_some()
+    settings.animate && settings.heic_source().is_some()
 }
 
 /// Whether an iced renderer backend may be given a child-decoded HEIC frame.
@@ -300,7 +314,35 @@ pub(crate) enum Refresh {
 }
 
 impl State {
+    /// A desktop decoder can be stopped and recreated as outputs come and go.
+    /// Keep its first HEIC cache selection (including a miss) across restarts.
+    pub(crate) fn start_desktop(
+        settings: &Settings,
+        cached_heic: &mut Option<Result<PathBuf, String>>,
+    ) -> Self {
+        let Some(HeicSource::Cached(id)) = settings.heic_source() else {
+            return Self::start(settings.clone());
+        };
+        // An explicit desktop HEIC uses a separate decoder. Its catalog ID
+        // must not cause a cache lookup or an unrelated missing-download warning.
+        if !settings.animate {
+            return Self::disabled();
+        }
+        match cached_heic.get_or_insert_with(|| cached_heic_path(id)) {
+            Ok(path) => Self::start_heic(settings, HeicSource::File(path), None),
+            Err(error) => {
+                diagnostic(error);
+                Self::disabled()
+            }
+        }
+    }
+
     pub(crate) fn start(mut settings: Settings) -> Self {
+        // Downloads do not generate HEIC posters. Resolve the receipt in the
+        // worker, not here: a slow cache must not delay lock acquisition.
+        if let Some(source @ HeicSource::Cached(_)) = settings.heic_source() {
+            return Self::start_heic(&settings, source, None);
+        }
         // Select the cache generation once, before opening either its poster
         // or media. A concurrent download cannot mix their generations.
         let path = settings.override_path.take().map_or_else(
@@ -312,7 +354,7 @@ impl State {
             .ok();
 
         if let Some(path) = path.as_deref().ok().filter(|path| is_heic_path(path)) {
-            return Self::start_heic(settings, path, poster);
+            return Self::start_heic(&settings, HeicSource::File(path), poster);
         }
 
         if !settings.animate {
@@ -345,11 +387,15 @@ impl State {
         }
     }
 
-    fn start_heic(settings: Settings, path: &Path, poster: Option<image::Handle>) -> Self {
+    fn start_heic(
+        settings: &Settings,
+        source: HeicSource<'_>,
+        poster: Option<image::Handle>,
+    ) -> Self {
         if !settings.animate {
             return Self::poster_only(poster);
         }
-        match HeicPlayer::start(path, settings.appearance, settings.reduced_motion) {
+        match HeicPlayer::start(source, settings.appearance, settings.reduced_motion) {
             Ok(heic) => Self {
                 player: None,
                 heic: Some(heic),
@@ -374,11 +420,13 @@ impl State {
     /// child-decoded frame: its whole-frame conversion is an infallible
     /// allocation that can abort the greeter. The poster is displayed while the
     /// backend is unknown, and stays if the backend cannot meet the contract.
-    /// Lock and desktop start their own renderers and use [`State::start`]
-    /// directly.
+    /// Lock and desktop start their own renderers and need not defer playback.
     pub(crate) fn start_deferred(settings: &Settings) -> Self {
         if !selects_dynamic_heic(settings) {
             return Self::start(settings.clone());
+        }
+        if settings.override_path.is_none() {
+            return Self::poster_only(None);
         }
         let poster = load_poster(settings.catalog, settings.override_path.as_deref())
             .map_err(|error| diagnostic(&error))
@@ -392,10 +440,10 @@ impl State {
         if self.heic.is_some() || self.player.is_some() || !selects_dynamic_heic(settings) {
             return;
         }
-        let Some(path) = settings.heic_path().map(Path::to_owned) else {
+        let Some(source) = settings.heic_source() else {
             return;
         };
-        match HeicPlayer::start(&path, settings.appearance, settings.reduced_motion) {
+        match HeicPlayer::start(source, settings.appearance, settings.reduced_motion) {
             Ok(heic) => self.heic = Some(heic),
             // This runs on the iced event loop; see `report_async`.
             Err(error) => report_async(error),
@@ -718,7 +766,7 @@ type HeicTime = dyn Fn() -> (Option<ClockSnapshot>, Duration) + Send + Sync;
 impl HeicPlayer {
     #[cfg(not(test))]
     fn start(
-        path: &Path,
+        source: HeicSource<'_>,
         appearance: AppearancePreference,
         reduced_motion: bool,
     ) -> Result<Self, String> {
@@ -729,7 +777,7 @@ impl HeicPlayer {
             .map_err(|_| pipeline_error("could not locate the dynamic wallpaper worker"))?;
         Self::start_command(worker_command(
             &executable,
-            path,
+            source,
             appearance,
             reduced_motion,
         ))
@@ -739,13 +787,17 @@ impl HeicPlayer {
     /// clock. The production source always uses `start_command`.
     #[cfg(test)]
     fn start(
-        path: &Path,
+        source: HeicSource<'_>,
         appearance: AppearancePreference,
         reduced_motion: bool,
     ) -> Result<Self, String> {
         let started = Instant::now();
+        let path = match source {
+            HeicSource::File(path) => path.to_owned(),
+            HeicSource::Cached(id) => cached_heic_path(id)?,
+        };
         Self::start_with_time(
-            path,
+            &path,
             appearance,
             reduced_motion,
             Box::new(move || (current_clock(), started.elapsed())),
@@ -976,15 +1028,17 @@ fn supervise_heic_worker(
 /// the worker must not outlive it.
 fn worker_command(
     executable: &Path,
-    path: &Path,
+    source: HeicSource<'_>,
     appearance: AppearancePreference,
     reduced_motion: bool,
 ) -> Command {
     let mut command = Command::new(executable);
+    command.arg("heic-worker");
+    match source {
+        HeicSource::File(path) => command.arg("--file").arg(path),
+        HeicSource::Cached(id) => command.arg("--wallpaper").arg(id),
+    };
     command
-        .arg("heic-worker")
-        .arg("--file")
-        .arg(path)
         .arg("--appearance")
         .arg(appearance_argument(appearance))
         .arg("--parent-pid")
@@ -1303,7 +1357,7 @@ fn write_heic_frame<W: Write>(writer: &mut W, frame: &HeicFrame) -> std::io::Res
 /// before touching the file, so a greeter killed without unwinding cannot leave
 /// a decoder polling forever.
 pub(crate) fn run_heic_worker(
-    path: &Path,
+    source: HeicSource<'_>,
     appearance: AppearancePreference,
     reduced_motion: bool,
     parent_pid: i32,
@@ -1315,6 +1369,21 @@ pub(crate) fn run_heic_worker(
     let time_source: Box<HeicTime> = Box::new(move || (current_clock(), started.elapsed()));
     let mut sink = ProcessSink {
         writer: std::io::stdout().lock(),
+    };
+    let cached;
+    let path = match source {
+        HeicSource::File(path) => path,
+        HeicSource::Cached(id) => match cached_heic_path(id) {
+            Ok(path) => {
+                cached = path;
+                &cached
+            }
+            Err(error) => {
+                sink.failed();
+                diagnostic(&error);
+                return;
+            }
+        },
     };
     run_heic_with_sink(
         path,
@@ -2085,6 +2154,20 @@ fn cached_wallpaper_path(install_name: &str) -> Result<PathBuf, String> {
     Ok(cached_asset_path(&asset_directory()?, "mov", install_name))
 }
 
+fn cached_heic_path(id: &str) -> Result<PathBuf, String> {
+    let directory = asset_directory()?;
+    let receipt = cache_receipt(&directory, id);
+    let generation = receipt
+        .as_ref()
+        .filter(|table| table.get("format").and_then(toml::Value::as_str) == Some("heic"))
+        .and_then(cache_generation)
+        .ok_or_else(|| format!("no cached HEIC for {id:?}; run 'genkan assets download {id}'"))?;
+    Ok(directory
+        .join("objects")
+        .join(generation)
+        .join(format!("{id}.heic")))
+}
+
 /// Receipts atomically select a complete immutable media/poster generation.
 /// Conventional paths remain available for explicitly provisioned local files.
 pub(crate) fn cached_asset_path(directory: &Path, format: &str, install_name: &str) -> PathBuf {
@@ -2093,22 +2176,8 @@ pub(crate) fn cached_asset_path(directory: &Path, format: &str, install_name: &s
             .rsplit_once('.')
             .map_or(install_name, |(stem, _)| stem)
     });
-    let id = Path::new(stem);
-    let receipt = directory.join("entries").join(id).with_extension("toml");
-    let generation = (|| {
-        let mut input = String::new();
-        open_regular(&receipt)
-            .ok()?
-            .take(1024 * 1024 + 1)
-            .read_to_string(&mut input)
-            .ok()?;
-        if input.len() > 1024 * 1024 {
-            return None;
-        }
-        let table: toml::Table = input.parse().ok()?;
-        cache_generation(&table).map(str::to_owned)
-    })();
-    if let Some(generation) = generation {
+    let receipt = cache_receipt(directory, stem);
+    if let Some(generation) = receipt.as_ref().and_then(cache_generation) {
         directory
             .join("objects")
             .join(generation)
@@ -2116,6 +2185,20 @@ pub(crate) fn cached_asset_path(directory: &Path, format: &str, install_name: &s
     } else {
         directory.join(format).join(install_name)
     }
+}
+
+fn cache_receipt(directory: &Path, id: &str) -> Option<toml::Table> {
+    let receipt = directory.join("entries").join(id).with_extension("toml");
+    let mut input = String::new();
+    open_regular(&receipt)
+        .ok()?
+        .take(1024 * 1024 + 1)
+        .read_to_string(&mut input)
+        .ok()?;
+    if input.len() > 1024 * 1024 {
+        return None;
+    }
+    input.parse().ok()
 }
 
 pub(crate) fn cache_generation(metadata: &toml::Table) -> Option<&str> {
@@ -3464,7 +3547,7 @@ mod tests {
     fn heic_worker_command_forwards_file_appearance_motion_and_parent() {
         let command = worker_command(
             Path::new("/usr/bin/genkan"),
-            Path::new("/home/alice/wallpaper.heic"),
+            HeicSource::File(Path::new("/home/alice/wallpaper.heic")),
             AppearancePreference::Dark,
             true,
         );
@@ -3490,7 +3573,7 @@ mod tests {
         expected.retain(|argument| argument != "--reduce-motion");
         let without_motion = worker_command(
             Path::new("/usr/bin/genkan"),
-            Path::new("/home/alice/wallpaper.heic"),
+            HeicSource::File(Path::new("/home/alice/wallpaper.heic")),
             AppearancePreference::Dark,
             false,
         );
