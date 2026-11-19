@@ -1,5 +1,30 @@
 # Deployment and greetd Configuration
 
+## Install a prebuilt release
+
+[GitHub Releases](https://github.com/darwin67/genkan/releases) provides prebuilt
+Nix packages for `x86_64-linux` and `aarch64-linux`. Each archive includes
+Genkan, its PAM helper, assets, and native runtime dependencies. It requires
+Nix on the host; it is not a standalone executable for Linux without Nix.
+
+Download the matching `.nix-export.zst` and `SHA256SUMS` from the same release.
+Verify the checksum before importing, and only import a release you trust:
+
+```bash
+(
+  set -euo pipefail
+  archive=genkan-v0.1.0-x86_64-linux.nix-export.zst  # Adjust tag and architecture.
+  grep -F "  $archive" SHA256SUMS | sha256sum --check -
+  genkan_path=$(zstd -dc -- "$archive" | nix-store --import | tail -n 1)
+  nix-store --realise "$genkan_path" --add-root "$PWD/genkan-package"
+  ./genkan-package/bin/genkan --version
+)
+```
+
+For a multi-user Nix install that rejects unsigned imports, run the import with
+a trusted Nix user. Importing does not configure host services or drivers; see
+[host configuration](#host-configuration) before enabling login or locking.
+
 ## NixOS flake input
 
 Bind Genkan as a flake input and pass it to the host module:

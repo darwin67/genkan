@@ -25,6 +25,7 @@ on:
       - "assets/**"
       - "src/**"
       - "crates/**"
+      - "CHANGELOG.md"
       - "Cargo.toml"
       - "Cargo.lock"
       - "Makefile"

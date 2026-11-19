@@ -8,6 +8,23 @@ permissions:
   contents: read
 
 jobs:
+  release-proposal-freshness:
+    name: Release proposal freshness
+    runs-on: ubuntu-24.04
+    steps:
+      - if: >-
+          github.base_ref == 'main' && github.head_ref == 'release/next' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The PR test merge's first parent is the target branch tip.
+          fetch-depth: 2
+          persist-credentials: false
+      - if: >-
+          github.base_ref == 'main' && github.head_ref == 'release/next' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        run: python3 scripts/release-metadata.py check-base
+
   validate-commits:
     name: Validate commits
     runs-on: ubuntu-latest

@@ -1,0 +1,121 @@
+name: Publish GitHub release
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: publish-release-${{ github.event.pull_request.number }}
+
+env:
+  RELEASE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+  RELEASE_TITLE: ${{ github.event.pull_request.title }}
+
+jobs:
+  validate:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'release/next' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+    steps:
+      # Never check out the PR head in a pull_request_target workflow.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_COMMIT }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Validate release base, version, and reviewed notes
+        id: metadata
+        run: |
+          python3 scripts/release-metadata.py check-base
+          python3 scripts/release-metadata.py notes "$RELEASE_TITLE"
+          echo "tag=${RELEASE_TITLE##* }" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build release (${{ matrix.system }})
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_COMMIT }}
+          persist-credentials: false
+      - uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
+      - name: Export the built package and all runtime dependencies
+        env:
+          SYSTEM: ${{ matrix.system }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          nix build ".#packages.$SYSTEM.default" --out-link "$RUNNER_TEMP/genkan" --print-build-logs
+          package=$(readlink -f "$RUNNER_TEMP/genkan")
+          test "$("$package/bin/genkan" --version)" = "genkan ${TAG#v}"
+          test -x "$package/libexec/genkan-lock-auth"
+          closure=$(nix-store --query --requisites "$package")
+          mapfile -t paths <<< "$closure"
+          mkdir dist
+          nix-store --export "${paths[@]}" | zstd -T0 -o "dist/genkan-$TAG-$SYSTEM.nix-export.zst"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.system }}
+          path: dist/*.nix-export.zst
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_COMMIT }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Tag the merge commit and publish both binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          assets=("genkan-$TAG-x86_64-linux.nix-export.zst" "genkan-$TAG-aarch64-linux.nix-export.zst")
+          (cd dist && sha256sum "${assets[@]}" > SHA256SUMS)
+          {
+            python3 scripts/release-metadata.py notes "$RELEASE_TITLE"
+            printf '\n[Install the prebuilt Nix packages](%s/%s/blob/%s/docs/deployment.md#install-a-prebuilt-release).\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$TAG"
+          } > "$RUNNER_TEMP/release-notes.md"
+          # Non-forced push: an existing tag is OK only if it already points here.
+          git push origin "$RELEASE_COMMIT:refs/tags/$TAG"
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
+            if [[ "$draft" == false ]]; then
+              echo "$TAG is already published"
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$TAG" "dist/${assets[0]}" "dist/${assets[1]}" dist/SHA256SUMS --clobber
+          gh release edit "$TAG" --draft=false
