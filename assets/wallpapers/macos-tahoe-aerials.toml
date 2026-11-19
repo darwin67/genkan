@@ -3,6 +3,8 @@
 # Apple manifest: https://sylvan.apple.com/itunes-assets/Aerials126/v4/82/2e/34/822e344c-f5d2-878c-3d56-508d5b09ed61/resources-26-4-1.tar
 # All 156 direct MOV URLs returned HTTP 200 with a Content-Length on 2026-11-18.
 # File sizes are observed HTTP lengths, not hashes. No movies are included.
+# Dimensions verified on 2026-11-19 with ffprobe 7.1.5 from HTTP range reads
+# of each MOV's moov atom, checking ETag and Content-Range across reads.
 # genkan assets list --details
 # genkan assets download macos-landscape-tahoe-day
 
@@ -12,6 +14,8 @@
 [assets.macos-landscape-tahoe-day]
 name = "Tahoe Day"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/LIGHT02_20250613_V2_sdr_4k_rate12000_240p_t2160_grover74_tsa_MTE-Modified.mov"
 byte_size = 467039502
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/TA_L_002_thumbnail.png"
@@ -21,6 +25,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-tahoe-morning]
 name = "Tahoe Morning"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/LIGHT01_20250623_V3_sdr_4k_rate12000_240p_t2160_grover74_tsa_nclc111.mov"
 byte_size = 452837305
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/TA_L_001_thumbnail.png"
@@ -30,6 +36,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-tahoe-evening]
 name = "Tahoe Evening"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/DARK01_20250703_v10_sdr_4k_rate12000_240p_t2160_grover74_tsa_nclc111.mov"
 byte_size = 452023903
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/TA_D_001_thumbnail.png"
@@ -39,6 +47,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-tahoe-night]
 name = "Tahoe Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/DARK02_20250719_V1_FRC_240fps_sdr_4k_rate12000_240p_t2160_grover74_tsa_nclc111.mov"
 byte_size = 449193700
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/TA_D_002_thumbnail.png"
@@ -48,6 +58,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-sequoia-sunrise]
 name = "Sequoia Sunrise"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/A007C0001_Final_v2_HEVC.mov"
 byte_size = 475222400
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/A007_C0001.png"
@@ -57,6 +69,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-sequoia-morning]
 name = "Sequoia Morning"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/A010C0005_Final_v2_HEVC.mov"
 byte_size = 367606671
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/A010_C0005.png"
@@ -66,6 +80,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-sequoia-night]
 name = "Sequoia Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/A018C0002_Final_v2_HEVC.mov"
 byte_size = 436699071
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/A018_C0002.png"
@@ -75,6 +91,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-sonoma-horizon]
 name = "Sonoma Horizon"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/W010_C003_V52_FRC_sdr_4k_qp25_240p_t2160_grover401_tsa.mov"
 byte_size = 615615478
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscape_Sonoma_01@2x_W010_C003_V52.png"
@@ -84,6 +102,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-sonoma-evening]
 name = "Sonoma Evening"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/S013_C001_F01_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 587065761
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/S013_C001_F01@2x.png"
@@ -93,6 +113,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-sonoma-clouds]
 name = "Sonoma Clouds"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/S011_C003_F01_FRC240fps_sdr_4k_qp18_240p_t2160_grover401_tsa.mov"
 byte_size = 481292429
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/S011_C003_F01@2x.png"
@@ -102,6 +124,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-sonoma-from-above]
 name = "Sonoma from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/S009_C018_F01_FRC240fps_sdr_4k_qp18_240p_t2160_tsa.mov"
 byte_size = 306589565
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/S009_C018_F01@2x.png"
@@ -111,6 +135,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-sonoma-river]
 name = "Sonoma River"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/S005_C013_F01_FRC240fps_sdr_4k_qp18_240p_t2160_tsa.mov"
 byte_size = 915725001
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/S005_C013_F01@2x.png"
@@ -120,6 +146,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-goa-beaches]
 name = "Goa Beaches"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0060_flamecomp_v0003.00815886_FRC_sdr_4k_rate12000_240p_t2160_grover74_tsa.mov"
 byte_size = 840224449
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0060.png"
@@ -129,6 +157,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-goa-coast]
 name = "Goa Coast"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0080_flamecomp_v0004.00853686_sdr_4k_rate14000_240p_t2160_grover74_tsa.mov"
 byte_size = 1092799717
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0080.png"
@@ -138,6 +168,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-through-himalayas]
 name = "Through Himalayas"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0020_flamecomp_v0003.00776567_FRC_sdr_4k_rate12000_240p_t2160_grover74_tsa.mov"
 byte_size = 935727826
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0020.png"
@@ -147,6 +179,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-himalayas-day]
 name = "Himalayas Day"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0090_flamecomp_v0007.00872132_sdr_4k_rate12000_240p_t2160_grover74_tsa.mov"
 byte_size = 508821049
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0090.png"
@@ -156,6 +190,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-the-ganges]
 name = "The Ganges"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0110_flamecomp_v0002.00896432_trim_FRC_sdr_4k_rate14000_240p_t2160_grover74_tsa.mov"
 byte_size = 770536490
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0110.png"
@@ -165,6 +201,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-ghansali-from-above]
 name = "Ghansali from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0010_flamecomp_v0007.00735687_edit_FRC_sdr_4k_rate12000_240p_t2160_grover74_tsa.mov"
 byte_size = 719380438
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0010.png"
@@ -174,6 +212,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-himalayan-peaks]
 name = "Himalayan Peaks"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0120_flamecomp_v0011.00400416_FRC_sdr_4k_rate12000_240p_t2160_grover74_tsa.mov"
 byte_size = 232059311
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0120.png"
@@ -183,6 +223,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-tea-gardens-from-above]
 name = "Tea Gardens from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0040_flamecomp_v0006.00789786_sdr_4k_rate16000_240p_t2160_grover74_tsa.mov"
 byte_size = 930552897
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0040.png"
@@ -192,6 +234,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-tea-gardens-day]
 name = "Tea Gardens Day"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0100_flamecomp_v0002.00880232_FRC_sdr_4k_rate12000_240p_t2160_grover74_tsa.mov"
 byte_size = 819856626
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0100.png"
@@ -201,6 +245,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-reservoir-day]
 name = "Reservoir Day"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0070_flamecomp_v0008.00289423_sdr_4k_rate12000_240p_t2160_grover74_tsa.mov"
 byte_size = 1098709140
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0070.png"
@@ -210,6 +256,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-tea-gardens-mist]
 name = "Tea Gardens Mist"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SDR_ann0130_flamecomp_v0002.00193199_FRC_sdr_4k_rate12000_240p_t2160_grover74_tsa.mov"
 byte_size = 724473545
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/ann0130.png"
@@ -219,6 +267,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-californias-temblor-range]
 name = "California’s Temblor Range"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/W014_C018_F01_FRC_sdr_4k_qp29_240p_t2160_grover401_tsa.mov"
 byte_size = 762382674
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/W014_C018_F01@2x.png"
@@ -228,6 +278,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-californias-carrizo-plain]
 name = "California’s Carrizo Plain"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/W015_C010_F01_clipF0F4200_sdr_4k_qp31_240p_t2160_grover401_tsa.mov"
 byte_size = 255053622
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/W015_C010_F01@2x.png"
@@ -237,6 +289,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-california-wildflowers]
 name = "California Wildflowers"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/W015_C006_F01_FRC_sdr_4k_qp28_240p_t2160_grover401_tsa.mov"
 byte_size = 570967546
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/W015_C006_F01@2x.png"
@@ -246,6 +300,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-redwoods-from-above]
 name = "Redwoods from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/R010_C003_F02_sdr_4k_qp26_240p_t2160_grover401_tsa.mov"
 byte_size = 483660702
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/R010_C003_F01@2x.png"
@@ -255,6 +311,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-redwoods-river]
 name = "Redwoods River"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/R013_C039_F01_FRC_sdr_4k_qp27_240p_t2160_grover401_tsa.mov"
 byte_size = 603636717
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/R013_C039_F01@2x.png"
@@ -264,6 +322,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-oregon-sunset]
 name = "Oregon Sunset"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/R006_C013_S05_FRC_sdr_4k_qp24_240p_t2160_grover401_tsa.mov"
 byte_size = 815968465
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/R006_C013_S05@2x.png"
@@ -273,6 +333,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-oregon-coastline]
 name = "Oregon Coastline"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/R004_C012_F01_FRC_sdr_4k_qp32_240p_t2160_grover401_tsa.mov"
 byte_size = 619610538
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/R004_C012_F01@2x.png"
@@ -282,6 +344,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-grand-canyon-river-valley]
 name = "Grand Canyon River Valley"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/G010_C026_UHD_SDR_v02_240fps_5e903ed6-1acf-495d-a0b5-8a9dd94df96bq26_sRGB_tsa.mov"
 byte_size = 506219506
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_GrandCanyon_01@2x.png"
@@ -291,6 +355,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-grand-canyon-evening]
 name = "Grand Canyon Evening"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/G007_C004_UHD_SDR_FRC240fps_sdr_4k_qp24_240p_t2160_tsa.mov"
 byte_size = 729516717
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_GrandCanyon_04@2x.png"
@@ -300,6 +366,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-grand-canyon-sunset]
 name = "Grand Canyon Sunset"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/G009_C003_UHD_SDR_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 871023159
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_GrandCanyon_05@2x.png"
@@ -309,6 +377,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-grand-canyon-sediment]
 name = "Grand Canyon Sediment"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/G009_C014_UHD_SDR_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 849270183
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_GrandCanyon_02@2x.png"
@@ -318,6 +388,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-grand-canyon-from-above]
 name = "Grand Canyon from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/G008_C015_UHD_SDR_240fps_65f07d0e-f0bf-4e5d-8e09-71ff632c7b92q26_sRGB_tsa.mov"
 byte_size = 355731865
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_GrandCanyon_03@2x.png"
@@ -327,6 +399,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-utah-evening]
 name = "Utah Evening"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/M012_C065_S04_FRC240fps_sdr_4k_qp22_240p_t2160_grover401_tsa.mov"
 byte_size = 482580000
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/M012_C065_S04@2x.png"
@@ -336,6 +410,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-arizonas-coal-mine-canyon]
 name = "Arizona’s Coal Mine Canyon"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/M013_C012_F01_FRC240fps_sdr_4k_qp25_240p_t2160_grover401_tsa.mov"
 byte_size = 621083891
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/M013_C012_F01@2x.png"
@@ -345,6 +421,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-utahs-lake-powell]
 name = "Utah’s Lake Powell"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/M010_C009_F01_FRC_sdr_4k_qp22_240p_t2160_grover401_tsa.mov"
 byte_size = 503632237
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/M010_C009_F01@2x.png"
@@ -354,6 +432,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-utahs-cathedral-canyon]
 name = "Utah’s Cathedral Canyon"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/M010_C005_F01_clipF6556F13846_sdr_4k_qp23_240p_t2160_grover401_tsa.mov"
 byte_size = 426215203
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/M010_C005_F01@2x.png"
@@ -363,6 +443,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-utahs-olympia-bar]
 name = "Utah’s Olympia Bar"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/M005_C017_F01_FRC_sdr_4k_qp22_240p_t2160_grover401_tsa.mov"
 byte_size = 528466939
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/M005_C017_F01@2x.png"
@@ -372,6 +454,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-utahs-monument-valley]
 name = "Utah’s Monument Valley"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/M007_C007_F02_sdr_4k_qp20_240p_t2160_grover401_tsa.mov"
 byte_size = 1358273545
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/M007_C007_F01@2x.png"
@@ -381,6 +465,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-utahs-factory-butte]
 name = "Utah’s Factory Butte"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/M012_C023_S04_FRC_sdr_4k_qp22_240p_t2160_grover401_tsa.mov"
 byte_size = 550480062
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/M012_C023_S04@2x.png"
@@ -390,6 +476,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-iceland-glacier]
 name = "Iceland Glacier"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/I003_C008__0623CJ_UHD_SDR_240fps_ace2a32f-f189-4206-ba4c-e395fb1b4ea4q23_sRGB_tsa.mov"
 byte_size = 543253672
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Iceland_03@2x.png"
@@ -399,6 +487,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-iceland-snow-caps]
 name = "Iceland Snow Caps"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/I005_C008_CROP_UHD_SDR_FRC240fps_sdr_4k_qp21_240p_t2160_tsa.mov"
 byte_size = 891631145
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Iceland_07@2x.png"
@@ -408,6 +498,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-iceland-fjord-from-above]
 name = "Iceland Fjord from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/I004_C014_UHD_SDR_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 997827432
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Iceland_02@2x.png"
@@ -417,6 +509,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-iceland-fjord]
 name = "Iceland Fjord"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/I003_C011_0623P8_UHD_SDR_FRC240fps_sdr_4k_qp22_240p_t2160_tsa.mov"
 byte_size = 789364480
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Iceland_05@2x.png"
@@ -426,6 +520,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-iceland-coast]
 name = "Iceland Coast"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/I003_C004_UHD_SDR_FRC240fps_sdr_4k_qp22_240p_t2160_tsa.mov"
 byte_size = 1489950889
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Iceland_01@2x.png"
@@ -435,6 +531,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-iceland-lake]
 name = "Iceland Lake"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/I003_C005_UHD_SDR_240fps_10d589e5-2709-4c6d-8ae0-a3e0e1e1cb37q18_sRGB_tsa.mov"
 byte_size = 915313501
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Iceland_04@2x.png"
@@ -444,6 +542,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-iceland-riverbed]
 name = "Iceland Riverbed"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/I003_C015_UHD_SDR_FRC240fps_sdr_4k_qp22_240p_t2160_tsa.mov"
 byte_size = 762945089
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Iceland_06@2x.png"
@@ -453,6 +553,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-patagonia-mountain]
 name = "Patagonia Mountain"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/P001_C005_UHD_SDR_240fps_89dfd1a5-485c-4572-8e9e-757bd06bcfa3q20_sRGB_tsa.mov"
 byte_size = 893992893
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Patagonia_02@2x.png"
@@ -462,6 +564,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-patagonia-lake]
 name = "Patagonia Lake"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/P005_C002_UHD_SDR_FRC240fps_sdr_4k_qp21_240p_t2160_tsa.mov"
 byte_size = 981774252
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Patagonia_03@2x.png"
@@ -471,6 +575,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-patagonia-range]
 name = "Patagonia Range"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/P007_C027_UHD_SDR_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 1374704893
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Patagonia_04@2x.png"
@@ -480,6 +586,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-patagonia-river]
 name = "Patagonia River"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/P006_C002_UHD_SDR_240fps_e99d74b1-ff85-422a-b553-5563571594a1q17_sRGB_tsa.mov"
 byte_size = 587843361
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Patagonia_01@2x.png"
@@ -489,6 +597,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-greenland-evening]
 name = "Greenland Evening"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GL_G010_C006_PSNK_NOSUN_v12_SDR_PS_FINAL_20180709_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 555570559
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Greenland_03@2x.png"
@@ -498,6 +608,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-greenland-coast]
 name = "Greenland Coast"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GL_G002_C002_PSNK_v03_SDR_PS_20180925_FRC240fps_sdr_4k_qp23_240p_t2160_tsa.mov"
 byte_size = 618271642
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Greenland_01@2x.png"
@@ -507,6 +619,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-greenland-glacier]
 name = "Greenland Glacier"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/comp_GL_G004_C010_PSNK_v04_SDR_PS_FINAL_20180709_240fps_54d7bb68-1b1d-4c05-9cd7-7eefd4de1b28q19_sRGB_tsa.mov"
 byte_size = 304438361
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Greenland_02@2x.png"
@@ -516,6 +630,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-yosemite-clouds]
 name = "Yosemite Clouds"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Y005_C003_UHD_SDR_FRC240fps_sdr_4k_qp18_240p_t2160_tsa.mov"
 byte_size = 431592158
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Yosemite_05@2x.png"
@@ -525,6 +641,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-yosemite-silhouette]
 name = "Yosemite Silhouette"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Y004_C015_UHD_SDR_240fps_1b32206c-d1ff-4c0b-88ee-f15346c59daaq19_sRGB_tsa.mov"
 byte_size = 443352885
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Yosemite_07@2x.png"
@@ -534,6 +652,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-yosemite-from-above]
 name = "Yosemite from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Y009_C015_UHD_SDR_FRC240fps_sdr_4k_qp23_240p_t2160_tsa.mov"
 byte_size = 967487948
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Yosemite_04@2x.png"
@@ -543,6 +663,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-yosemite-horizon]
 name = "Yosemite Horizon"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Y002_C013_UHD_SDR_FRC240fps_sdr_4k_qp22_240p_t2160_tsa.mov"
 byte_size = 481473888
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Yosemite_06@2x.png"
@@ -552,6 +674,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-yosemite-snow-caps]
 name = "Yosemite Snow Caps"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/Y011_C008_FIN_UHD_SDR_240fps_f3150c20-ef0d-4a53-9535-ce4a3e65ed79q22_sRGB_tsa.mov"
 byte_size = 854300967
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Yosemite_03@2x.png"
@@ -561,6 +685,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-yosemite-mountains]
 name = "Yosemite Mountains"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Y003_C009_UHD_SDR_FRC240fps_sdr_4k_qp23_240p_t2160_tsa.mov"
 byte_size = 524583396
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Yosemite_02@2x.png"
@@ -570,6 +696,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-yosemite-valley]
 name = "Yosemite Valley"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Y011_C001_UHD_SDR_FRC240fps_sdr_4k_qp22_240p_t2160_tsa.mov"
 byte_size = 1116082287
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Yosemite_01@2x.png"
@@ -579,6 +707,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-china-silhouette]
 name = "China Silhouette"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_C003_C003_PS_v01_SDR_PS_20180925_FRC240fps_sdr_4k_qp17_240p_t2160_tsa.mov"
 byte_size = 280960987
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_China_01@2x.png"
@@ -588,6 +718,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-chinas-great-wall]
 name = "China’s Great Wall"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_C004_C003_PS_v01_SDR_PS_20180925_240fps_8a74d51b-9b6c-4cde-8286-1108585c6aabq17_tsa_sRGB.mov"
 byte_size = 335117548
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_China_02@2x.png"
@@ -597,6 +729,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-china-paddy-field]
 name = "China Paddy Field"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_CH_C002_C005_PSNK_v05_SDR_PS_FINAL_20180709_FRC240fps_sdr_4k_qp26_240p_t2160_tsa.mov"
 byte_size = 217737895
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_China_03@2x.png"
@@ -606,6 +740,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-china-mountains]
 name = "China Mountains"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_CH_C007_C011_PSNK_v02_SDR_PS_FINAL_20180709_FRC_sdr_4k_qp25_240p_t2160_tsa.mov"
 byte_size = 608838695
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_CH_C007_C011_PSNK_v02_SDR_PS_FINAL_20180709_SDR_4K_HEVC@2x.png"
@@ -615,6 +751,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-china-mountain-cliffs]
 name = "China Mountain Cliffs"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_CH_C007_C004_PSNK_v02_SDR_PS_FINAL_20180709_FRC_sdr_4k_qp26_240p_t2160_tsa.mov"
 byte_size = 647669128
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_CH_C007_C004_PSNK_v02_SDR_PS_FINAL_20180709_SDR_4K_HEVC@2x.png"
@@ -624,6 +762,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-chinas-great-wall-daylight]
 name = "China’s Great Wall Daylight"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_C001_C005_PS_v01_SDR_PS_20180925_FRC_sdr_4k_qp21_240p_t2160_tsa.mov"
 byte_size = 346090891
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_C001_C005_PS_v01_SDR_PS_20180925_SDR_4K_HEVC@2x.png"
@@ -633,6 +773,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-hawaii-clouds-light]
 name = "Hawaii Clouds Light"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_H004_C009_PS_v01_SDR_PS_20180925_FRC240fps_sdr_4k_qp19_240p_t2160_tsa.mov"
 byte_size = 228512381
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Hawaii_02@2x.png"
@@ -642,6 +784,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-hawaii-coastline]
 name = "Hawaii Coastline"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/comp_H007_C003_PS_v01_SDR_PS_20180925_240fps_ad61d98e-fb4b-41c7-b981-9ff4b8a2ef27q25_sRGB_tsa.mov"
 byte_size = 294426394
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Hawaii_01@2x.png"
@@ -651,6 +795,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-hawaii-ocean]
 name = "Hawaii Ocean"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_H012_C009_PS_v01_SDR_PS_20180925_FRC_sdr_4k_qp24_240p_t2160_tsa.mov"
 byte_size = 301363414
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_H012_C009_PS_v01_SDR_PS_20180925_SDR_4K_HEVC@2x.png"
@@ -660,6 +806,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-hawaii-valley]
 name = "Hawaii Valley"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_H005_C012_PS_v01_SDR_PS_20180925_FRC_sdr_4k_qp26_240p_t2160_tsa.mov"
 byte_size = 331259139
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_H005_C012_PS_v01_SDR_PS_20180925_SDR_4K_HEVC@2x.png"
@@ -669,6 +817,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-hawaii-clouds-dark]
 name = "Hawaii Clouds Dark"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_H004_C007_PS_v02_SDR_PS_20180925_FRC_sdr_4k_qp19_240p_t2160_tsa.mov"
 byte_size = 268759855
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_H004_C007_PS_v02_SDR_PS_20180925_SDR_4K_HEVC@2x.png"
@@ -678,6 +828,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-scotland-castle]
 name = "Scotland Castle"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/S006_C007_UHD_SDR_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 381563620
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Scotland_02@2x.png"
@@ -687,6 +839,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-scotland-coast]
 name = "Scotland Coast"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/S003_C020_UHD_SDR_FRC240fps_sdr_4k_qp25_240p_t2160_tsa.mov"
 byte_size = 819922825
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Scotland_03@2x.png"
@@ -696,6 +850,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-scotland-loch]
 name = "Scotland Loch"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/S005_C015_UHD_SDR_FRC_sdr_4k_grover401qp32_240p_t2160_tsa.mov"
 byte_size = 642855994
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Landscapes_Scotland_01@2x.png"
@@ -705,6 +861,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-liwa-dune-fields]
 name = "Liwa Dune Fields"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_LW_L001_C006_PSNK_DENOISE_v02_SDR_PS_FINAL_20180709_FRC_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 441094952
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_LW_L001_C006_PSNK_DENOISE_v02_SDR_PS_FINAL_20180709_SDR_4K_HEVC@2x.png"
@@ -714,6 +872,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-landscape-liwa-horizon]
 name = "Liwa Horizon"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_LW_L001_C003__PSNK_DENOISE_v04_SDR_PS_FINAL_20180803_FRC_sdr_4k_qp22_240p_t2160_tsa.mov"
 byte_size = 195489861
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_LW_L001_C003__PSNK_DENOISE_v04_SDR_PS_FINAL_20180803_SDR_4K_HEVC@2x.png"
@@ -725,6 +885,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-dubai-skyline]
 name = "Dubai Skyline"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_DB_D002_C003_PSNK_v04_SDR_PS_20180914_240fps_74088e40-f8e4-4876-920c-af0e62aa1a60q19_sRGB_tsa.mov"
 byte_size = 445399708
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_Dubai_01@2x.png"
@@ -734,6 +896,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-dubai-night]
 name = "Dubai Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_DB_D011_C010_PSNK_DENOISE_v20_SDR_PS_20181009_240fps_07b415f6-c541-4cff-b7ab-b0087b315aecq24_tsa_sRGB.mov"
 byte_size = 406672344
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_Dubai_02@2x.png"
@@ -743,6 +907,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-dubai-creek]
 name = "Dubai Creek"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_DB_D001_C005_COMP_PSNK_v12_SDR_PS_20180912_FRC_sdr_4k_qp26_240p_t2160_tsa.mov"
 byte_size = 461260660
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_DB_D001_C005_COMP_PSNK_v12_SDR_PS_20180912_SDR_4K_HEVC@2x.png"
@@ -752,6 +918,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-dubai-from-above]
 name = "Dubai from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_DB_D008_C010_PSNK_v21_SDR_PS_20180914_sdr_4k_qp26_240p_t2160_tsa.mov"
 byte_size = 554441354
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_DB_D008_C010_PSNK_v21_SDR_PS_20180914_F0F16157_SDR_4K_HEVC@2x.png"
@@ -761,6 +929,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-dubai-creek-harbor]
 name = "Dubai Creek Harbor"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_DB_D001_C001_PSNK_v06_SDR_PS_20180824_sdr_4k_qp27_240p_t2160_tsa.mov"
 byte_size = 447057745
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_DB_D001_C001_PSNK_v06_SDR_PS_20180824_SDR_4K_HEVC@2x.png"
@@ -770,6 +940,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-los-angeles-overpass]
 name = "Los Angeles Overpass"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_LA_A005_C009_PSNK_ALT_v09_SDR_PS_201809134_240fps_bacf2a31-3a9a-4fe2-ba3b-cce4aa6855d4q21_sRGB_tsa.mov"
 byte_size = 208033080
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_LosAngeles_01@2x.png"
@@ -779,6 +951,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-los-angeles-beach]
 name = "Los Angeles Beach"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_LA_A008_C004_ALTB_ED_FROM_FLAME_RETIME_v46_SDR_PS_20180917_fcp_sharpen2p5_FRC240fps_sdr_4k_qp23_240p_t2160_tsa.mov"
 byte_size = 1028765403
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_LosAngeles_02@2x.png"
@@ -788,6 +962,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-los-angeles-airport]
 name = "Los Angeles Airport"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_LA_A006_C008_PSNK_ALL_LOGOS_v10_SDR_PS_FINAL_20180801_240fps_a9350064-5869-41c2-9422-05f93a075390q23_sRGB_tsa.mov"
 byte_size = 365616904
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_LosAngeles_03@2x.png"
@@ -797,6 +973,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-los-angeles-sunset]
 name = "Los Angeles Sunset"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_LA_A009_C009_PSNK_v02_SDR_PS_FINAL_20180709_FRC_sdr_4k_qp14_240p_t2160_tsa.mov"
 byte_size = 232312089
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_LA_A009_C009_PSNK_v02_SDR_PS_FINAL_20180709_SDR_4K_HEVC@2x.png"
@@ -806,6 +984,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-los-angeles-hills]
 name = "Los Angeles Hills"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_LA_A006_C004_v01_SDR_FINAL_PS_20180730_FRC_sdr_4k_qp18_240p_t2160_tsa.mov"
 byte_size = 310893320
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_LA_A006_C004_v01_SDR_FINAL_PS_20180730_SDR_4K_HEVC@2x.png"
@@ -815,6 +995,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-los-angeles-night]
 name = "Los Angeles Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_LA_A011_C003_DGRN_LNFIX_STAB_v57_SDR_PS_20181002_FRC_sdr_4k_qp24_240p_t2160_tsa.mov"
 byte_size = 560170809
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_LA_A011_C003_DGRN_LNFIX_STAB_v57_SDR_PS_20181002_SDR_4K_HEVC@2x.png"
@@ -824,6 +1006,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-london-evening]
 name = "London Evening"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/comp_L012_c002_PS_v01_SDR_PS_20180925_240fps_cfbcb818-c9b3-42bd-9e77-9c940f73f01aq19_sRGB_tsa.mov"
 byte_size = 345437017
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_London_01@2x.png"
@@ -833,6 +1017,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-london-skyline]
 name = "London Skyline"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_L010_C006_PS_v01_SDR_PS_20180925_sdr_4k_qp19_240p_t2160_tsa.mov"
 byte_size = 391841833
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_L010_C006_PS_v01_SDR_PS_20180925_SDR_4K_HEVC@2x.png"
@@ -842,6 +1028,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-london-thames]
 name = "London Thames"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_L004_C011_PS_v01_SDR_PS_20180925_FRC_sdr_4k_qp21_240p_t2160_tsa.mov"
 byte_size = 376475612
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_L004_C011_PS_v01_SDR_PS_20180925_SDR_4K_HEVC@2x.png"
@@ -851,6 +1039,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-london-from-above]
 name = "London from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_L007_C007_PS_v01_SDR_PS_20180925_FRC_sdr_4k_qp25_240p_t2160_tsa.mov"
 byte_size = 413710393
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_L007_C007_PS_v01_SDR_PS_20180925_SDR_4K_HEVC@2x.png"
@@ -860,6 +1050,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-new-york-night]
 name = "New York Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_N013_C004_PS_v01_SDR_PS_20180925_FRC240fps_sdr_4k_qp22_240p_t2160_tsa.mov"
 byte_size = 268980245
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_NewYork_02@2x.png"
@@ -869,6 +1061,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-new-york-midtown]
 name = "New York Midtown"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_N003_C006_PS_v01_SDR_PS_20180925_240fps_d5d9b36c-937b-45b5-b57c-d532c300fc07q20_sRGB_tsa.mov"
 byte_size = 254901652
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_NewYork_03@2x.png"
@@ -878,6 +1072,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-new-york-from-above]
 name = "New York from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_N008_C009_PS_v01_SDR_PS_20180925_240fps_2f1e8a37-c8e6-4107-92bf-c9a94b585bedq21_tsa_sRGB.mov"
 byte_size = 553827260
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_NewYork_01@2x.png"
@@ -887,6 +1083,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-new-york-skyline]
 name = "New York Skyline"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_N008_C003_PS_v01_SDR_PS_20180925_FRC_sdr_4k_qp18_240p_t2160_tsa.mov"
 byte_size = 268336304
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_N008_C003_PS_v01_SDR_PS_20180925_SDR_4K_HEVC@2x.png"
@@ -896,6 +1094,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-san-francisco-evening]
 name = "San Francisco Evening"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A007_C017_01156B_v02_SDR_PS_20180925_240fps_364b651c-090a-4d73-9656-f6cab8ffbd45q20_tsa_sRGB.mov"
 byte_size = 256268615
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_SanFrancisco_01@2x.png"
@@ -905,6 +1105,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-san-franciscos-golden-gate-bridge]
 name = "San Francisco’s Golden Gate Bridge"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A013_C012_0122D6_CC_v01_SDR_PS_FINAL_20180709_FRC_sdr_4k_qp21_240p_t2160_tsa.mov"
 byte_size = 335077622
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_SanFrancisco_03@2x.png"
@@ -914,6 +1116,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-san-franciscos-ferry-building]
 name = "San Francisco’s Ferry Building"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_1223LV_FLARE_v21_SDR_PS_FINAL_20180709_sdr_4k_qp15_240p_t2160_tsa.mov"
 byte_size = 636600033
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_SanFrancisco_02@2x.png"
@@ -923,6 +1127,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-san-francisco-night]
 name = "San Francisco Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A015_C018_0128ZS_v03_SDR_PS_FINAL_20180709__FRC_sdr_4k_qp24_240p_t2160_tsa.mov"
 byte_size = 250070545
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_A015_C018_0128ZS_v03_SDR_PS_FINAL_20180709__SDR_4K_HEVC@2x.png"
@@ -932,6 +1138,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-san-francisco-skyline]
 name = "San Francisco Skyline"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A012_C014_1223PT_v53_SDR_PS_FINAL_20180709_FRC_sdr_4k_qp21_240p_t2160_tsa.mov"
 byte_size = 760625615
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_A012_C014_1223PT_v53_SDR_PS_FINAL_20180709_F0F8700_SDR_4K_HEVC@2x.png"
@@ -941,6 +1149,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-san-francisco-bay]
 name = "San Francisco Bay"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A006_C003_1219EE_CC_v01_SDR_PS_FINAL_20180709_sdr_4k_qp23_240p_t2160_tsa.mov"
 byte_size = 277480114
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_A006_C003_1219EE_CC_v01_SDR_PS_FINAL_20180709_SDR_4K_HEVC@2x.png"
@@ -950,6 +1160,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-san-francisco-fog]
 name = "San Francisco Fog"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A008_C007_011550_CC_v01_SDR_PS_FINAL_20180709_FRC_sdr_4k_qp22_240p_t2160_tsa.mov"
 byte_size = 324002317
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_A008_C007_011550_CC_v01_SDR_PS_FINAL_20180709_SDR_4K_HEVC@2x.png"
@@ -959,6 +1171,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-hong-kong-harbor]
 name = "Hong Kong Harbor"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_HK_H004_C008_PSNK_v19_SDR_PS_20180914_fcp_sharpen1p7_FRC240fps_sdr_4k_qp26_240p_t2160_tsa.mov"
 byte_size = 791165841
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Cities_HongKong_01@2x.png"
@@ -968,6 +1182,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-hong-kong-skyline]
 name = "Hong Kong Skyline"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_HK_H004_C013_v05_FRC_sdr_4k_qp26_240p_t2160_tsa.mov"
 byte_size = 695355644
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/HK_H004_C013_4K_SDR_HEVC@2x.png"
@@ -977,6 +1193,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-hong-kong-horizon]
 name = "Hong Kong Horizon"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_HK_H004_C010_PSNK_v08_SDR_PS_20181009_FRC_sdr_4k_qp18_240p_t2160_tsa.mov"
 byte_size = 452822235
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_HK_H004_C010_PSNK_v08_SDR_PS_20181009_SDR_4K_HEVC@2x.png"
@@ -986,6 +1204,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-cityscape-hong-kong-night]
 name = "Hong Kong Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_HK_B005_C011_PSNK_v16_SDR_PS_20180914_FRC_sdr_4k_grover401qp27_240p_t2160_tsa.mov"
 byte_size = 322902475
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_HK_B005_C011_PSNK_v16_SDR_PS_20180914_SDR_4K_HEVC@2x.png"
@@ -997,6 +1217,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-alaskan-jellies-light]
 name = "Alaskan Jellies Light"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/AK_A003_C014_SDR_20191113_240fps_e63a81f1-412d-4a76-bb6e-370980b4bd80q26_sRGB_tsa.mov"
 byte_size = 598520743
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_AlaskanJellies_02@2x.png"
@@ -1006,6 +1228,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-alaskan-jellies-dark]
 name = "Alaskan Jellies Dark"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/AK_A004_C012_SDR_20191217_240fps_dbcfb14a-bb2b-4cf1-b171-acf85ce92960q20_sRGB_tsa.mov"
 byte_size = 349016944
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_AlaskanJellies_01@2x.png"
@@ -1015,6 +1239,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-california-dolphin-pod]
 name = "California Dolphin Pod"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/DL_B002_C011_SDR_20191122_240fps_521bacfa-65b2-4938-92b1-4d069187ddfcq24_sRGB_tsa.mov"
 byte_size = 391359701
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_CaliforniaDolphins_01@2x.png"
@@ -1024,6 +1250,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-california-kelp-forest]
 name = "California Kelp Forest"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/CA_A016_C002_SDR_20191114_240fps_21aa64e8-2a10-48c8-bc1a-96e9fa872ef5q25_sRGB_tsa.mov"
 byte_size = 493589516
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_CaliforniaKelpForest_01@2x.png"
@@ -1033,6 +1261,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-tahiti-coast]
 name = "Tahiti Coast"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/TH_804_A001_8_SDR_20191031_240fps_e79c4f82-9068-40c2-afc6-0d6ad48aa70eq19_sRGB_tsa.mov"
 byte_size = 130111726
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_TahitiWaves_02@2x.png"
@@ -1042,6 +1272,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-tahiti-waves-mist]
 name = "Tahiti Waves Mist"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/TH_803_A001_8_SDR_20191031_240fps_b602776f-63ed-45cf-89d0-b0dfa4660cf7q31_sRGB_tsa.mov"
 byte_size = 155928648
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_TahitiWaves_01@2x.png"
@@ -1051,6 +1283,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-seal-pod]
 name = "Seal Pod"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/SE_A016_C009_SDR_20190717_FRC240fps_sdr_4k_grover402qp26_240p_t2160_tsa.mov"
 byte_size = 398096101
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_Seals_01@2x.png"
@@ -1060,6 +1294,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-palau-coral-colors]
 name = "Palau Coral Colors"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/PA_A004_C003_SDR_20190719_240fps_ee722c45-c37e-467e-ad34-d86898486facq29_sRGB_tsa.mov"
 byte_size = 332579128
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_PalauCoral_01@2x.png"
@@ -1069,6 +1305,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-barracuda-battery]
 name = "Barracuda Battery"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/BO_A018_C029_SDR_20190812_240fps_7e014e89-e09c-4842-ae69-94c585f77aceq21_sRGB_tsa.mov"
 byte_size = 224662657
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_Barracuda_01@2x.png"
@@ -1078,6 +1316,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-palau-jellies-dark]
 name = "Palau Jellies Dark"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/PA_A001_C007_SDR_20190717_240fps_7c3c9b51-37bd-415e-aee7-c18a096667e4q20_sRGB_tsa.mov"
 byte_size = 670145159
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_PalauJellies_01@2x.png"
@@ -1087,6 +1327,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-palau-jellies-light]
 name = "Palau Jellies Light"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/PA_A010_C007_SDR_20190717_240fps_e955ffdd-21c5-456a-a44b-0429aa869c61q24_sRGB_tsa.mov"
 byte_size = 300472228
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_PalauJellies_02@2x.png"
@@ -1096,6 +1338,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-palau-jellies-blue]
 name = "Palau Jellies Blue"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/PA_A002_C009_SDR_20190730_ALT01_FRC_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 996549777
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/PA_A002_C009_SDR_20190730_ALT01_SDR_4K_HEVC@2x.png"
@@ -1105,6 +1349,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-humpback-whale]
 name = "Humpback Whale"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/WH_D004_L014_SDR_20191031_240fps_39bd3ba0-b3c3-4d46-8daa-ec23be081676q24_sRGB_tsa.mov"
 byte_size = 328558287
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_HumpbackWhale_01@2x.png"
@@ -1114,6 +1360,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-jack-school]
 name = "Jack School"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/BO_A014_C023_SDR_20190717_240fps_fc33a391-4b78-41be-b2f4-8e66ff4568c6q29_sRGB_tsa.mov"
 byte_size = 196297015
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_Jacks_01@2x.png"
@@ -1123,6 +1371,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-costa-rica-dolphin-pod]
 name = "Costa Rica Dolphin Pod"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/CR_A009_C007_SDR_20191113_FRC240fps_dpmdq17_tsa.mov"
 byte_size = 359401713
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Underwater_CostaRicaDolphins_01@2x.png"
@@ -1132,6 +1382,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-bumpheads]
 name = "Bumpheads"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/BO_A014_C008_SDR_20190719_FRC_sdr_4k_grover341qp32_240p_t2160_tsa.mov"
 byte_size = 429606369
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/BO_A014_C008_SDR_20190719_SDR_4K_HEVC@2x.png"
@@ -1141,6 +1393,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-cownose-rays]
 name = "Cownose Rays"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/MEX_A006_C008_SDR_20190923_FRC_sdr_4k_qp25_240p_t2160_tsa.mov"
 byte_size = 443946179
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/MEX_A006_C008_SDR_20190923_SDR_4K_HEVC@2x.png"
@@ -1150,6 +1404,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-gray-reef-sharks]
 name = "Gray Reef Sharks"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/FK_U009_C004_SDR_20191220_FRC_sdr_4k_qp18_240p_t2160_tsa.mov"
 byte_size = 442595915
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/FK_U009_C004_SDR_20191220_SDR_4K_HEVC@2x.png"
@@ -1159,6 +1415,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-kelp-dark]
 name = "Kelp Dark"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/KP_A010_C002_SDR_20190717_FRC_sdr_4k_qp16_240p_t2160_tsa.mov"
 byte_size = 373312782
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/KP_A010_C002_SDR_20190717_SDR_4K_HEVC@2x.png"
@@ -1168,6 +1426,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-red-sea-coral-from-above]
 name = "Red Sea Coral from Above"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/RS_A008_C010_SDR_20191218_FRC_sdr_4k_qp30_240p_t2160_tsa.mov"
 byte_size = 348153164
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/RS_A008_C010_SDR_20191218_SDR_4K_HEVC@2x.png"
@@ -1177,6 +1437,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-underwater-sea-stars]
 name = "Sea Stars"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/BO_A012_C031_SDR_20190726_FRC_sdr_4k_qp26_240p_t2160_tsa.mov"
 byte_size = 299406518
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/BO_A012_C031_SDR_20190726_SDR_4K_HEVC@2x.png"
@@ -1188,6 +1450,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-middle-east]
 name = "Middle East"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A083_C002_1130KZ_v04_SDR_PS_FINAL_20180725_240fps_8572bbed-c0af-4af1-b604-d272a4253d3aq13_sRGB_tsa.mov"
 byte_size = 105165866
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Iran_Afghanistan_01@2x.png"
@@ -1197,6 +1461,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-north-africa]
 name = "North Africa"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A103_C002_0205DG_v12_SDR_FINAL_20180706_240fps_20f90202-ebab-4cfa-b422-6480e42d14f3q15_sRGB_tsa.mov"
 byte_size = 382451639
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Africa_MiddleEast_01@2x.png"
@@ -1206,6 +1472,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-caribbean]
 name = "Caribbean"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT308_139K_142NC_CARIBBEAN_DAY_v09_SDR_FINAL_22062018_240fps_dcf5f5e1-b86b-4f19-9a28-7ed9ac23cb51q19_sRGB_tsa.mov"
 byte_size = 412053627
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_CaribbeanDay_01@2x.png"
@@ -1215,6 +1483,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-antarcticas-southern-lights]
 name = "Antarctica’s Southern Lights"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT110_112NC_364D_1054_AURORA_ANTARTICA__COMP_FINAL_v34_PS_SDR_20181107_240fps_747b215c-eab2-417b-affe-ba6407f14d81q17_sRGB_tsa.mov"
 byte_size = 145082002
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Antarctica_01@2x.png"
@@ -1224,6 +1494,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-north-atlantic]
 name = "North Atlantic"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A001_C001_120530_v04_SDR_FINAL_20180706_240fps_d64ae958-3d0d-4e8c-8ae8-5d33f843c2a3q17_sRGB_tsa.mov"
 byte_size = 249415219
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_AtlanticOcean_Spain_France_01@2x.png"
@@ -1233,6 +1505,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-europe-night]
 name = "Europe Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT329_117NC_401C_1037_IRELAND_TO_ASIA_v48_SDR_PS_FINAL_20180725_FRC240fps_sdr_4k_qp21_240p_t2160_tsa.mov"
 byte_size = 244529682
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Ireland_Asia_01@2x.png"
@@ -1242,6 +1516,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-caribbean-islands]
 name = "Caribbean Islands"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/comp_A108_C001_v09_SDR_FINAL_22062018_240fps_cb12b871-5161-41a3-91e2-73b8a82f5425q21_sRGB_tsa.mov"
 byte_size = 264919358
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Caribbean_02@2x.png"
@@ -1251,6 +1527,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-caribbean-sea]
 name = "Caribbean Sea"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A105_C002_v06_SDR_FINAL_25062018_FRC240fps_sdr_4k_qp24_240p_t2160_tsa.mov"
 byte_size = 195354116
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Caribbean_01@2x.png"
@@ -1260,6 +1538,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-west-africa]
 name = "West Africa"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A001_C004_1207W5_v23_SDR_FINAL_20180706_FRC240fps_sdr_4k_qp19_240p_t2160_tsa.mov"
 byte_size = 296765527
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_WestAfrica_Alps_01@2x.png"
@@ -1269,6 +1549,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-east-asia]
 name = "East Asia"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT026_363A_103NC_E1027_KOREA_JAPAN_NIGHT_v18_SDR_PS_20180907_240fps_0d0095d4-5875-4d43-a1a8-7dc915b11b9dq24_sRGB_tsa.mov"
 byte_size = 320251068
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Korea_Japan_01@2x.png"
@@ -1278,6 +1560,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-southern-europe-night]
 name = "Southern Europe Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT329_113NC_396B_1105_ITALY_v03_SDR_FINAL_20180706_FRC240fps_sdr_4k_qp21_240p_t2160_tsa.mov"
 byte_size = 161967978
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Italy_Asia_01@2x.png"
@@ -1287,6 +1571,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-africa]
 name = "Africa"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT312_162NC_139M_1041_AFRICA_NIGHT_v14_SDR_FINAL_20180706_FRC240fps_sdr_4k_qp23_240p_t2160_tsa.mov"
 byte_size = 289393089
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_AfricaNight_01@2x.png"
@@ -1296,6 +1582,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-new-york]
 name = "New York"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT307_136NC_134K_8277_NY_NIGHT_01_v25_SDR_PS_20180907_FRC240fps_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 314499909
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_NewYork_01@2x.png"
@@ -1305,6 +1593,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-north-america-aurora]
 name = "North America Aurora"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT314_139M_170NC_NORTH_AMERICA_AURORA__COMP_v22_SDR_20181206_v12CC_FRC240fps_sdr_4k_qp18_240p_t2160_tsa.mov"
 byte_size = 373778479
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_NorthAmericaAurora_01@2x.png"
@@ -1314,6 +1604,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-nile-delta]
 name = "Nile Delta"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/ec/eb/c8/ecebc8d2-5486-c2b2-52ae-6f0ab2d6b65f/comp_A050_C004_1027V8_v16_SDR_FINAL_20180706_240fps_42f29097-fda3-4ff3-be89-dbfb8bf5b3e9q23_sRGB_tsa.mov"
 byte_size = 303000503
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_NileDelta_01@2x.png"
@@ -1323,6 +1615,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-southern-california]
 name = "Southern California"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A114_C001_0305OT_v10_SDR_FINAL_22062018_240fps_c137cb87-3eb8-45c7-a347-6377d9432eefq22_sRGB_tsa.mov"
 byte_size = 297210336
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_SouthernCalifornia_Baja_01@2x.png"
@@ -1332,6 +1626,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-new-zealand]
 name = "New Zealand"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A105_C003_0212CT_FLARE_v10_SDR_PS_FINAL_20180711_240fps_42a87da5-4106-4b01-9b72-5f08d7174865q19_sRGB_tsa.mov"
 byte_size = 284213226
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_NewZealand_01@2x.png"
@@ -1341,6 +1637,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-sahara]
 name = "Sahara"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A009_C001_010181A_v09_SDR_PS_FINAL_20180725_240fps_507c8aaf-3dcb-4a4f-ac58-4baa7f7b9254q20_tsa_sRGB.mov"
 byte_size = 346108628
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/Space_Sahara_Italy_01@2x.png"
@@ -1350,6 +1648,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-south-africa]
 name = "South Africa"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_A351_C001_v06_SDR_PS_20180725_sdr_4k_qp19_240p_t2160_tsa.mov"
 byte_size = 511880828
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_A351_C001_v06_SDR_PS_20180725_SDR_4K_HEVC@2x.png"
@@ -1359,6 +1659,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-china-night]
 name = "China Night"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT329_113NC_396B_1105_CHINA_v04_SDR_FINAL_20180706_FRC_sdr_4k_grover402qp24_240p_t2160_tsa.mov"
 byte_size = 121419456
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_GMT329_113NC_396B_1105_CHINA_v04_SDR_FINAL_20180706_F900F2700_SDR_4K_HEVC@2x.png"
@@ -1368,6 +1670,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-california]
 name = "California"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT306_139NC_139J_3066_CALI_TO_VEGAS_v08_SDR_PS_20180824_FRC_sdr_4k_qp24_240p_t2160_tsa.mov"
 byte_size = 187074576
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_GMT306_139NC_139J_3066_CALI_TO_VEGAS_v08_SDR_PS_20180824_SDR_4K_HEVC@2x.png"
@@ -1377,6 +1681,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-earth-australia]
 name = "Australia"
 format = "mov"
+width = 3840
+height = 2160
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/comp_GMT060_117NC_363D_1034_AUSTRALIA_v35_SDR_PS_FINAL_20180731_FRC_sdr_4k_qp20_240p_t2160_tsa.mov"
 byte_size = 331109011
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/comp_GMT060_117NC_363D_1034_AUSTRALIA_v35_SDR_PS_FINAL_20180731_SDR_4K_HEVC@2x.png"
@@ -1388,6 +1694,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-mac-purple]
 name = "Mac Purple"
 format = "mov"
+width = 5632
+height = 3524
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Silver_Comp_2x_Crop_v0041_4xFRC_sdr_4k_rate10000_240p_t3524_grover74_tsa.mov"
 byte_size = 37394276
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/MacOS_WP_Silver_356x356_P3_Thumbnail.png"
@@ -1397,6 +1705,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-mac-blue]
 name = "Mac Blue"
 format = "mov"
+width = 5632
+height = 3524
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Blue_Comp_2x_Crop_v0041_4xFRC_sdr_4k_rate10000_240p_t3524_grover74_tsa.mov"
 byte_size = 37496060
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/MacOS_WP_Blue_356x356_P3_Thumbnail.png"
@@ -1406,6 +1716,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-mac-pink]
 name = "Mac Pink"
 format = "mov"
+width = 5632
+height = 3524
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Pink_Comp_2x_Crop_v0041_4xFRC_sdr_4k_rate10000_240p_t3524_grover74_tsa.mov"
 byte_size = 37352033
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/MacOS_WP_Pink_356x356_P3_Thumbnail.png"
@@ -1415,6 +1727,8 @@ rights = "Apple artwork; no open-content license is asserted."
 [assets.macos-mac-yellow]
 name = "Mac Yellow"
 format = "mov"
+width = 5632
+height = 3524
 url = "https://sylvan.apple.com/itunes-assets/Aerials116/v4/cb/5b/50/cb5b5035-6701-619f-9065-3d7d0e5fbef4/Yellow_Comp_2x_Crop_v0041_4xFRC_sdr_4k_rate10000_240p_t3524_grover74_tsa.mov"
 byte_size = 37436648
 preview_url = "https://sylvan.apple.com/itunes-assets/Aerials126/v4/51/ff/08/51ff0824-8da5-78f0-e218-9e61264965bb/MacOS_WP_Yellow_356x356_P3_Thumbnail.png"
