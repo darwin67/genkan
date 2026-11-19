@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Genkan app icon: a shoji door slid partway open, light from inside. See "Brand" in docs/design-system/README.md. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3f4a"/><stop offset="1" stop-color="#1c1e23"/></linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7ab0ff"/><stop offset="1" stop-color="#2f6fe0"/></linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="610" y="236" width="170" height="552" fill="url(#glow)"/>
+  <rect x="244" y="236" width="366" height="552" fill="#f4f8fd"/>
+  <path d="M366 236 V680 M488 236 V680 M244 334 H610 M244 432 H610 M244 530 H610" stroke="#2a2d34" stroke-width="10"/>
+  <rect x="244" y="680" width="366" height="108" fill="#566070"/>
+  <rect x="244" y="236" width="366" height="552" fill="none" stroke="#2a2d34" stroke-width="26"/>
+</svg>

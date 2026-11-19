@@ -1,0 +1,36 @@
+<!-- @dsCard group="Brand" height=300 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Brand</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { display: flex; font-family: var(--font-sans); overflow: hidden; }
+  .panel { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; gap: 24px; }
+  .light { background: var(--text-primary); color: #5a606b; }
+  .dark { background: #1c1e23; color: var(--text-secondary); }
+  .space { box-sizing: border-box; width: 192px; height: 192px; padding: 32px; outline: 1px dashed currentColor; outline-offset: -1px; }
+  .space img { display: block; width: 128px; height: 128px; }
+  figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  figcaption, .note { font-size: 12px; line-height: 16px; }
+  .note { position: absolute; left: 20px; bottom: 16px; }
+  .sizes { display: flex; align-items: flex-end; gap: 22px; }
+</style>
+</head>
+<body>
+<div class="panel light">
+  <div class="space"><img src="../../../../assets/icon/genkan.svg" alt="Genkan icon"></div>
+  <p class="note">Clear space: a quarter of the icon's width on every side.</p>
+</div>
+<div class="panel dark">
+  <div class="sizes">
+    <figure><img src="../../../../assets/icon/genkan.svg" width="128" height="128" alt="Genkan icon at 128 px"><figcaption>128</figcaption></figure>
+    <figure><img src="../../../../assets/icon/genkan.svg" width="64" height="64" alt="Genkan icon at 64 px"><figcaption>64</figcaption></figure>
+    <figure><img src="../../../../assets/icon/genkan.svg" width="32" height="32" alt="Genkan icon at 32 px"><figcaption>32</figcaption></figure>
+    <figure><img src="../../../../assets/icon/genkan.svg" width="24" height="24" alt="Genkan icon at 24 px"><figcaption>24</figcaption></figure>
+    <figure><img src="../../../../assets/icon/genkan.svg" width="16" height="16" alt="Genkan icon at 16 px"><figcaption>16</figcaption></figure>
+  </div>
+</div>
+</body>
+</html>
