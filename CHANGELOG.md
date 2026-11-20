@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-11-20
+<!-- release-base: 2d445fc60f56bca9ea4aaee84d68e72e221c02c4 -->
+
+### 🚀 Features
+
+- *(wallpaper)* Select cached HEICs by catalog ID (#99)
+
+### 🐛 Bug Fixes
+
+- *(wallpaper)* Accept trailing ICC profile padding (#102)
+
+### 📚 Documentation
+
+- Add the Genkan icon and brand guidance (#101)
+- Reorganize README and guides by task (#103)
+
 ## [0.1.0] - 2026-11-19
 <!-- release-base: 466d0415ec2b951d6f562c19086909d4c9f5fd26 -->
 
