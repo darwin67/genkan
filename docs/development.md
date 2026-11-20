@@ -1,109 +1,186 @@
-# Development and Verification
+# Development
 
-## Development environment
+This guide covers working on Genkan: previewing the UI safely, choosing which
+checks a change needs, and publishing a release. For how the pieces fit
+together, see [How Genkan Works](architecture.md).
 
-Enter the pinned Nix shell before running Cargo or Make targets:
+## Set up
+
+Enter the pinned Nix shell before running Cargo or Make targets, then open the
+safe login preview:
 
 ```sh
 nix develop
+make dev
 ```
 
-| Task | Make targets |
-| --- | --- |
-| Preview | `dev`, `animated-dev`, `lock-dev` |
-| Build and check | `check`, `fmt`, `fmt-fix`, `lint`, `test`, `scripts-test`, `check-rfds`, `check-design`, `build`, `package`, `verify`, `clean` |
-| Packaged smoke checks | `smoke`, `wallpaper-smoke`, `lock-smoke`, `niri-smoke`, `evidence` |
-| Wallpaper and fixtures | `wallpaper-package`, `wallpaper-empty-cache`, `wallpaper-provisioning`, `heic-assets`, `heic-decode` |
-| Regenerate assets | `update-reference-images`, `update-avatars` |
-| Separate checks | `e2e`, `lock-vm`, `niri-vm` (KVM); `hardware-smoke` (physical graphics); `fuzz` (nightly Rust) |
-| Release tooling | `changelog`, `next-version` |
+Amp orbs run `.agents/setup` to prepare the same shell (including jj) and
+prefetch locked Cargo dependencies; login shells in the checkout activate it
+automatically. `.agents/resume` initializes a colocated jj repository when
+needed and starts nothing. Setup skips compilation and VM tests to keep
+snapshots short, and hosted orbs have no KVM, so run the
+[NixOS VM checks](#nixos-vm-checks) in CI or on a KVM-capable runner.
 
-## Releasing Genkan
+Nix builds see only Git-tracked files, and new files in a jj working copy are
+not yet tracked by Git. Before `make update-reference-images`, `make verify`, or
+any other Nix build, describe the change and run `jj new`. This matters most
+for new reference images and fixtures.
 
-**Squash-merge the `release/next` PR after its checks pass** to publish a
-GitHub release. If `main` has advanced, wait for `Prepare release PR` to refresh
-the proposal and its checks. git-cliff starts at `v0.1.0`, then chooses major for
-breaking changes, minor for features, and patch for other included commits. The
-PR adds a changelog entry without rewriting released notes, and keeps Cargo's
-manifest and both lockfiles in sync.
+## Preview the UI
 
-One-time GitHub setup: install a GitHub App with **Contents: read/write** and
-**Pull requests: read/write** on this repository. In the `RELEASE` Actions
-environment, set `RELEASE_APP_ID` to the app ID and `RELEASE_APP_SECRET` to its
-private key. Allow `main` to use the environment. The app opens the PR so normal
-PR checks run; publishing uses the workflow's own GitHub token.
+Previews use fixed synthetic accounts, time, animation frame, and sessions.
+They accept input without sending it anywhere and simulate authentication and
+every power action, so testing cannot suspend, restart, or shut down your
+machine. They never contact AccountsService, greetd, logind, or PAM.
 
-To enforce freshness at merge time, require the **Release proposal freshness**
-status check on `main` and enable **Require branches to be up to date before
-merging**. If a stale proposal is merged anyway, publishing stops before tagging.
-Revert only that squash commit through a PR, then rerun **Prepare release PR**.
+| Preview | Command | Select a state |
+| --- | --- | --- |
+| Login | `make dev` | `PREVIEW=users`, `visible-prompt`, `authentication-failure`, `power-confirmation`, `power-menu`, `change-user` |
+| Lock | `make lock-dev` | `LOCK_PREVIEW=challenge`, `submitting`, `failure`; `WIDTH`, `HEIGHT`, `WALLPAPER` |
+| Animated wallpaper | `make animated-dev` | `WALLPAPER=<catalog ID>` |
 
-`Publish GitHub release` builds the exact merge commit for both Linux targets
-before publishing either download. If it fails, rerun the failed jobs; an
-incomplete upload remains a draft. If `main` advances while a release is still
-building, the next release PR waits for its tag. After publishing, run
-`Prepare release PR` manually from `main` to pick up those commits without
-waiting for another push. See [installing a prebuilt release](deployment.md#install-a-prebuilt-release).
+```sh
+PREVIEW=visible-prompt make dev
+WIDTH=1080 HEIGHT=1920 LOCK_PREVIEW=failure make lock-dev
+```
 
-## Shared presentation
+`cargo run --bin genkan -- login --help` lists every fixture and login option.
+Pass `--username` only when a particular synthetic identity helps. To exercise
+real services, run Genkan without `--preview` in the intended greeter
+environment.
 
-`src/design/` owns the bundled Inter typeface, glyphs, styles, text fitting,
-and plain-data tokens used by iced login and the CPU lock renderer.
-`tokens.rs` mirrors `docs/design-system/tokens.json`; the token mirror test
-fails if either changes without the other. `make check-design`, also part of
-`make verify`, rejects new numeric control styling outside `src/design/`.
-Its regression fixtures cover color, font, spacing, comments, and structural
-zeroes. It is a lexical guard, not a Rust parser or a ban on geometry arithmetic.
+The login preview renders a cached wallpaper poster without starting
+GStreamer, or the generated background when nothing is cached. The lock preview
+uses the production lock renderer in a normal window, laid out as the
+authentication output, without requesting `ext-session-lock-v1`. Automated
+reference captures use an explicit test-only cache of source JPEGs, not a
+production fallback.
 
-Controls sample a shared blurred copy of the owned wallpaper frame. The copy
-is at most 192 pixels on its longest edge, uses bounded stratified downsampling
-and three separable box passes, and is cached until the wallpaper allocation
-changes. Both renderers crop it with the original wallpaper's cover geometry
-and clip it to the control. Login rasterizes a control-sized rounded alpha mask
-because iced's tiny-skia backend does not implement image-local clipping.
-A dark backing bounds its brightest channel even
-over white artwork; the wallpaper outside controls stays undimmed. The fallback
-generated background keeps its existing contrast-tested control treatment.
+`make animated-dev` plays real wallpaper media while keeping authentication and
+power simulated. Download the media first; with an empty cache it shows the
+generated background:
 
-Contrast tests use the actual control color roles and filtered material over
-RGB cube vertices and test-only reference JPEGs, in encoded and linear sRGB.
-Wallpaper text has a soft shadow below it rather than an outline, so its
-contrast over bright photographic regions is a visual check, not a numeric one. The lock rejection shake uses the login motion curve,
-requests overlay-only frames at the runtime's 16ms cadence, ends at rest, and
-is disabled by reduced motion. It does not change authentication or unlocking.
+```sh
+cargo run --bin genkan -- assets download tahoe-beach
+make animated-dev
+cargo run --bin genkan -- assets download macos-landscape-sequoia-sunrise
+WALLPAPER=macos-landscape-sequoia-sunrise make animated-dev
+```
 
-Caps Lock and the active layout name come from the focused Wayland keyboard's
-XKB keymap and `modifiers` event, never from observing Caps Lock key presses.
-Lock reuses its SCTK seat keyboard. Login briefly observes iced's own borrowed
-Wayland connection every 500ms; a second connection would not own keyboard
-focus and cannot reliably supply this state. The observer does not interpret
-key events, change focus, or retain response text. It reads keymap descriptors
-at offset zero without advancing their potentially shared open-file offset.
-Lock selects metadata from the keyboard producing input; removing another
-seat cannot clear it. Login omits conflicting or unknown focused-seat snapshots.
-Unavailable keymaps, absent focus, unnamed layouts, and non-Wayland backends
-omit the items rather than guess. Deterministic
-previews use explicitly synthetic metadata and never contact system services.
+`cargo run --bin genkan -- assets preview <ID>` previews any catalog wallpaper
+the same way. See [Wallpapers](wallpapers.md) for downloads, custom catalogs,
+and playback rules.
 
-Network presentation reads only `/sys/class/net/*/operstate` (excluding loopback).
-“Network link up” means an interface reports `up`, not that Internet access was
-tested. “Network link down” requires all observed interfaces to have known down
-states; unknown or unreadable states without an up interface omit the item.
-There are no network requests, NetworkManager dependency, or new daemons. Lock
-checks every five seconds; login shares its metadata timer.
+## Choose the checks
 
-After presentation changes, describe the jj change and run `jj new` before
-`make update-reference-images` or any Nix build: flake sources include only
-Git-tracked files, not newly added jj working-copy files.
+Run `make verify` before completing any code change. It runs formatting, lint,
+Rust and shell tests, RFD and design checks, packaging and wallpaper checks,
+headless compositor smoke tests, and preview evidence. Some changes need more:
 
-## Property testing and fuzzing
+| You changed | Also run | Needs |
+| --- | --- | --- |
+| greetd/PAM retry, cancellation, or session launch | `make e2e` | x86_64 Linux with KVM |
+| Session-lock lifecycle, input isolation, before-sleep readiness, or resume | `make lock-vm` | x86_64 Linux with KVM |
+| niri greeter authentication, session handoff, or crash recovery | `make niri-vm` | x86_64 Linux with KVM |
+| GeoClue-backed solar scheduling | `nix build .#checks.x86_64-linux.geoclue-solar-vm --print-build-logs` | x86_64 Linux with KVM |
+| Physical graphics | `make hardware-smoke` | A Wayland session with local DRM devices |
+| Parsers | `make fuzz` | Nightly Rust; see [fuzzing](#property-tests-and-fuzzing) |
 
-`make test` runs the property tests alongside the ordinary unit tests. The
-default counts are 128 cases or fewer (32 shell executions, 64 login sequences
-of up to 79 actions, 64 solar mappings). Keep `proptest-regressions/` files:
-they replay shrunk failures before new random cases. All generated login data
-is synthetic; never feed credentials or captured PAM conversations into test
-strategies, Debug output, fuzz corpora, or failure reports.
+Run `make test`, including through `make verify`, in the foreground: a
+background shell job can inherit an ignored SIGINT and spuriously fail the
+reference-image interruption regression.
+
+### What `make verify` checks
+
+- **`make smoke`** runs the packaged-binary graphics check used by both
+  architecture jobs in CI. It nests Cage with its pixman renderer inside
+  headless Weston and launches Genkan with Mesa's software Vulkan driver.
+  Genkan must stay alive until the controlled timeout on iced's wgpu backend,
+  with the intended Vulkan driver. The check also compares animated wallpaper
+  crops with the static poster, requires several distinct nonblank frames from
+  an authored HEVC fixture, bounds short-term RSS growth, and launches
+  production builds without a fixture cache. It is not the sustained
+  performance or input-latency pass tracked in [Deferred Work](deferred.md).
+- **`make wallpaper-smoke`** runs the packaged `genkan wallpaper` under
+  headless Sway with two differently scaled outputs. It changes scale,
+  transform, and mode without recreating a surface, compares cover rendering
+  with independent ImageMagick references, and confirms that a foreground
+  `genkan lock` fully covers the desktop client and that unlocking restores it.
+  It emits `mixed-scale-landscape.png`, `mixed-scale-portrait.png`,
+  `ultrawide.png`, `locked-landscape.png`, `locked-portrait.png`, and
+  `transition-before.png`, `transition-during.png`, and `transition-after.png`
+  for review, and makes no GeoClue or session-bus request.
+- **`make niri-smoke`** checks the generated greeter configuration and runs
+  wallpaper and lock under nested niri at fractional scale.
+- **`make check-rfds`** validates RFD layout and metadata, reference images,
+  avatars, and the wallpaper manifest. For the manifest it checks the recorded
+  loop-analysis claims (method, `endpoint_ssim`, verification,
+  `default_wallpaper`, decode verification) without fetching or re-measuring
+  upstream media.
+- **`make check-design`** rejects numeric control styling outside
+  `src/design/`; see [shared presentation](architecture.md#shared-presentation).
+- **`make wallpaper-package`** checks that the production wallpaper tree holds
+  only the two catalog TOML files and that the runtime closure contains no
+  artwork or test cache. **`make wallpaper-empty-cache`** runs the unmodified
+  production wrapper with empty caches and confirms that preview opens no
+  artwork and starts no download. **`make wallpaper-provisioning`** checks the
+  NixOS preparation unit and the wrapper's selection and override behavior.
+- **`make heic-assets`** verifies the sizes and SHA-256 hashes of the
+  repository's authored HEIC fixtures, and **`make heic-decode`** decodes all
+  their frames through the shipped parser against the manifest's
+  `structure.image_count`. A fixture declaring `decode_verified = false` fails
+  rather than being skipped. Both use an explicit test cache and never
+  download or revalidate remote catalog records.
+
+The wallpaper transition capture sets local time twenty seconds before the
+fixture's 06:00 boundary with a second-precision POSIX `TZ` offset, so a slow
+software-rendered startup still shows the red frame before the dissolve. Each
+phase must be a near-uniform, blend-compatible field matching the fixture's
+palette and red-plus-green intensity, so an unrelated or split frame cannot
+stand in for a missing phase. Screenshots cannot distinguish a fabricated
+uniform frame from a real dissolve, so this bounds the failure modes rather
+than proving the renderer's internal path.
+
+### NixOS VM checks
+
+CI runs the VM checks in the table above separately from `make verify`. Locally
+they need an x86_64 Linux host with KVM. `make e2e` uses real greetd 0.10.3
+with NixOS PAM and a feature-gated driver to verify the launched user and
+session environment; it does not exercise iced rendering or input automation.
+
+### Physical graphics smoke
+
+Hosted CI has no DRM devices, so physical hardware testing is opt-in. Run
+`make hardware-smoke` from a Wayland session. It tests the system AMD and
+NVIDIA Vulkan ICDs once per detected vendor, launches packaged Genkan under
+Vulkan-rendered nested Cage when that vendor has a display-connected adapter,
+and verifies that an AMD-only run does not load or open the NVIDIA driver. It
+passes `--reduce-motion`, so validate animated playback separately before
+claiming physical animation coverage.
+
+On Sway, this stricter run also moves Cage to every active output, verifies
+its resulting tree location, and requires both GPU vendors and an active
+external display:
+
+```sh
+GENKAN_REQUIRE_GPU_VENDORS='1002 10de' \
+GENKAN_REQUIRE_EXTERNAL_DISPLAY=1 \
+GENKAN_EXERCISE_SWAY_OUTPUTS=1 \
+make hardware-smoke
+```
+
+A disconnected hybrid GPU can validate its Vulkan driver but not presentation.
+Physical ARM graphics validation remains tracked in
+[Deferred Work](deferred.md#physical-arm-graphics-validation).
+
+## Property tests and fuzzing
+
+`make test` runs property tests alongside the unit tests, with 128 cases or
+fewer (32 shell executions, 64 login sequences of up to 79 actions, 64 solar
+mappings). Keep the `proptest-regressions/` files: they replay shrunk failures
+before new random cases. All generated login data is synthetic; never feed
+credentials or captured PAM conversations into test strategies, Debug output,
+fuzz corpora, or failure reports.
 
 The properties test the existing contracts, not stronger substitutes:
 
@@ -113,8 +190,8 @@ The properties test the existing contracts, not stronger substitutes:
 - Exec quoting has two escaping layers. Literal `%%` becomes `%`, and literal
   reserved characters are valid inside quoted argv. Session validity is stricter
   than syntax validity (for example `%U` is syntactically valid but unsupported).
-- Missing/nonpositive login history on **any** peer prevents automatic account
-  selection; a single usable account is selected regardless of history.
+- Missing or nonpositive login history on **any** peer prevents automatic
+  account selection; a single usable account is selected regardless of history.
 - `bounded_text` is idempotent. `clean_prompt` is only a single cleanup pass:
   `x: :` becomes `x:` and then `x` on a second call. Appending is accumulation,
   not idempotent except for empty appends or a saturated buffer.
@@ -124,16 +201,16 @@ The properties test the existing contracts, not stronger substitutes:
   retained source characters, not the extra ellipsis character.
 - Cover sampling allows integer crop/scale and nearest-neighbor rounding;
   generated pixel allocations stay below 4 KiB. Large dimensions exercise only
-  geometry/checked arithmetic, without allocating large buffers.
+  geometry and checked arithmetic, without allocating large buffers.
 
-The separate `fuzz/` crate is excluded from the workspace/default members and
-`make verify`; CI is unchanged. Its `fuzzing` feature exposes only in-memory
-entrypoints and does not enable iced, GStreamer, D-Bus, or session-lock. The
-targets cover aggregate HEIC container preflight (not native image decoding),
-XMP/XML and binary plist/Base64 parsing, and Desktop Entry validation/expansion.
+The separate `fuzz/` crate is excluded from the workspace, its default members,
+`make verify`, and CI. Its `fuzzing` feature exposes only in-memory entry points
+and does not enable iced, GStreamer, D-Bus, or session-lock. The targets cover
+aggregate HEIC container preflight (not native image decoding), XMP/XML and
+binary plist/Base64 parsing, and Desktop Entry validation and expansion.
 
-The default flake shell pins stable Rust. To run a short campaign with nightly
-and cargo-fuzz from the **same pinned Nix inputs**, use this at the repository root:
+The default shell pins stable Rust. To run a short campaign with nightly and
+cargo-fuzz from the **same pinned Nix inputs**, run this at the repository root:
 
 ```sh
 nix develop --command nix shell --impure --expr '
@@ -147,348 +224,64 @@ nix develop --command nix shell --impure --expr '
 ' --command make fuzz
 ```
 
-`make fuzz` seeds each target from the existing small HEIC fixtures and synthetic
-parser examples. It runs each target for 10 seconds, caps input at 64 KiB, RSS at
-512 MiB, individual allocations at 128 MiB and each input at five seconds. Set
+`make fuzz` seeds each target from the small HEIC fixtures and synthetic parser
+examples and runs each for 10 seconds, capping input at 64 KiB, RSS at 512 MiB,
+single allocations at 128 MiB, and each input at five seconds. Set
 `FUZZ_SECONDS=60` for a longer campaign. Mutable corpora, crash artifacts, and
-build output are ignored; deterministic seeds and `fuzz/Cargo.lock` are tracked.
-Preserve real crash artifacts, minimize them with `cargo fuzz tmin TARGET PATH`,
-and add a regular unit regression before fixing production code.
+build output are ignored; deterministic seeds and `fuzz/Cargo.lock` are
+tracked. Preserve real crash artifacts, minimize them with
+`cargo fuzz tmin TARGET PATH`, and add a regular unit regression before fixing
+production code.
 
-These bounds contain the experiment; passing fuzz runs do **not** prove an
-allocator bound. The production preflights enforce aggregate box/item/extent,
-XML depth/event, plist object/depth/expanded-byte and metadata-byte budgets.
-Existing adversarial unit tests plus the feature-gated one-over-budget tests
-check enforcement directly; the container target also checks that acceptance
-is monotone when budgets increase. The 64 KiB input cap does not explore the
-full production source-size limit, and the targets never fuzz live PAM, greetd,
-native libheif decode, graphics drivers, or arbitrary unlimited schedules.
+Passing fuzz runs do **not** prove an allocator bound. The production
+preflights enforce aggregate box, item, and extent budgets, XML depth and event
+budgets, and plist object, depth, expanded-byte, and metadata-byte budgets.
+Adversarial unit tests and feature-gated one-over-budget tests check that
+enforcement directly; the container target also checks that acceptance is
+monotone as budgets grow. The 64 KiB input cap does not reach the production
+source-size limit, and the targets never fuzz live PAM, greetd, native libheif
+decoding, graphics drivers, or arbitrary unlimited schedules.
 
-## Safe UI preview
+## Make targets
 
-```sh
-make dev
-```
-
-The default preview uses a fixed synthetic account, time, animation frame, and
-Wayland session. It accepts input without sending it anywhere. Authentication
-submission and all power actions are simulated, so UI testing cannot suspend,
-restart, or shut down the development machine. Preview does not contact
-AccountsService, greetd, or logind.
-
-The ordinary preview renders a cached wallpaper poster without starting
-GStreamer, or the generated background when no poster is cached. Neither the
-development shell nor the package supplies media. Automated reference captures
-use an explicit test-only cache of source JPEGs, not a production fallback.
-Choose a deterministic fixture with `PREVIEW`:
-
-```sh
-PREVIEW=users make dev
-PREVIEW=visible-prompt make dev
-PREVIEW=authentication-failure make dev
-PREVIEW=power-confirmation make dev
-PREVIEW=power-menu make dev
-PREVIEW=change-user make dev
-```
-
-Run `cargo run --bin genkan -- login --help` to list every fixture and login
-option.
-Pass an explicit `--username` only when a particular synthetic identity is
-useful. To exercise real services, run Genkan without `--preview` in the
-intended greeter environment.
-
-## Safe lock preview
-
-```sh
-make lock-dev
-LOCK_PREVIEW=challenge make lock-dev
-LOCK_PREVIEW=submitting make lock-dev
-LOCK_PREVIEW=failure make lock-dev
-```
-
-The lock preview uses the production lock renderer in a normal window without
-requesting `ext-session-lock-v1` or contacting PAM. It renders the window as
-the authentication output: the clock and identity column anchored to its edges
-exactly as the session-lock runtime places them, at the login preview's fixed
-time. Login and lock share the same composition, tokens, and Inter typeface;
-login adds the session and power items and a stronger focused outline, and the
-lock masks every response. Set `WIDTH`, `HEIGHT`, and `WALLPAPER` to inspect
-responsive layouts, for example `WIDTH=1080 HEIGHT=1920 make lock-dev`.
-
-## Download and inspect wallpapers
-
-The default catalog lists Apple’s 156 original macOS Tahoe MOVs alongside the
-dynamic HEICs. Legacy Apple MOV IDs still work explicitly; Nix fetches no media.
-`assets preview` downloads a missing asset before opening its window; cached
-previews, login, lock, and wallpaper playback stay offline. Use the Cargo form
-below for an uninstalled build:
-
-```sh
-cargo run --bin genkan -- assets list
-cargo run --bin genkan -- assets list --details
-cargo run --bin genkan -- assets preview macos-landscape-iceland-snow-caps
-cargo run --bin genkan -- assets download my-wallpaper --url "$SOURCE_URL"
-cargo run --bin genkan -- assets preview my-wallpaper --reduce-motion
-```
-
-| Command | Network and validation | Local effect |
-| --- | --- | --- |
-| `assets list` | Offline | Compact table grouped by Apple aerial category and media type; `--details` adds names, URLs, and rights |
-| `assets preview <key>` | Download and validate only if missing; cached preview is offline | Cache missing media, then open a simulated window; change no settings |
-| `assets preflight <key>` | Bounded range reads; one representative frame | Install nothing |
-| `assets download <key>` | Complete transfer; resource-bounded hashing, ZIP parsing, and frame validation | Atomically select validated media, metadata, and a generated MOV poster |
-
-Downloads require a direct HTTP(S) response with status 200. Neither downloads
-nor preflight follow redirects.
-For download and preview, `--max-bytes` defaults to 2 GiB, accepts 4 KiB–16 GiB,
-and limits both the transfer and expanded media; transfers time out after
-600 seconds. Supplied
-byte sizes and SHA-256 pins must match before publication. Apple’s Tahoe MOV
-entries declare byte sizes but no upstream hashes. Without a trusted pin, the
-computed hash is an observation. Custom keys cannot replace keys in the selected
-catalog. Observed format, dimensions, byte size, and hash persist in cache
-`entries/<key>.toml` receipts and are available to subsequent list/preview
-commands. A matching verified cache entry can be reused.
-
-Cache selection and greeter provisioning are documented under
-[wallpaper configuration](deployment.md#wallpaper-configuration). Downloads do
-not change the selected login/lock wallpaper. Missing media retains the
-generated background in login, lock, and wallpaper playback. `assets preview`
-attempts acquisition instead; a download or validation failure stops before
-opening the window and leaves no partial installation.
-
-### Cache publication and interrupted downloads
-
-Each download prepares a new generation under
-`objects/download-<key>-<random>/`, containing `<key>.mov` or `<key>.heic`, a
-`<key>-poster.jpg` for MOV, and metadata. Only after preparation succeeds does
-`entries/<key>.toml` atomically select that complete generation. Readers use one
-receipt snapshot for metadata, media, and poster. Preparation or publication
-failures leave the previous generation usable. This does not
-promise simultaneous display changes across processes or filesystem durability
-after power loss.
-
-Use `assets preview <key>` or the absolute media path printed by download with
-`--wallpaper-file`; do not construct a downloaded path under `mov/` or `heic/`.
-Those conventional directories remain supported for explicitly provisioned
-local/test files. Published generations are retained so in-flight previews,
-deferred HEIC opens, and saved absolute overrides remain valid. Replacement
-versions may occupy additional disk space; remove an unused version only when
-no readers or saved overrides need it.
-
-Ctrl+C or SIGTERM stops the preparation processes and cleans staging. After
-SIGKILL or a crash, the next explicit download cleans only abandoned,
-unpublished staging under the cache lock, never previously published
-generations. Playback never performs cache cleanup. Preparation has resource
-and time limits, including ZIP parsing and hashing, so a timeout does not
-publish partially prepared media.
-
-### Use a custom TOML catalog
-
-`--catalog sources.toml` replaces the curated entries. Only `url` is required;
-this illustrative entry uses a placeholder URL:
-
-```toml
-[assets.mountains]
-url = "https://source.example/mountains.mov"
-name = "My Mountains"
-format = "mov"
-width = 3840
-height = 2160
-byte_size = 790758290
-duration_seconds = 120.0
-rights = "Record the source's actual usage terms here"
-attribution = "Original author"
-# sha256 = "64 hexadecimal digits from a trusted source"
-# source_page_url = "https://source.example/mountains"
-# preview_url = "https://source.example/mountains.jpg"
-```
-
-```sh
-genkan assets list --catalog sources.toml
-genkan assets preflight mountains --catalog sources.toml
-genkan assets download mountains --catalog sources.toml
-genkan assets preview mountains --catalog sources.toml
-```
-
-Unknown metadata is shown as `?`. Supplied format, byte size, and dimensions
-are checked against observations; duration, rights, attribution, and preview
-URLs are informational. Poster URLs are not fetched. Receipts fill missing
-observations but never override a curator's URL, pins, or geometry. Custom
-`--url` downloads appear in the default list; a replacement catalog shows its
-own entries, not unrelated cached custom keys.
-
-A ZIP source needs `archive_member` (the exact member name),
-`archive_byte_size`, and `archive_sha256`, plus the extracted media's
-`byte_size` and `sha256`. Only that configured member is extracted into a
-controlled local filename; archive paths are never unpacked. Both archive and
-member pins are verified. Arbitrary ZIP discovery is not supported.
-
-### Preflight is optional, not an installation gate
-
-`genkan assets preflight <key> [--url URL]` uses bounded HTTP range reads,
-including tail metadata when needed. It decodes one HEVC MOV frame or a HEIC
-primary image with Genkan's parser/color conversion and inspects HEIC scheduling
-metadata. It installs nothing and does not persist custom `--url` entries.
-
-The default media-body budget is 8 MiB; `--max-bytes` accepts 4 KiB–64 MiB.
-There are at most 128 range requests and a 35-second worker deadline. Headers,
-TLS, and transport overhead are outside the media-byte counter. Multiple reads
-require a consistent strong ETag for a pass. Redirects, ignored or malformed
-ranges, changed sources, TLS failures, and exhausted budgets are inconclusive.
-Cancellation stops the worker and its request. Apple's root certificate is
-supplied only to curl requests for the exact HTTPS host `sylvan.apple.com`;
-it does not change system trust or disable certificate/hostname validation.
-
-Exit codes are **0: passed**, **2: unsupported or catalog mismatch**,
-**3: inconclusive**, and **1: command/configuration error**. A pass does not
-verify the whole-file hash, every frame, or a particular GPU renderer. ZIPs
-cannot be partially inspected as media, but a configured ZIP download can
-still pass full archive/member integrity checks and local frame validation.
-An inconclusive or unsupported preflight never triggers or prevents an explicit
-download; that command independently validates the complete file before
-publication. Neither command proves every frame decodes.
-
-## Animated wallpaper preview
-
-Real wallpaper playback can be enabled without making preview authentication
-or power actions real. Download the selected originals into your cache first:
-
-```sh
-cargo run --bin genkan -- assets download tahoe-beach
-make animated-dev
-cargo run --bin genkan -- assets download macos-landscape-sequoia-sunrise
-WALLPAPER=macos-landscape-sequoia-sunrise make animated-dev
-```
-
-`--wallpaper-file` accepts an existing absolute MOV or HEIC file. MOV looping
-uses the reported stream duration. A Tahoe catalog MOV with no reported
-duration plays to the end and holds its last frame instead of looping. HEIC
-uses its own scheduling metadata.
-For downloaded files, use the absolute path printed by download, not
-a hardcoded cache layout. URIs, playlists, and GStreamer pipeline descriptions
-are not accepted.
-Runtime playback never downloads media or invokes a shell. With an empty cache,
-`make animated-dev` remains usable but shows the generated background.
-
-## Verification
-
-Run the local suite for formatting, lint, tests, packaging, headless compositor
-smoke checks, and preview evidence:
-
-```sh
-make verify
-```
-
-`make verify` does not run the separate [NixOS VM checks](#nixos-vm-checks),
-the physical hardware smoke, or fuzzing.
-
-Run `make test` (including its invocation by `make verify`) in the foreground.
-A background shell job can inherit ignored SIGINT and spuriously fail the
-reference-image interruption regression. Before a Nix build in a colocated jj
-checkout, describe the change and run `jj new`: Nix source filtering uses
-Git-tracked files, while new jj working-copy files are not yet tracked by Git.
-This matters especially for newly added reference images and fixtures.
-
-`make smoke` runs the packaged-binary graphics check used by both architecture
-jobs in CI. It starts headless Weston, nests Cage with its pixman renderer, and
-launches Genkan using Mesa's software Vulkan driver. Genkan must remain alive
-until the controlled timeout. The check requires iced's wgpu backend and proves
-that Cage launched the packaged process with the intended Vulkan driver.
-It also compares animated wallpaper crops with the static poster, requires
-multiple distinct nonblank frames from an authored HEVC fixture, and bounds
-short-term RSS growth. Production launches are also checked without a fixture
-cache. Those checks do not constitute the sustained performance or input-latency acceptance
-pass tracked in [Deferred Work](deferred.md).
-
-`make wallpaper-smoke` runs the headless layer-shell desktop check. It launches
-the packaged `genkan wallpaper` under headless Sway with two differently scaled
-outputs, exercises scale, transform, and mode changes without recreating a
-surface, compares aspect-preserving cover rendering against independent
-ImageMagick references, and confirms that a foreground `genkan lock` fully
-occludes the desktop client and that explicit unlock restores it. It emits
-`mixed-scale-landscape.png`, `mixed-scale-portrait.png`, `ultrawide.png`,
-`locked-landscape.png`, `locked-portrait.png`, and the
-`transition-before.png`, `transition-during.png`, and `transition-after.png`
-dissolve frames for review, and it makes no GeoClue or session-bus request. The
-transition capture places local wall-clock time twenty seconds before the
-fixture's 06:00 boundary with a second-precision POSIX `TZ` offset, so a slow
-software-rendered startup still presents the red frame before the dissolve
-begins. Each phase is captured in order and must be a near-uniform,
-blend-compatible field matching the fixture's palette and red-plus-green
-intensity, so an unrelated or spatially split frame cannot stand in for a phase
-that never happened. Screenshot evidence cannot distinguish a fabricated uniform
-frame from a real dissolve, so this bounds the failure modes rather than proving
-the renderer's internal path.
-
-`make niri-smoke` checks the generated greeter configuration and exercises
-wallpaper and lock under nested niri at fractional scale.
-
-`make check-rfds` also validates the wallpaper catalog manifest. The loop
-analysis must record the method that produced each `endpoint_ssim`, the
-reproducible set must name exactly the catalog entries, every entry must record
-a plausible endpoint measurement with its verification, `default_wallpaper` must
-name an entry, and no catalog asset may opt out of decode verification. The
-check validates the recorded claims rather than re-measuring them, so it stays
-cheap enough for every change; it does not fetch upstream media.
-
-`make wallpaper-package` checks that the production wallpaper tree contains
-only the two catalog TOML files and the runtime closure contains neither
-catalog artwork nor a test cache. `make wallpaper-empty-cache` checks the
-unmodified production wrapper with empty HOME, XDG, and override caches:
-preview remains usable, opens no artwork, and starts no downloader or network
-request. `make wallpaper-provisioning` checks the NixOS preparation unit and
-the playback wrapper's selection and explicit override behavior.
-
-`make heic-assets` verifies the byte sizes and SHA-256 hashes of the authored,
-repository-delivered HEIC fixtures. `make heic-decode` opens those fixtures
-through the shipped parser and decodes all their frames, checking the count
-against the manifest's `structure.image_count`. A fixture declaring
-`decode_verified = false` fails rather than being skipped. These checks use an
-explicit test cache; remote catalog records are not downloaded or revalidated.
-
-### NixOS VM checks
-
-CI runs these separately from `make verify`. To run them locally, use an
-x86_64 Linux host with KVM and choose the check for the behavior you changed:
-
-| Behavior | Command |
+| Task | Make targets |
 | --- | --- |
-| greetd/PAM retry, cancellation, and session launch | `make e2e` |
-| Session-lock lifecycle, input isolation, before-sleep readiness, and simulated resume | `make lock-vm` |
-| niri greeter authentication, session handoff, and crash recovery | `make niri-vm` |
-| GeoClue-backed solar scheduling | `nix build .#checks.x86_64-linux.geoclue-solar-vm --print-build-logs` |
+| Preview | `dev`, `animated-dev`, `lock-dev` |
+| Build and check | `check`, `fmt`, `fmt-fix`, `lint`, `test`, `scripts-test`, `check-rfds`, `check-design`, `build`, `package`, `verify`, `clean` |
+| Packaged smoke checks | `smoke`, `wallpaper-smoke`, `lock-smoke`, `niri-smoke`, `evidence` |
+| Wallpaper and fixtures | `wallpaper-package`, `wallpaper-empty-cache`, `wallpaper-provisioning`, `heic-assets`, `heic-decode` |
+| Regenerate assets | `update-reference-images`, `update-avatars` |
+| Separate checks | `e2e`, `lock-vm`, `niri-vm` (KVM); `hardware-smoke` (physical graphics); `fuzz` (nightly Rust) |
+| Release tooling | `changelog`, `next-version` |
 
-`make e2e` uses real greetd 0.10.3 with NixOS PAM and a feature-gated driver to
-verify the launched user and session environment. It does not exercise iced
-rendering or input automation.
+## Release Genkan
 
-## Physical graphics smoke
+**Squash-merge the `release/next` PR after its checks pass** to publish a
+GitHub release. If `main` has advanced, wait for `Prepare release PR` to
+refresh the proposal and its checks. git-cliff starts at `v0.1.0`, then chooses
+major for breaking changes, minor for features, and patch for other included
+commits. The PR adds a changelog entry without rewriting released notes, and
+keeps Cargo's manifest and both lockfiles in sync.
 
-Hosted CI has no DRM devices, so physical hardware testing is opt-in:
+`Publish GitHub release` builds the exact merge commit for both Linux targets
+before publishing either download. If it fails, rerun the failed jobs; an
+incomplete upload remains a draft. If `main` advances while a release is still
+building, the next release PR waits for its tag. After publishing, run
+`Prepare release PR` manually from `main` to pick up those commits without
+waiting for another push. Users install releases as described in
+[Install a prebuilt release](install.md#install-a-prebuilt-release).
 
-```sh
-make hardware-smoke
-```
+If a stale proposal is merged anyway, publishing stops before tagging. Revert
+only that squash commit through a PR, then rerun **Prepare release PR**.
 
-Run it from a Wayland session. It tests the system AMD and NVIDIA Vulkan ICD
-once per detected vendor, launches packaged Genkan under Vulkan-rendered nested
-Cage when that vendor has a display-connected adapter, and verifies that an
-AMD-only run does not load or open the NVIDIA driver.
-The script passes `--reduce-motion`; validate animated playback separately
-before claiming physical animation coverage.
+### One-time repository setup
 
-On Sway, the stricter invocation below also moves Cage to every active output,
-verifies its resulting tree location, and requires both GPU vendors and an
-active external display:
+Install a GitHub App with **Contents: read/write** and **Pull requests:
+read/write** on this repository. In the `RELEASE` Actions environment, set
+`RELEASE_APP_ID` to the app ID and `RELEASE_APP_SECRET` to its private key, and
+allow `main` to use the environment. The app opens the PR so normal PR checks
+run; publishing uses the workflow's own GitHub token.
 
-```sh
-GENKAN_REQUIRE_GPU_VENDORS='1002 10de' \
-GENKAN_REQUIRE_EXTERNAL_DISPLAY=1 \
-GENKAN_EXERCISE_SWAY_OUTPUTS=1 \
-make hardware-smoke
-```
-
-A disconnected hybrid GPU can validate its physical Vulkan driver but cannot
-exercise presentation. Physical ARM graphics validation remains tracked in
-[Deferred Work](deferred.md#physical-arm-graphics-validation).
+To enforce freshness at merge time, require the **Release proposal freshness**
+status check on `main` and enable **Require branches to be up to date before
+merging**.

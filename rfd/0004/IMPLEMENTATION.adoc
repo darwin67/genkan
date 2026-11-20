@@ -180,14 +180,14 @@ behavior while establishing the reusable dynamic-wallpaper boundary.
   `delivery = "r2"` assets are fetched with `pkgs.fetchurl` from the recorded
   delivery URL and Nix hash, exactly like the MOV catalog; both are installed
   under `share/genkan/wallpapers` and verified by the `heic-assets` check.
-  `docs/deployment.md` states that `--file` remains the only way to select a
-  local file, that the file must be an existing absolute regular `.heic` or
-  `.heif` file bound by descriptor, that the validated container is copied
+  `docs/wallpapers.md` and `docs/architecture.md` state that `--file` is the
+  desktop HEIC input required for solar mode, that the file must be an
+  existing absolute regular `.heic` or `.heif` file bound by descriptor, that the validated container is copied
   before decoding so rewriting the bound inode afterwards has no effect, and
   that local files are never uploaded, copied into the store, or published.
 * [x] Document the high-level solar opt-in, GeoClue's possible network use,
   supported compositors, competing wallpaper managers, reduced motion, and
-  all fallback behavior. `docs/deployment.md` and `README.md` cover the
+  all fallback behavior. `docs/wallpapers.md` and `README.md` cover the
   compositor scope, the requirement to disable a competing wallpaper process,
   compositor autostart, reduced-motion scheduling versus a MOV poster, the
   solar opt-in and its possible network geolocation, and the appearance and

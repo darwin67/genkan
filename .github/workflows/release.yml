@@ -104,7 +104,7 @@ jobs:
           (cd dist && sha256sum "${assets[@]}" > SHA256SUMS)
           {
             python3 scripts/release-metadata.py notes "$RELEASE_TITLE"
-            printf '\n[Install the prebuilt Nix packages](%s/%s/blob/%s/docs/deployment.md#install-a-prebuilt-release).\n' \
+            printf '\n[Install the prebuilt Nix packages](%s/%s/blob/%s/docs/install.md#install-a-prebuilt-release).\n' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$TAG"
           } > "$RUNNER_TEMP/release-notes.md"
           # Non-forced push: an existing tag is OK only if it already points here.

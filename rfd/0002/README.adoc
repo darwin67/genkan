@@ -209,7 +209,7 @@ need it.
 
 === Provisioning and recovery
 
-The link:../../docs/deployment.md#cache-selection-and-greeter-provisioning[NixOS module can prepare media before greetd starts].
+The link:../../docs/wallpapers.md#provision-the-greeters-wallpaper[NixOS module can prepare media before greetd starts].
 Without that module option, provision the greeter's cache under its own identity
 or pass an explicit path to shared media; a desktop user's cache is not
 automatically available to greetd. Login, lock, and wallpaper playback never

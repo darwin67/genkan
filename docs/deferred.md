@@ -2,7 +2,8 @@
 
 This register collects valid follow-up work that Genkan is intentionally not
 performing yet. Each item records why it is deferred and the condition that
-makes it actionable. Detailed design and verification evidence remains in the
+makes it actionable. Review findings that are postponed rather than fixed are
+recorded here too. Detailed design and verification evidence remains in the
 linked source documents.
 
 When an item becomes actionable, move it into an implementation plan or issue
@@ -40,16 +41,28 @@ as implemented merely because an experimental dependency branch exists.
 
 - **Scope:** Run the packaged greeter and `make hardware-smoke` on physical
   aarch64 Linux graphics hardware and a connected display.
-- **Context:** Native x86_64 and aarch64 CI launch the package with Mesa software
-  Vulkan. Physical AMD and NVIDIA validation passed on the x86_64 Framework
-  workstation, including its connected eDP and external DisplayPort outputs.
+- **Context:** This is the remaining gap from Oracle finding 12 (Low),
+  "Validate graphics runtime packaging", from the 2026-08-27 full-repository
+  review. The package now uses Nix's driver runpath hook and advertises the
+  system Vulkan ICD directory. Native x86_64 and aarch64 CI launch it under
+  nested Cage and headless Weston with Mesa software Vulkan, assert the runpath
+  and ICD wrapper configuration, and fail on early compositor, loader, or
+  application exit. Graceful and forced shutdown deadlines keep the check
+  bounded. On 2026-08-29 the
+  opt-in hardware smoke validated the x86_64 Framework workstation's Radeon
+  890M under Vulkan-rendered nested Cage, confirmed that the AMD-only run did
+  not load or open the NVIDIA driver, and moved the live Cage window across
+  eDP-1 and external DP-3, DP-11, and DP-13. Its RTX 5070 Laptop GPU passed
+  physical NVIDIA Vulkan discovery but has no connected DRM output, so
+  presentation on that adapter does not apply.
 - **Why deferred:** No physical aarch64 Linux graphics device is currently
   available. Software-rendered ARM CI does not validate a real driver, DRM
   device, or display path.
 - **Resume when:** A supported aarch64 Linux device with physical graphics and a
   connected output is available. Retain the device, driver, output, and smoke
   result as evidence.
-- **Source:** [graphics runtime review finding](review-findings.md#12-validate-graphics-runtime-packaging).
+- **Source:** [physical graphics smoke](development.md#physical-graphics-smoke)
+  and [hardware smoke script](../scripts/hardware-smoke.sh).
 
 ## Stronger continuous contrast proof
 
