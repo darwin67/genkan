@@ -4,12 +4,11 @@
 
 A greetd login screen and session lock that follows macOS.
 
-Genkan is a graphical [greetd](https://sr.ht/~kennylevinsen/greetd/)
-frontend for Linux, built with Rust and iced. It runs fullscreen under Cage
-or niri on a Wayland login VT while greetd remains responsible for PAM
-authentication and starting the selected desktop session.
-
-## Screenshots
+Genkan is a graphical [greetd](https://sr.ht/~kennylevinsen/greetd/) frontend
+for Linux, built with Rust and iced. It runs fullscreen under Cage or niri on
+the login VT, while greetd stays responsible for PAM authentication and
+starting the selected Wayland session. The same look carries over to
+`genkan lock` and an optional desktop wallpaper.
 
 | Account selection | Authentication |
 |:--:|:--:|
@@ -17,161 +16,30 @@ authentication and starting the selected desktop session.
 
 [![Power confirmation](rfd/0001/reference-images/power-confirmation.png)](rfd/0001/reference-images/power-confirmation.png)
 
-These are deterministic development-preview captures. The preview uses
-synthetic accounts and sessions and never sends credentials or power requests.
+These are deterministic development-preview captures with synthetic accounts
+and sessions.
 
 ## Features
 
-- PAM conversation handling through greetd, including multi-prompt flows.
-- AccountsService user discovery with keyboard and pointer navigation.
-- Validated Wayland desktop-session discovery without invoking a shell.
-- Sleep, and confirmed restart and shutdown, through logind from a power menu.
-- Original-resolution Tahoe Beach and Sequoia animated wallpapers with static
-  posters, reduced-motion support, smooth loop transitions, and safe fallback;
-  downloaded explicitly from upstream, not bundled with the package.
-- Dynamic HEIC desktop wallpaper scheduling on wlr-layer-shell compositors.
-- Reproducible Nix packaging for x86_64-linux and aarch64-linux.
-- Service-free deterministic previews for UI development and review.
-- One macOS-style composition for login and lock, drawn from shared design
-  tokens: the date and clock above the avatar, name, and password pill over an
-  undimmed wallpaper, with stronger focus indication in the keyboard-driven
-  login flow.
-- An experimental `ext-session-lock-v1` compositor boundary with fail-closed
-  multi-output coverage and lock-confirmation readiness reporting, isolated in
-  the independently tested `genkan-session-lock` workspace crate.
+- **Login** through greetd, including multi-prompt PAM conversations and
+  AccountsService user discovery. Genkan passes validated session arguments
+  to greetd without invoking a shell itself; see
+  [session launch](docs/architecture.md#session-launch).
+- **Power menu** with Sleep, and confirmed Restart and Shut Down, through logind.
+- **Session lock** (experimental) on `ext-session-lock-v1` compositors,
+  covering every output fail-closed and reporting readiness to idle managers.
+- **Wallpapers**: Apple's 156 Tahoe aerial MOVs and dynamic HEICs, downloaded
+  explicitly from upstream rather than bundled, with posters, reduced motion,
+  and a generated fallback background.
+- **Desktop wallpaper** for wlr-layer-shell compositors, with time-of-day and
+  optional solar scheduling for HEICs.
+- **One design** for login and lock, drawn from shared tokens: the date and
+  clock above the avatar, name, and password field, over an undimmed wallpaper.
+- **Nix packaging** for x86_64-linux and aarch64-linux, with a NixOS module.
 
-## Try the UI
+## Install on NixOS
 
-Enter the Nix development shell, then launch the safe preview:
-
-```sh
-nix develop
-make dev
-```
-
-Amp orbs run `.agents/setup` to prepare the pinned Nix development shell
-(including jj) and prefetch locked Cargo dependencies. Login shells in this
-checkout activate the complete environment automatically, including native
-libraries. `.agents/resume` initializes a colocated jj repository when needed;
-it does not install dependencies or start services.
-Setup deliberately skips compilation and VM tests to keep snapshot preparation
-short. Real greetd/PAM and session-lock VM tests need KVM, which hosted orbs do
-not expose; run those checks in CI or on a KVM-capable runner.
-
-Select another UI state with `PREVIEW`:
-
-```sh
-PREVIEW=users make dev
-PREVIEW=visible-prompt make dev
-PREVIEW=power-confirmation make dev
-```
-
-Preview the matching lock authentication states without acquiring a compositor
-session lock or contacting PAM:
-
-```sh
-make lock-dev
-LOCK_PREVIEW=challenge make lock-dev
-LOCK_PREVIEW=failure make lock-dev
-```
-
-To preview the real wallpaper animation while keeping authentication and power
-actions simulated, download the selected media first:
-
-```sh
-cargo run --bin genkan -- assets download tahoe-beach
-make animated-dev
-cargo run --bin genkan -- assets download macos-landscape-sequoia-night
-WALLPAPER=macos-landscape-sequoia-night make animated-dev
-```
-
-### Download wallpapers explicitly
-
-The default catalog offers all 156 macOS Tahoe aerial MOVs directly from Apple.
-`genkan assets list` groups them under Landscape, Cityscape, Underwater, Earth,
-and Mac. The separate HEIC section includes Apple-hosted Catalina, Monterey
-Graphic, and Ventura Graphic. The package contains no wallpaper media.
-Preview downloads a missing original before opening it; use download on its own
-to cache media without opening a window:
-
-```sh
-genkan assets list
-genkan assets preview macos-landscape-iceland-snow-caps
-genkan assets preview monterey-graphic --appearance dark
-genkan assets download macos-landscape-tahoe-day
-genkan assets download my-wallpaper --url "$SOURCE_URL" --sha256 "$SHA256"
-genkan assets preview my-wallpaper
-```
-
-The list includes format, resolution when known, size in MiB, and whether the
-file is cached. Use `genkan assets list --details` for
-full names, source URLs, and usage rights. Custom downloads retain their
-observed metadata and computed SHA-256 in the cache and appear in later
-list/preview commands. For a custom URL,
-`--sha256` is optional; without a trusted pin the computed hash records identity,
-not upstream authenticity. `--url` cannot replace a catalog key. Use
-`--catalog sources.toml` to select your own `[assets.<key>]` TOML entries instead
-of the curated catalog.
-
-Transfers show a live terminal bar with downloaded/total MiB, percentage,
-average speed, and ETA. Unknown lengths show an indeterminate bar until the
-transfer completes. A separate `Validating` status covers integrity and media
-checks before installation; 100% means transferred, not yet installed.
-Redirected output uses plain completion and validation lines without redraws.
-
-Downloads require a direct HTTP(S) response returning 200; redirects are not followed.
-Preparation, including hashing and ZIP extraction, is resource-bounded.
-Curated sizes and hashes are verified, and a representative HEVC MOV or HEIC
-frame is validated before publication. A MOV download also generates its poster.
-Configured ZIP sources extract only the configured member and verify both
-archive and media pins before publication. Originals are not resized.
-Publication atomically selects a complete metadata/media/poster generation;
-readers use one receipt snapshot, and a failed replacement leaves the previous
-cached version usable.
-For both download and preview, the default download limit is 2 GiB;
-`--max-bytes` accepts 4 KiB–16 GiB and also bounds expanded media. Each transfer
-has a 600-second timeout.
-
-Published versions are retained so running previews and saved absolute file
-overrides remain valid. Replacements may therefore use additional disk space;
-remove an unused version only when no readers or saved overrides need it.
-The next explicit download cleans only abandoned, unpublished staging, never
-previously published versions. Playback performs no cache cleanup.
-
-After `genkan assets download catalina`, select it with `--wallpaper catalina`
-on `login`, `lock`, or `wallpaper`. An absolute `--wallpaper-file` still takes
-precedence, and desktop solar mode still needs `--file --solar`.
-
-The cache is the absolute `GENKAN_WALLPAPER_DIR`, otherwise an absolute
-`XDG_CACHE_HOME` plus `/genkan/wallpapers`, otherwise an absolute `HOME` plus
-`/.cache/genkan/wallpapers`. Listing, login, lock, and wallpaper playback never
-download media. Missing media uses the generated background in those runtimes.
-`assets preview` downloads missing media, but reuses existing local files
-without a network request. Failed downloads stop the preview. Preview opens a
-normal window with simulated authentication and power actions; closing it changes no
-settings. For `--wallpaper-file`, use the absolute media path printed by
-download, not a guessed `mov/` or `heic/` path. For an uninstalled build, use
-`cargo run --bin genkan -- assets …` inside `nix develop`.
-
-### Optionally inspect before downloading
-
-Preflight is a separate, bounded partial-read check, not a download prerequisite:
-
-```sh
-genkan assets preflight macos-landscape-tahoe-day
-genkan assets preflight my-wallpaper --url "$SOURCE_URL"
-```
-
-It installs nothing and cannot verify the whole-file hash or every frame.
-Missing strong ETags, unsupported range delivery, or ZIP sources can produce
-inconclusive/unsupported results without preventing a later explicit download
-and complete-file integrity validation. See the
-[development guide](docs/development.md#download-and-inspect-wallpapers) for
-custom TOML catalogs, preflight limits and exit codes, and preview/test workflows.
-
-## Install with NixOS
-
-Add Genkan as a flake input, then import its NixOS module and enable the greeter:
+Add Genkan as a flake input, then import its module and enable the greeter:
 
 ```nix
 { genkan, ... }:
@@ -180,75 +48,66 @@ Add Genkan as a flake input, then import its NixOS module and enable the greeter
   programs.genkan = {
     enable = true;
     greeter.enable = true;
+    wallpaper.source.catalog = "macos-landscape-tahoe-day"; # optional
   };
 }
 ```
 
-The module configures greetd and defaults to Cage. To choose niri, set
-`programs.genkan.greeter.compositor = "niri"`. See the
-[deployment guide](docs/deployment.md) for wiring the flake input, enabling a
-Wayland desktop session, and configuring the host's power policy.
+The module configures greetd, runs the greeter under Cage, and installs the
+lock's PAM policy. Enable at least one Wayland desktop session, such as
+`programs.niri.enable = true`. The [install guide](docs/install.md) covers the
+flake input, monitors, accounts, and prebuilt releases for other Linux hosts
+with Nix.
 
-Without prepared media, the greeter shows a generated background. Set
-`programs.genkan.wallpaper.source.catalog` to a wallpaper ID from
-`genkan assets list` to let the module prepare it before greetd starts. Login
-itself never downloads media. See [wallpaper provisioning](docs/deployment.md#cache-selection-and-greeter-provisioning)
-for URLs, local files, and manual caches.
+To lock the session, bind `genkan lock --daemonize` to a key or your idle
+manager. It returns once the compositor confirms the lock.
+This is not a suspend veto; read
+[lock on idle and before sleep](docs/lock.md#lock-on-idle-and-before-sleep)
+before relying on it at suspend.
 
-Logged-in users on a supported compositor can run a dynamic HEIC wallpaper as
-a dedicated non-interactive background client:
+## Try the UI
+
+The preview uses synthetic accounts and never sends credentials or power
+requests:
 
 ```sh
-genkan wallpaper --file /absolute/path/to/wallpaper.heic
+nix develop
+make dev                         # login
+PREVIEW=power-confirmation make dev
+make lock-dev                    # lock
 ```
 
-This command is separate from login and lock and uses an existing local file.
-The installed `share/genkan/wallpapers` contains catalog metadata only, not media.
-Files with Apple `solar` metadata can opt into GeoClue-backed city-level
-scheduling with `--solar`. See the
-[deployment guide](docs/deployment.md#desktop-wallpaper) for compositor support,
-solar behavior, and autostart examples.
+Wallpapers are not bundled. `assets preview` downloads one into your cache and
+opens it in the same simulated window:
 
-With multiple outputs, Genkan presents authentication on one monitor and keeps
-the others as unobstructed wallpaper. Set `programs.genkan.greeter.authenticationOutput`
-to prefer a connector such as `DP-2` or a persistent monitor name. See
-[output selection](docs/deployment.md#outputs) for matching and fallback behavior.
+```sh
+genkan assets list
+genkan assets preview macos-landscape-iceland-snow-caps
+```
 
-## Session-lock development status
-
-`genkan lock` establishes and maintains an opaque compositor-owned lock on
-every output, displays authentication on the selected monitor, and
-reauthenticates the invoking real-UID account through the host's `genkan-lock`
-PAM service. `genkan lock --daemonize` starts a fresh
-foreground child and returns only after compositor confirmation, allowing a
-delay-inhibiting idle manager to wait for readiness within logind's configured
-timeout. This is not a suspend veto: command failure or expiry of the delay
-still permits suspension. Import
-`nixosModules.default` and enable `programs.genkan` to install the package and
-PAM policy; Genkan does not replace the desktop's locker automatically. See
-the [deployment guide](docs/deployment.md#session-locking-and-suspend) for
-supported compositors, swayidle setup, and fail-closed recovery.
+Select a cached wallpaper with `--wallpaper ID` on `login`, `lock`, or
+`wallpaper`. If the NixOS module provisions a system wallpaper, pass the
+absolute path printed by `genkan assets download` to `--wallpaper-file`
+instead; see [wallpapers](docs/wallpapers.md). For an uninstalled build, use `cargo run --bin genkan -- assets …`
+inside `nix develop`.
 
 ## Documentation
 
-- [Deployment and greetd configuration](docs/deployment.md)
-- [Development and verification](docs/development.md)
-- [Requests for Discussion](rfd/README.adoc)
-- [Design system](docs/design-system/README.md)
-- [Deferred work](docs/deferred.md)
+| Guide | Read it to |
+| --- | --- |
+| [Install and configure](docs/install.md) | Set up the greeter on NixOS or from a release; choose monitors, accounts, sessions, and power policy |
+| [Wallpapers](docs/wallpapers.md) | Download, preview, provision, and run login, lock, and desktop wallpapers |
+| [Session lock](docs/lock.md) | Lock on idle and before sleep, and recover from failures |
+| [niri](docs/niri.md) | Use niri as the greeter, the session, or the wallpaper and lock host |
+| [Development](docs/development.md) | Preview the UI, choose checks, and release |
+| [How Genkan works](docs/architecture.md) | Understand the security, session, decoding, and presentation boundaries |
+| [Design system](docs/design-system/README.md) | Follow the visual rules and tokens |
+| [Requests for Discussion](rfd/README.adoc) | Read the design decisions behind each feature |
+| [Deferred work](docs/deferred.md) | See what is intentionally not done yet |
 
-## Validation
-
-Run the local verification suite with:
-
-```sh
-nix develop --command make verify
-```
-
-This runs formatting, lint, Rust and shell tests, documentation checks,
-packaging and wallpaper provisioning checks, and headless compositor smoke
-tests. The [NixOS VM checks](docs/development.md#nixos-vm-checks) run separately
-and require an x86_64 Linux host with KVM.
+Before completing a code change, run `nix develop --command make verify`. The
+[development guide](docs/development.md#choose-the-checks) lists the extra VM
+and hardware checks for each kind of change.
 
 ## License
 

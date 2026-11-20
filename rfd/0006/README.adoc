@@ -162,7 +162,7 @@ Spanning login and lock accept connector names with `--authentication-output`
 and also match make, model, and serial when the compositor provides that
 metadata. This lets an administrator use the same persistent name
 ("Dell Inc. DELL U3223QE …") in niri's window rule and Genkan's own arguments.
-See link:../../docs/deployment.md#outputs[output selection] for matching and
+See link:../../docs/install.md#choose-the-authentication-monitor[output selection] for matching and
 fallback behavior.
 
 === Deployment

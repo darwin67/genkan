@@ -865,15 +865,15 @@ mod tests {
 
     #[test]
     fn suspend_documentation_exposes_external_delay_limits() {
-        let deployment = include_str!("../docs/deployment.md");
+        let lock_guide = include_str!("../docs/lock.md");
         let readme = include_str!("../README.md");
         let rfd = include_str!("../rfd/0003/README.adoc");
 
-        for document in [deployment, rfd] {
+        for document in [lock_guide, rfd] {
             assert!(document.contains("InhibitDelayMaxSec"));
             assert!(document.contains("fail-closed"));
         }
-        assert!(deployment.contains("Swayidle does not inspect the command's exit status"));
+        assert!(lock_guide.contains("Swayidle does not inspect the command's exit status"));
         assert!(readme.contains("This is not a suspend veto"));
         assert!(rfd.contains("Fail-closed"));
         assert!(rfd.contains("suspension requires owning the later suspend request"));

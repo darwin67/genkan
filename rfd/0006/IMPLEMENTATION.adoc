@@ -59,7 +59,7 @@ Evidence and decisions: link:INVESTIGATION.adoc[niri 26.04 investigation].
   configures a greeter.
 * [x] Keep Cage as the default greeter compositor.
 * [x] Document the niri greeter, including an output-block example and the
-  window rule, in `docs/deployment.md`.
+  window rule, in `docs/niri.md`.
 
 == Phase 7: Verification
 

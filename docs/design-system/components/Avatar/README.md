@@ -6,7 +6,7 @@ While loading, with no picture, or on any failure, show initials over the `avata
 
 The built-in set is Lake, Sunrise, Dune, Leaf, Wave, Moon, Pine, Bloom, Orbit, Pebbles, Aurora and Citrus: original MIT-licensed artwork in [`assets/avatars/`](../../../../assets/avatars/). The 512×512 PNGs are rendered ahead of time with `make update-avatars` and committed alongside their SVG sources. Packaging checks their hashes at evaluation and installs them as-is under `share/genkan/avatars/`.
 
-Users choose a built-in or import a PNG/JPEG photo through [`genkan avatar`](../../../deployment.md#account-pictures). [RFD 7](../../../../rfd/0007/README.adoc) specifies AccountsService storage and decoding in a confined process, never in the credential-handling process.
+Users choose a built-in or import a PNG/JPEG photo through [`genkan avatar`](../../../install.md#account-pictures). [RFD 7](../../../../rfd/0007/README.adoc) specifies AccountsService storage and decoding in a confined process, never in the credential-handling process.
 
 **Provide.** The display name, an optional decoded picture, and whether it has keyboard focus. Never pass an encoded picture to a credential-handling renderer.
 
