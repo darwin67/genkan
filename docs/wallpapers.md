@@ -225,6 +225,18 @@ The desktop process never contacts greetd or PAM, acquires a session lock,
 selects sessions, or requests power operations. A running `genkan lock` covers
 it.
 
+Desktop presentation prefers a low-power Vulkan adapter, uploads each frame
+once for all outputs, and retains the CPU renderer when Vulkan is unavailable
+or fails. Resolution, nearest-neighbor cover sampling, colors, and playback
+rate are unchanged. Decoding still produces CPU RGBA frames; this is not a
+zero-copy decoder path, and it does not change login or lock rendering.
+
+For diagnostics, `GENKAN_WALLPAPER_RENDERER=cpu` selects the CPU renderer;
+`GENKAN_WALLPAPER_RENDERER=vulkan` also permits software Vulkan for testing.
+The default rejects software Vulkan. `GENKAN_WALLPAPER_STATS=1` logs received
+MOV frame updates and per-output submission rates every five seconds while
+active. These are application submissions, not confirmed compositor scanout.
+
 ### Start it with your compositor
 
 Start the command from the compositor's own autostart so it inherits the

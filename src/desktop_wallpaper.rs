@@ -4,6 +4,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
 use calloop::generic::Generic;
+use calloop::ping::{make_ping, Ping};
 use calloop::{EventLoop, Interest, Mode, PostAction};
 use calloop_wayland_source::WaylandSource;
 use genkan::dynamic_wallpaper::heic::{Document, RgbaFrame};
@@ -42,6 +43,8 @@ use thiserror::Error;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_callback, wl_output, wl_region, wl_shm, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+
+mod gpu;
 
 const BUFFER_COUNT: usize = 2;
 const MAX_BUFFER_BYTES: usize = 256 * 1024 * 1024;
@@ -640,6 +643,9 @@ struct SurfaceBuffer {
 }
 
 struct Surface {
+    // Drop the swapchain before LayerSurface destroys the native wl_surface.
+    gpu: Option<gpu::Target>,
+    gpu_failed: bool,
     output: wl_output::WlOutput,
     layer: LayerSurface,
     configure_hints: Option<(u32, u32)>,
@@ -650,9 +656,18 @@ struct Surface {
     presentation: PresentationState,
     frame_callback: Option<wl_callback::WlCallback>,
     last_error: Option<String>,
+    presentations: u64,
 }
 
 impl Surface {
+    fn fallback_to_cpu(&mut self, error: &str) {
+        eprintln!("genkan wallpaper: falling back to CPU presentation: {error}");
+        gpu::retire(self.gpu.take());
+        self.gpu_failed = true;
+        self.cancel_frame_callback();
+        self.presentation.frame_pending = false;
+    }
+
     fn cancel_frame_callback(&mut self) {
         retire_pending(&mut self.frame_callback, |callback| {
             if let Some(backend) = callback.backend().upgrade() {
@@ -665,6 +680,7 @@ impl Surface {
 impl Drop for Surface {
     fn drop(&mut self) {
         self.cancel_frame_callback();
+        gpu::retire(self.gpu.take());
     }
 }
 
@@ -677,6 +693,12 @@ struct Runtime {
     registry_state: RegistryState,
     shm: Shm,
     surfaces: Vec<Surface>,
+    connection: Connection,
+    gpu: Option<gpu::Renderer>,
+    gpu_disabled: bool,
+    gpu_wake: Ping,
+    stats_since: Option<Instant>,
+    received_frames: u64,
     scheduler: Option<Scheduler>,
     decoder: Option<Decoder>,
     media: crate::wallpaper::State,
@@ -716,6 +738,7 @@ pub fn run(config: Config) -> Result<(), Error> {
         .map_err(|error| Error::MissingProtocol(format!("zwlr_layer_shell_v1 ({error})")))?;
     let shm = Shm::bind(&globals, &qh)
         .map_err(|error| Error::MissingProtocol(format!("wl_shm ({error})")))?;
+    let (gpu_wake, gpu_events) = make_ping().map_err(|error| Error::Runtime(error.to_string()))?;
     let mut runtime = Runtime {
         compositor,
         scaling: Scaling::bind(&globals, &qh),
@@ -729,6 +752,12 @@ pub fn run(config: Config) -> Result<(), Error> {
         registry_state: RegistryState::new(&globals),
         shm,
         surfaces: Vec::new(),
+        connection: conn.clone(),
+        gpu: None,
+        gpu_disabled: std::env::var("GENKAN_WALLPAPER_RENDERER").as_deref() == Ok("cpu"),
+        gpu_wake,
+        stats_since: std::env::var_os("GENKAN_WALLPAPER_STATS").map(|_| Instant::now()),
+        received_frames: 0,
         scheduler: None,
         decoder: None,
         appearance: config.wallpaper.appearance,
@@ -766,6 +795,12 @@ pub fn run(config: Config) -> Result<(), Error> {
     }
     let mut event_loop: EventLoop<'static, Runtime> =
         EventLoop::try_new().map_err(|error| Error::Runtime(error.to_string()))?;
+    // Device loss must wake even an idle static wallpaper or hidden output.
+    // maintain handles the failure before considering per-output redraw gates.
+    event_loop
+        .handle()
+        .insert_source(gpu_events, |_, _, _| {})
+        .map_err(|error| Error::Runtime(error.error.to_string()))?;
     WaylandSource::new(conn, event_queue)
         .insert(event_loop.handle())
         .map_err(|error| Error::Runtime(error.error.to_string()))?;
@@ -840,6 +875,8 @@ impl Runtime {
         input.destroy();
         layer.commit();
         self.surfaces.push(Surface {
+            gpu: None,
+            gpu_failed: false,
             output,
             layer,
             configure_hints: None,
@@ -850,6 +887,7 @@ impl Runtime {
             presentation: PresentationState::new(),
             frame_callback: None,
             last_error: None,
+            presentations: 0,
         });
     }
 
@@ -879,6 +917,16 @@ impl Runtime {
     }
 
     fn maintain(&mut self, qh: &QueueHandle<Self>) -> Result<(), Error> {
+        if self.gpu.as_ref().is_some_and(gpu::Renderer::failed) {
+            for surface in &mut self.surfaces {
+                if surface.gpu.is_some() {
+                    surface.fallback_to_cpu("shared GPU device failed");
+                    surface.presentation.playback_changed();
+                }
+            }
+            gpu::retire(self.gpu.take());
+            self.gpu_disabled = true;
+        }
         if self.output_names.update() {
             for output in self.output_state.outputs().collect::<Vec<_>>() {
                 self.add_surface(output, qh);
@@ -887,6 +935,7 @@ impl Runtime {
         // In a single-output greeter the only output can be skipped. Do not
         // initialize a decoder (or keep one alive after unplug) for no surfaces.
         if self.surfaces.is_empty() {
+            gpu::retire(self.gpu.take());
             if self.media_started {
                 self.media = crate::wallpaper::State::disabled();
                 self.decoder = None;
@@ -902,6 +951,7 @@ impl Runtime {
             self.media_started = true;
         }
         if self.media.receive_latest() != crate::wallpaper::Refresh::Unchanged {
+            self.received_frames += 1;
             self.redraw_all();
         }
         if std::mem::take(&mut self.check_clock) {
@@ -934,6 +984,7 @@ impl Runtime {
                     );
                     self.metadata = Some(metadata);
                     self.scheduler = Some(Scheduler::new(playback, clock, monotonic));
+                    self.redraw_all();
                     self.install_solar_mapping()?;
                     self.dispatch_decode()?;
                 }
@@ -1030,6 +1081,31 @@ impl Runtime {
                     surface.presentation.rearmed();
                 }
                 SurfaceAction::Idle => {}
+            }
+        }
+        if self.gpu.is_some() && self.surfaces.iter().all(|surface| surface.gpu.is_none()) {
+            gpu::retire(self.gpu.take());
+        }
+        if let Some(since) = self.stats_since {
+            let elapsed = since.elapsed().as_secs_f64();
+            if elapsed >= 5.0 {
+                let outputs = self
+                    .surfaces
+                    .iter_mut()
+                    .map(|surface| {
+                        let count = std::mem::take(&mut surface.presentations);
+                        let backend = if surface.gpu.is_some() { "gpu" } else { "cpu" };
+                        format!(
+                            "{}:{backend}:{:.2}",
+                            surface.output.id().protocol_id(),
+                            count as f64 / elapsed
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                eprintln!("genkan wallpaper: stats elapsed={elapsed:.3}s received={:.2}/s submitted=[{outputs}]/s", self.received_frames as f64 / elapsed);
+                self.received_frames = 0;
+                self.stats_since = Some(Instant::now());
             }
         }
         Ok(())
@@ -1254,12 +1330,46 @@ impl Runtime {
     }
 
     fn redraw_all(&mut self) {
+        // Outputs receive callbacks independently. Retain the shared texture
+        // across dispatches until the source frame changes, not just one pass.
+        if let Some(renderer) = &mut self.gpu {
+            renderer.uploaded = false;
+        }
         for surface in &mut self.surfaces {
             surface.presentation.playback_changed();
         }
     }
 
     fn render(&mut self, index: usize, qh: &QueueHandle<Self>) -> Result<(), String> {
+        if !self.gpu_disabled
+            && !self.surfaces[index].gpu_failed
+            && self.surfaces[index].gpu.is_none()
+        {
+            let surface = &self.surfaces[index];
+            let target = if let Some(renderer) = &self.gpu {
+                renderer.target(&self.connection, surface.layer.wl_surface())
+            } else {
+                gpu::Renderer::new(
+                    &self.connection,
+                    surface.layer.wl_surface(),
+                    self.gpu_wake.clone(),
+                )
+                .map(|(renderer, target)| {
+                    self.gpu = Some(renderer);
+                    target
+                })
+            };
+            match target {
+                Ok(target) => self.surfaces[index].gpu = Some(target),
+                Err(error) => {
+                    eprintln!("genkan wallpaper: using CPU presentation: {error}");
+                    self.surfaces[index].gpu_failed = true;
+                    if self.gpu.is_none() {
+                        self.gpu_disabled = true;
+                    }
+                }
+            }
+        }
         let media = self.media.rgba_frame();
         let frame = self
             .scheduler
@@ -1285,56 +1395,71 @@ impl Runtime {
         let buffer_height = geometry.height;
         let bytes = geometry.bytes;
         let size = (buffer_width, buffer_height);
-        surface.buffers.retain_mut(|buffer| {
-            (buffer.size == size && buffer.generation == surface.geometry_generation)
-                || buffer.pool.canvas(&buffer.buffer).is_none()
-        });
-        let released = surface
-            .buffers
-            .iter_mut()
-            .map(|buffer| buffer.pool.canvas(&buffer.buffer).is_some())
-            .collect::<Vec<_>>();
-        let buffer_index = match buffer_decision(&released, surface.buffers.len()) {
-            BufferDecision::Reuse(index) => {
-                let buffer = &mut surface.buffers[index];
-                let canvas = buffer
-                    .pool
-                    .canvas(&buffer.buffer)
-                    .expect("buffer release state changed without dispatch");
-                render_cover_argb(canvas, buffer_width, buffer_height, frame);
-                index
+        let gpu_output = if let Some(target) = &mut surface.gpu {
+            let renderer = self.gpu.as_mut().expect("GPU target requires renderer");
+            match renderer.draw(target, size, frame) {
+                Ok(output) => Some(output),
+                Err(error) => {
+                    surface.fallback_to_cpu(&error);
+                    None
+                }
             }
-            BufferDecision::Wait => return Ok(()),
-            BufferDecision::Allocate => {
-                let capacity = bytes
-                    .checked_add(63)
-                    .map(|capacity| capacity & !63)
-                    .ok_or_else(|| "wallpaper buffer capacity overflow".to_owned())?;
-                let mut pool = SlotPool::new(capacity, &self.shm)
-                    .map_err(|error| format!("could not allocate wallpaper pool: {error}"))?;
-                let (buffer, canvas) = pool
-                    .create_buffer(
-                        buffer_width as i32,
-                        buffer_height as i32,
-                        (buffer_width * 4) as i32,
-                        wl_shm::Format::Argb8888,
-                    )
-                    .map_err(|error| format!("could not allocate wallpaper buffer: {error}"))?;
-                render_cover_argb(canvas, buffer_width, buffer_height, frame);
-                surface.buffers.push(SurfaceBuffer {
-                    size,
-                    generation: surface.geometry_generation,
-                    buffer,
-                    pool,
-                });
-                surface.buffers.len() - 1
-            }
+        } else {
+            None
         };
+        if gpu_output.is_none() {
+            surface.buffers.retain_mut(|buffer| {
+                (buffer.size == size && buffer.generation == surface.geometry_generation)
+                    || buffer.pool.canvas(&buffer.buffer).is_none()
+            });
+            let released = surface
+                .buffers
+                .iter_mut()
+                .map(|buffer| buffer.pool.canvas(&buffer.buffer).is_some())
+                .collect::<Vec<_>>();
+            let buffer_index = match buffer_decision(&released, surface.buffers.len()) {
+                BufferDecision::Reuse(index) => {
+                    let buffer = &mut surface.buffers[index];
+                    let canvas = buffer
+                        .pool
+                        .canvas(&buffer.buffer)
+                        .expect("buffer release state changed without dispatch");
+                    render_cover_argb(canvas, buffer_width, buffer_height, frame);
+                    index
+                }
+                BufferDecision::Wait => return Ok(()),
+                BufferDecision::Allocate => {
+                    let capacity = bytes
+                        .checked_add(63)
+                        .map(|capacity| capacity & !63)
+                        .ok_or_else(|| "wallpaper buffer capacity overflow".to_owned())?;
+                    let mut pool = SlotPool::new(capacity, &self.shm)
+                        .map_err(|error| format!("could not allocate wallpaper pool: {error}"))?;
+                    let (buffer, canvas) = pool
+                        .create_buffer(
+                            buffer_width as i32,
+                            buffer_height as i32,
+                            (buffer_width * 4) as i32,
+                            wl_shm::Format::Argb8888,
+                        )
+                        .map_err(|error| format!("could not allocate wallpaper buffer: {error}"))?;
+                    render_cover_argb(canvas, buffer_width, buffer_height, frame);
+                    surface.buffers.push(SurfaceBuffer {
+                        size,
+                        generation: surface.geometry_generation,
+                        buffer,
+                        pool,
+                    });
+                    surface.buffers.len() - 1
+                }
+            };
+            let wl_surface = surface.layer.wl_surface();
+            surface.buffers[buffer_index]
+                .buffer
+                .attach_to(wl_surface)
+                .map_err(|error| format!("could not attach wallpaper buffer: {error}"))?;
+        }
         let wl_surface = surface.layer.wl_surface();
-        surface.buffers[buffer_index]
-            .buffer
-            .attach_to(wl_surface)
-            .map_err(|error| format!("could not attach wallpaper buffer: {error}"))?;
         let opaque = self.compositor.wl_compositor().create_region(qh, ());
         opaque.add(0, 0, width as i32, height as i32);
         wl_surface.set_opaque_region(Some(&opaque));
@@ -1346,12 +1471,34 @@ impl Runtime {
             .scheduler
             .as_ref()
             .is_some_and(|scheduler| scheduler.playback.is_transitioning());
-        let request_next_frame = request_frame(transitioning, surface.presentation.frame_pending);
+        // Pace Vulkan acquisition for MOV as well as HEIC. A hidden output
+        // withholds its callback instead of blocking the shared event loop.
+        let request_next_frame = request_frame(
+            transitioning || gpu_output.is_some(),
+            surface.presentation.frame_pending,
+        );
         if request_next_frame {
             surface.frame_callback = Some(wl_surface.frame(qh, wl_surface.clone()));
         }
-        wl_surface.commit();
+        if let Some(output) = gpu_output {
+            // Vulkan's Wayland present attaches and commits the GPU buffer;
+            // scale, damage, and callback state must be queued before it.
+            if let Err(error) = self
+                .gpu
+                .as_ref()
+                .expect("GPU output requires renderer")
+                .present(output)
+            {
+                surface.fallback_to_cpu(&error);
+                // GPU failure is permanent for this surface, so the retry
+                // takes only the CPU path and replaces the frame immediately.
+                return self.render(index, qh);
+            }
+        } else {
+            wl_surface.commit();
+        }
         surface.presentation.rendered(request_next_frame);
+        surface.presentations += 1;
         surface.last_error = None;
         Ok(())
     }
