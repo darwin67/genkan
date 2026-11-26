@@ -1617,20 +1617,28 @@ fn render_cover_argb(target: &mut [u8], width: u32, height: u32, frame: Option<(
     };
     let crop_x = scaled_width.saturating_sub(u128::from(width)) / 2;
     let crop_y = scaled_height.saturating_sub(u128::from(height)) / 2;
-    for y in 0..height {
-        let source_y = (((u128::from(y) + crop_y) * u128::from(frame_height) / scaled_height)
+    // Every row samples the same source columns. Keep wide division out of
+    // the per-pixel loop while preserving the cover crop's integer rounding.
+    let columns: Vec<usize> = (0..width)
+        .map(|x| {
+            (((u128::from(x) + crop_x) * u128::from(frame_width) / scaled_width)
+                .min(u128::from(frame_width - 1))) as usize
+        })
+        .collect();
+    let (source_pixels, _) = pixels.as_chunks::<4>();
+    let (target_pixels, _) = target.as_chunks_mut::<4>();
+    for (y, row) in target_pixels
+        .chunks_exact_mut(width as usize)
+        .take(height as usize)
+        .enumerate()
+    {
+        let source_y = (((y as u128 + crop_y) * u128::from(frame_height) / scaled_height)
             .min(u128::from(frame_height - 1))) as usize;
-        for x in 0..width {
-            let source_x = (((u128::from(x) + crop_x) * u128::from(frame_width) / scaled_width)
-                .min(u128::from(frame_width - 1))) as usize;
-            let source = (source_y * frame_width as usize + source_x) * 4;
-            let target_offset = (y as usize * width as usize + x as usize) * 4;
-            target[target_offset..target_offset + 4].copy_from_slice(&[
-                pixels[source + 2],
-                pixels[source + 1],
-                pixels[source],
-                255,
-            ]);
+        let start = source_y * frame_width as usize;
+        let source_row = &source_pixels[start..start + frame_width as usize];
+        for (pixel, &column) in row.iter_mut().zip(&columns) {
+            let source = source_row[column];
+            *pixel = [source[2], source[1], source[0], 255];
         }
     }
 }
@@ -2117,6 +2125,18 @@ mod tests {
         );
         assert_eq!(&target[..4], &[0, 255, 0, 255]);
         assert_eq!(&target[8..12], &[255, 0, 0, 255]);
+
+        // A newly allocated SHM slot can include 64-byte alignment padding.
+        // Render only the configured rows, leaving that padding untouched.
+        let mut padded = [99; 64];
+        render_cover_argb(
+            &mut padded,
+            1,
+            1,
+            Some((frame.width, frame.height, &frame.pixels)),
+        );
+        assert_eq!(&padded[..4], &[0, 255, 0, 255]);
+        assert_eq!(&padded[4..], &[99; 60]);
     }
 
     #[test]
