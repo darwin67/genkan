@@ -29,6 +29,8 @@ use tokio::sync::watch;
 
 use crate::stable_file::{open_regular, OpenError};
 
+mod gpu_conversion;
+
 const OUTPUT_FRAMES_PER_SECOND: i32 = 30;
 const MAX_DIAGNOSTIC_CHARS: usize = 240;
 const LOOP_LEAD: Duration = Duration::from_millis(50);
@@ -321,7 +323,7 @@ impl State {
         cached_heic: &mut Option<Result<PathBuf, String>>,
     ) -> Self {
         let Some(HeicSource::Cached(id)) = settings.heic_source() else {
-            return Self::start(settings.clone());
+            return Self::start_movie(settings.clone(), true);
         };
         // An explicit desktop HEIC uses a separate decoder. Its catalog ID
         // must not cause a cache lookup or an unrelated missing-download warning.
@@ -337,7 +339,11 @@ impl State {
         }
     }
 
-    pub(crate) fn start(mut settings: Settings) -> Self {
+    pub(crate) fn start(settings: Settings) -> Self {
+        Self::start_movie(settings, false)
+    }
+
+    fn start_movie(mut settings: Settings, gpu_conversion: bool) -> Self {
         // Downloads do not generate HEIC posters. Resolve the receipt in the
         // worker, not here: a slow cache must not delay lock acquisition.
         if let Some(source @ HeicSource::Cached(_)) = settings.heic_source() {
@@ -369,7 +375,8 @@ impl State {
             .map_or((Duration::MAX, Duration::from_secs(2)), |spec| {
                 (spec.duration, spec.crossfade)
             });
-        let result = path.and_then(|path| Player::start(&path, duration, crossfade));
+        let result =
+            path.and_then(|path| Player::start(&path, duration, crossfade, gpu_conversion));
         match result {
             Ok(player) => Self {
                 player: Some(player),
@@ -641,13 +648,21 @@ impl std::fmt::Debug for Player {
 }
 
 impl Player {
-    fn start(path: &Path, duration: Duration, crossfade: Duration) -> Result<Self, String> {
+    fn start(
+        path: &Path,
+        duration: Duration,
+        crossfade: Duration,
+        gpu_conversion: bool,
+    ) -> Result<Self, String> {
         let file = open_wallpaper(path)?;
 
         gst::init().map_err(|_| pipeline_error("GStreamer initialization failed"))?;
 
         let (signal_sender, signal) = watch::channel(0);
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared {
+            gpu_conversion,
+            ..Shared::default()
+        });
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_shared = Arc::clone(&shared);
         let worker_signal = signal_sender;
@@ -1559,6 +1574,7 @@ pub(crate) fn current_clock() -> Option<ClockSnapshot> {
 
 #[derive(Default)]
 struct Shared {
+    gpu_conversion: bool,
     state: Mutex<SharedState>,
     sequence: AtomicU64,
     failed: AtomicBool,
@@ -1740,6 +1756,8 @@ fn build_pipeline(
         }
         let weak_pipeline = pipeline.downgrade();
         let decode_faulted = Arc::clone(&faulted);
+        let conversion_sink = appsink.clone();
+        let gpu_conversion = shared.gpu_conversion;
         decoder.connect_pad_added(move |_decoder, source_pad| {
             if rate_sink.is_linked() {
                 return;
@@ -1752,6 +1770,9 @@ fn build_pipeline(
                 .is_some_and(|structure| structure.name().starts_with("video/x-raw"));
             if !is_video {
                 return;
+            }
+            if gpu_conversion {
+                gpu_conversion::configure(source_pad, &conversion_sink);
             }
             let cuda_download = download.as_ref().filter(|_| {
                 caps.features(0)
@@ -1790,6 +1811,7 @@ fn build_pipeline(
     let sample_signal = signal.clone();
     let sample_bus = bus.clone();
     let sample_faulted = Arc::clone(&faulted);
+    let mut conversion = gpu_conversion::Converter::default();
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
@@ -1805,7 +1827,7 @@ fn build_pipeline(
                 let result = sink
                     .pull_sample()
                     .map_err(|_| gst::FlowError::Eos)
-                    .and_then(|sample| decoded_frame(&sample))
+                    .and_then(|sample| decoded_frame(&sample, &mut conversion))
                     .map(
                         |frame| match loop_frame_action(&sample_shared, &frame, duration) {
                             LoopFrameAction::Publish => {
@@ -1836,16 +1858,22 @@ fn build_pipeline(
     })
 }
 
-fn decoded_frame(sample: &gst::Sample) -> Result<Frame, gst::FlowError> {
+fn decoded_frame(
+    sample: &gst::Sample,
+    conversion: &mut gpu_conversion::Converter,
+) -> Result<Frame, gst::FlowError> {
     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
     let caps = sample.caps().ok_or(gst::FlowError::NotNegotiated)?;
     let info = gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::NotNegotiated)?;
     let mapped = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info)
         .map_err(|_| gst::FlowError::Error)?;
-    let stride = *info.stride().first().ok_or(gst::FlowError::Error)?;
-    let plane = mapped.plane_data(0).map_err(|_| gst::FlowError::Error)?;
-    let pixels =
-        pack_rgba(plane, info.width(), info.height(), stride).ok_or(gst::FlowError::Error)?;
+    let pixels = if info.format() == gst_video::VideoFormat::P01010le {
+        conversion.convert(&mapped)?
+    } else {
+        let stride = *info.stride().first().ok_or(gst::FlowError::Error)?;
+        let plane = mapped.plane_data(0).map_err(|_| gst::FlowError::Error)?;
+        pack_rgba(plane, info.width(), info.height(), stride).ok_or(gst::FlowError::Error)?
+    };
     let pts = buffer.pts().map(|pts| Duration::from_nanos(pts.nseconds()));
 
     Ok(Frame {
