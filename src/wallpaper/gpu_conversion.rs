@@ -2,7 +2,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, OnceLock,
 };
 use std::time::Duration;
 
@@ -58,63 +58,157 @@ pub(super) fn supports(info: &video::VideoInfo) -> bool {
         && info.chroma_site() == video::VideoChromaSite::MPEG2
 }
 
+/// Retaining the immutable input makes CPU recovery independent of GPU health.
+/// Only fallback consumers and loop crossfades materialize RGBA, once per frame.
+#[derive(Debug)]
+pub(crate) struct P010Frame {
+    pub info: video::VideoInfo,
+    frame: video::VideoFrame<video::video_frame::Readable>,
+    rgba: OnceLock<Result<Bytes, gst::FlowError>>,
+}
+
+impl P010Frame {
+    pub fn new(frame: video::VideoFrame<video::video_frame::Readable>) -> Self {
+        Self {
+            info: frame.info().clone(),
+            frame,
+            rgba: OnceLock::new(),
+        }
+    }
+
+    pub fn rgba(&self) -> Result<Bytes, gst::FlowError> {
+        self.rgba
+            .get_or_init(|| {
+                let frame = self.frame.as_video_frame_ref();
+                let info = frame.info();
+                let output = video::VideoInfo::builder(
+                    video::VideoFormat::Rgba,
+                    info.width(),
+                    info.height(),
+                )
+                .fps(info.fps())
+                .colorimetry(&"sRGB".parse().unwrap())
+                .build()
+                .map_err(|_| gst::FlowError::NotNegotiated)?;
+                let converter = video::VideoConverter::new(info, &output, None)
+                    .map_err(|_| gst::FlowError::NotNegotiated)?;
+                let mut buffer =
+                    gst::Buffer::with_size(output.size()).map_err(|_| gst::FlowError::Error)?;
+                {
+                    let mut target = video::VideoFrameRef::from_buffer_ref_writable(
+                        buffer.get_mut().unwrap(),
+                        &output,
+                    )
+                    .map_err(|_| gst::FlowError::Error)?;
+                    converter.frame_ref(&frame, &mut target);
+                }
+                let mapped = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                Ok(Bytes::copy_from_slice(mapped.as_slice()))
+            })
+            .clone()
+    }
+}
+
 #[derive(Default)]
-pub(super) struct Converter {
+pub(crate) struct Converter {
     gpu: Option<Gpu>,
-    cpu: Option<video::VideoConverter>,
+    info: Option<video::VideoInfo>,
     disabled: bool,
     checked: bool,
 }
 
 impl Converter {
-    pub fn convert(
-        &mut self,
-        frame: &video::VideoFrameRef<&gst::BufferRef>,
-    ) -> Result<Bytes, gst::FlowError> {
+    /// CPU consumers keep conversion off the presentation thread. Crossfades
+    /// retain their original CPU blend, so only those frames need GPU readback.
+    pub fn rgba(&mut self, source: &P010Frame) -> Result<Bytes, gst::FlowError> {
+        if let Some(pixels) = source.rgba.get() {
+            return pixels.clone();
+        }
+        let frame = source.frame.as_video_frame_ref();
         let info = frame.info();
-        if self.cpu.as_ref().is_none_or(|cpu| cpu.in_info() != info) {
-            let output =
-                video::VideoInfo::builder(video::VideoFormat::Rgba, info.width(), info.height())
-                    .fps(info.fps())
-                    .colorimetry(&"sRGB".parse().unwrap())
-                    .build()
-                    .map_err(|_| gst::FlowError::NotNegotiated)?;
-            self.cpu = Some(
-                video::VideoConverter::new(info, &output, None)
-                    .map_err(|_| gst::FlowError::NotNegotiated)?,
-            );
+        if self.info.as_ref() != Some(info) {
+            self.info = Some(info.clone());
             let old = self.gpu.take();
             let _ = catch_unwind(AssertUnwindSafe(|| drop(old)));
             self.checked = false;
         }
         if !self.disabled && supports(info) && !frame.is_interlaced() {
-            let result = catch_unwind(AssertUnwindSafe(|| {
+            let result: Result<Bytes, String> = catch_unwind(AssertUnwindSafe(|| {
                 if self.gpu.is_none() {
                     self.gpu = Some(Gpu::new(info, false)?);
                 }
-                self.gpu.as_ref().unwrap().convert(frame)
+                let pixels = self.gpu.as_ref().unwrap().convert(&frame)?;
+                if !self.checked {
+                    let reference = source.rgba().map_err(|error| error.to_string())?;
+                    if pixels != reference {
+                        return Err("GPU pixels differ from videoconvert".into());
+                    }
+                    self.checked = true;
+                    eprintln!("genkan wallpaper: exact GPU conversion for CPU consumers enabled");
+                }
+                Ok(pixels)
             }))
             .unwrap_or_else(|_| Err("GPU conversion panicked".into()));
             match result {
                 Ok(pixels) => {
-                    if self.checked {
-                        return Ok(pixels);
-                    }
-                    // Validate the actual driver and GStreamer combination once,
-                    // before publishing any GPU-converted pixels.
-                    let reference = self.cpu_frame(frame)?;
-                    if pixels == reference {
-                        self.checked = true;
-                        eprintln!("genkan wallpaper: exact GPU color conversion enabled");
-                        return Ok(pixels);
-                    }
-                    self.disable("GPU pixels differ from videoconvert");
-                    return Ok(reference);
+                    let _ = source.rgba.set(Ok(pixels.clone()));
+                    return Ok(pixels);
                 }
                 Err(error) => self.disable(&error),
             }
         }
-        self.cpu_frame(frame)
+        source.rgba()
+    }
+
+    /// Returns false when the caller must upload CPU-reference RGBA instead.
+    pub fn upload(
+        &mut self,
+        source: &P010Frame,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        failed: &Arc<AtomicBool>,
+        texture: &wgpu::Texture,
+    ) -> Result<bool, String> {
+        let frame = source.frame.as_video_frame_ref();
+        let info = frame.info();
+        if self.info.as_ref() != Some(info) {
+            self.info = Some(info.clone());
+            let old = self.gpu.take();
+            let _ = catch_unwind(AssertUnwindSafe(|| drop(old)));
+            self.checked = false;
+        }
+        if !self.disabled && supports(info) && !frame.is_interlaced() {
+            let result: Result<(), String> = catch_unwind(AssertUnwindSafe(|| {
+                if self.gpu.is_none() {
+                    self.gpu = Some(Gpu::with_device(
+                        info,
+                        device.clone(),
+                        queue.clone(),
+                        failed.clone(),
+                    )?);
+                }
+                let gpu = self.gpu.as_ref().unwrap();
+                if !self.checked {
+                    let pixels = gpu.convert(&frame)?;
+                    let reference = source.rgba().map_err(|error| error.to_string())?;
+                    if pixels != reference {
+                        return Err("GPU pixels differ from videoconvert".into());
+                    }
+                    self.checked = true;
+                    eprintln!("genkan wallpaper: exact GPU-resident color conversion enabled");
+                    gpu.copy_to_texture(texture)?;
+                } else {
+                    gpu.upload(&frame, texture)?;
+                }
+                Ok(())
+            }))
+            .unwrap_or_else(|_| Err("GPU conversion panicked".into()));
+            match result {
+                Ok(()) => return Ok(true),
+                Err(error) => self.disable(&error),
+            }
+        }
+        Ok(false)
     }
 
     fn disable(&mut self, reason: &str) {
@@ -122,23 +216,6 @@ impl Converter {
         let gpu = self.gpu.take();
         let _ = catch_unwind(AssertUnwindSafe(|| drop(gpu)));
         eprintln!("genkan wallpaper: {reason}; retaining CPU color conversion");
-    }
-
-    fn cpu_frame(
-        &self,
-        frame: &video::VideoFrameRef<&gst::BufferRef>,
-    ) -> Result<Bytes, gst::FlowError> {
-        let converter = self.cpu.as_ref().unwrap();
-        let info = converter.out_info();
-        let mut buffer = gst::Buffer::with_size(info.size()).map_err(|_| gst::FlowError::Error)?;
-        {
-            let mut output =
-                video::VideoFrameRef::from_buffer_ref_writable(buffer.get_mut().unwrap(), info)
-                    .map_err(|_| gst::FlowError::Error)?;
-            converter.frame_ref(frame, &mut output);
-        }
-        let mapped = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-        Ok(Bytes::copy_from_slice(mapped.as_slice()))
     }
 }
 
@@ -161,6 +238,7 @@ struct Gpu {
     width: u32,
     height: u32,
     strides: [usize; 2],
+    output_stride: u32,
     failed: Arc<AtomicBool>,
 }
 
@@ -178,23 +256,6 @@ impl Gpu {
         if !allow_software && adapter.get_info().device_type == wgpu::DeviceType::Cpu {
             return Err("software Vulkan adapter".into());
         }
-        let width = info.width();
-        let height = info.height();
-        let strides = [info.stride()[0] as usize, info.stride()[1] as usize];
-        let sizes = [
-            strides[0] as u64 * height as u64,
-            strides[1] as u64 * (height / 2) as u64,
-            width as u64 * height as u64 * 4,
-        ];
-        if strides
-            .iter()
-            .any(|stride| *stride < width as usize * 2 || stride % 4 != 0)
-            || sizes.iter().any(|size| {
-                *size > u64::from(wgpu::Limits::default().max_storage_buffer_binding_size)
-            })
-        {
-            return Err("unsupported conversion buffer layout".into());
-        }
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("wallpaper color conversion"),
             ..Default::default()
@@ -209,6 +270,38 @@ impl Gpu {
         device.on_uncaptured_error(Arc::new(move |_| {
             errors.store(true, Ordering::Relaxed);
         }));
+        eprintln!(
+            "genkan wallpaper: GPU color conversion on {}",
+            adapter.get_info().name
+        );
+        Self::with_device(info, device, queue, failed)
+    }
+
+    fn with_device(
+        info: &video::VideoInfo,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        failed: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let width = info.width();
+        let height = info.height();
+        let strides = [info.stride()[0] as usize, info.stride()[1] as usize];
+        let output_stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let sizes = [
+            strides[0] as u64 * height as u64,
+            strides[1] as u64 * (height / 2) as u64,
+            output_stride as u64 * height as u64,
+        ];
+        if strides
+            .iter()
+            .any(|stride| *stride < width as usize * 2 || stride % 4 != 0)
+            || sizes
+                .iter()
+                .any(|size| *size > u64::from(device.limits().max_storage_buffer_binding_size))
+        {
+            return Err("unsupported conversion buffer layout".into());
+        }
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("P010 to RGBA"),
@@ -250,10 +343,16 @@ impl Gpu {
             sizes[2],
             wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         );
-        let parameters: Vec<u8> = [width, height, strides[0] as u32 / 4, strides[1] as u32 / 4]
-            .into_iter()
-            .flat_map(u32::to_le_bytes)
-            .collect();
+        let parameters: Vec<u8> = [
+            width,
+            height,
+            strides[0] as u32 / 4,
+            strides[1] as u32 / 4,
+            output_stride / 4,
+        ]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("conversion layout"),
             contents: &parameters,
@@ -284,10 +383,6 @@ impl Gpu {
         if let Some(error) = block_on(device.pop_error_scope()) {
             return Err(error.to_string());
         }
-        eprintln!(
-            "genkan wallpaper: GPU color conversion on {}",
-            adapter.get_info().name
-        );
         Ok(Self {
             device,
             queue,
@@ -300,11 +395,16 @@ impl Gpu {
             width,
             height,
             strides,
+            output_stride,
             failed,
         })
     }
 
-    fn convert(&self, frame: &video::VideoFrameRef<&gst::BufferRef>) -> Result<Bytes, String> {
+    fn encode(
+        &self,
+        frame: &video::VideoFrameRef<&gst::BufferRef>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<(), String> {
         if self.failed.load(Ordering::Relaxed) {
             return Err("GPU conversion device failed".into());
         }
@@ -318,15 +418,65 @@ impl Gpu {
             }
             self.queue.write_buffer(buffer, 0, &plane[..length]);
         }
-        let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bindings, &[]);
             pass.dispatch_workgroups(self.width.div_ceil(16), self.height.div_ceil(16), 1);
         }
+        Ok(())
+    }
+
+    fn texture_copy(&self, encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture) {
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.output,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.output_stride),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            texture.as_image_copy(),
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    fn copy_to_texture(&self, texture: &wgpu::Texture) -> Result<(), String> {
+        if self.failed.load(Ordering::Relaxed) {
+            return Err("GPU conversion device failed".into());
+        }
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        self.texture_copy(&mut encoder, texture);
+        self.queue.submit([encoder.finish()]);
+        Ok(())
+    }
+
+    fn upload(
+        &self,
+        frame: &video::VideoFrameRef<&gst::BufferRef>,
+        texture: &wgpu::Texture,
+    ) -> Result<(), String> {
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        self.encode(frame, &mut encoder)?;
+        self.texture_copy(&mut encoder, texture);
+        self.queue.submit([encoder.finish()]);
+        Ok(())
+    }
+
+    fn convert(&self, frame: &video::VideoFrameRef<&gst::BufferRef>) -> Result<Bytes, String> {
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        self.encode(frame, &mut encoder)?;
         encoder.copy_buffer_to_buffer(&self.output, 0, &self.readback, 0, self.readback.size());
         let submission = self.queue.submit([encoder.finish()]);
+        self.read_pixels(submission)
+    }
+
+    fn read_pixels(&self, submission: wgpu::SubmissionIndex) -> Result<Bytes, String> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         self.readback
             .map_async(wgpu::MapMode::Read, .., move |result| {
@@ -342,7 +492,13 @@ impl Gpu {
             .recv_timeout(Duration::from_secs(1))
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?;
-        let pixels = Bytes::copy_from_slice(&self.readback.get_mapped_range(..));
+        let pixels = super::pack_rgba(
+            &self.readback.get_mapped_range(..),
+            self.width,
+            self.height,
+            self.output_stride as i32,
+        )
+        .ok_or("invalid GPU readback layout")?;
         self.readback.unmap();
         if self.failed.load(Ordering::Relaxed) {
             return Err("GPU conversion device failed".into());
@@ -354,6 +510,24 @@ impl Gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_texture(gpu: &Gpu, texture: &wgpu::Texture) -> Bytes {
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &gpu.readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(gpu.output_stride),
+                    rows_per_image: Some(gpu.height),
+                },
+            },
+            texture.size(),
+        );
+        let submission = gpu.queue.submit([encoder.finish()]);
+        gpu.read_pixels(submission).unwrap()
+    }
 
     #[test]
     fn movie_conversion_follows_midstream_caps_changes() {
@@ -439,7 +613,16 @@ mod tests {
     #[ignore = "requires a Vulkan adapter"]
     fn p010_gpu_matches_videoconvert() {
         gst::init().unwrap();
-        for (width, height) in [(2, 2), (6, 10), (34, 18), (128, 66), (1920, 1080)] {
+        for (width, height) in [
+            (2, 2),
+            (6, 10),
+            (34, 18),
+            (62, 18),
+            (64, 18),
+            (66, 18),
+            (128, 66),
+            (1920, 1080),
+        ] {
             for padding in [0, 16] {
                 let strides = [width as i32 * 2 + padding, width as i32 * 2 + padding * 2];
                 let offsets = [
@@ -458,6 +641,21 @@ mod tests {
                     .unwrap();
                 assert!(supports(&info));
                 let gpu = Gpu::new(&info, true).unwrap();
+                let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("resident conversion test"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let mut converter = Converter::default();
                 for seed in [0u32, 1, 29, 0xdeadbeef] {
                     let mut state = seed;
                     let mut data = vec![0; info.size()];
@@ -474,16 +672,23 @@ mod tests {
                         };
                         bytes.copy_from_slice(&word.to_le_bytes());
                     }
-                    let buffer = gst::Buffer::from_mut_slice(data);
+                    let mut buffer = gst::Buffer::from_mut_slice(data);
+                    video::VideoMeta::add_full(
+                        buffer.get_mut().unwrap(),
+                        video::VideoFrameFlags::empty(),
+                        info.format(),
+                        width,
+                        height,
+                        &offsets,
+                        &strides,
+                    )
+                    .unwrap();
                     let frame =
                         video::VideoFrameRef::from_buffer_ref_readable(&buffer, &info).unwrap();
-                    let expected = Converter {
-                        gpu: None,
-                        cpu: None,
-                        disabled: true,
-                        checked: false,
-                    }
-                    .convert(&frame)
+                    let expected = P010Frame::new(
+                        video::VideoFrame::from_buffer_readable(buffer.clone(), &info).unwrap(),
+                    )
+                    .rgba()
                     .unwrap();
                     let actual = gpu.convert(&frame).unwrap();
                     assert_eq!(actual.len(), expected.len());
@@ -491,6 +696,21 @@ mod tests {
                     if let Some(index) = difference {
                         panic!("{width}x{height}, seed {seed}, byte {index}: GPU {} != CPU {} ({} differing bytes)", actual[index], expected[index], actual.iter().zip(expected.iter()).filter(|(a, b)| a != b).count());
                     }
+                    // Decoder metadata, rather than the packed caps layout,
+                    // owns these padded planes and their nonzero offsets.
+                    let caps_info = video::VideoInfo::from_caps(&info.to_caps().unwrap()).unwrap();
+                    let source = P010Frame::new(
+                        video::VideoFrame::from_buffer_readable(buffer.clone(), &caps_info)
+                            .unwrap(),
+                    );
+                    assert!(converter
+                        .upload(&source, &gpu.device, &gpu.queue, &gpu.failed, &texture)
+                        .unwrap());
+                    assert_eq!(
+                        read_texture(&gpu, &texture),
+                        expected,
+                        "resident texture {width}x{height}, seed {seed}"
+                    );
                 }
             }
         }
