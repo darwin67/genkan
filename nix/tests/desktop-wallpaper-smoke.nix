@@ -587,4 +587,51 @@ pkgs.runCommand "genkan-desktop-wallpaper-smoke"
     cp "$transition_before" "$out/transition-before.png"
     cp "$transition_during" "$out/transition-during.png"
     cp "$transition_after" "$out/transition-after.png"
+
+    # Exercise actual Vulkan presentation in CI, including its Wayland WSI,
+    # rather than letting the automatic software-adapter fallback mask bugs.
+    kill "$wallpaper_pid"
+    wait "$wallpaper_pid" || true
+    wallpaper_pid=
+    export VK_DRIVER_FILES=$(find ${pkgs.mesa.drivers}/share/vulkan/icd.d -name 'lvp_icd.*.json' -print -quit)
+    test -n "$VK_DRIVER_FILES"
+    for backend in cpu vulkan; do
+      swaymsg -s "$ipc" 'output HEADLESS-1 mode 803x601 scale 1 transform normal; output HEADLESS-2 enable mode 640x360 scale 1 transform normal' >/dev/null
+      GENKAN_WALLPAPER_RENDERER="$backend" ${genkan}/bin/genkan wallpaper \
+        --file "$pattern_heic" --reduce-motion >"$wallpaper_log" 2>&1 &
+      wallpaper_pid=$!
+      for state in normal fractional resized reconnected; do
+        case "$state" in
+          fractional)
+            swaymsg -s "$ipc" 'output HEADLESS-1 scale 1.275; output HEADLESS-2 scale 1.3 transform 90' >/dev/null ;;
+          resized)
+            swaymsg -s "$ipc" 'output HEADLESS-1 mode 951x537 scale 1.2; output HEADLESS-2 scale 2 transform normal' >/dev/null ;;
+          reconnected)
+            swaymsg -s "$ipc" 'output HEADLESS-2 disable' >/dev/null
+            sleep 0.2
+            swaymsg -s "$ipc" 'output HEADLESS-2 enable scale 1.3 transform 90' >/dev/null ;;
+        esac
+        sleep 0.5
+        for output in HEADLESS-1 HEADLESS-2; do
+          capture="$out/$backend-$state-$output.png"
+          if [[ "$backend" == cpu ]]; then
+            kill -0 "$wallpaper_pid"
+            grim -o "$output" "$capture"
+            [[ $(identify -format '%k' "$capture") -ge 4 ]]
+          else
+            capture_pattern "$output" "$capture" "$out/cpu-$state-$output.png" 0
+          fi
+        done
+      done
+      kill "$wallpaper_pid"
+      wait "$wallpaper_pid" || true
+      wallpaper_pid=
+      if [[ "$backend" == vulkan ]]; then
+        grep -Fq 'GPU presentation on' "$wallpaper_log"
+        if grep -Eq 'GPU error|falling back|using CPU presentation|presentation disabled' "$wallpaper_log"; then
+          cat "$wallpaper_log" >&2
+          exit 1
+        fi
+      fi
+    done
   ''
