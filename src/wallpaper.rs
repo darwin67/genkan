@@ -1723,6 +1723,22 @@ fn build_pipeline(
         .static_pad("sink")
         .ok_or_else(|| pipeline_error("the frame-rate converter has no input"))?;
     if mode == DecoderMode::Automatic {
+        let download = gst::ElementFactory::make("cudadownload").build().ok();
+        if download.is_some() {
+            // Keep NVDEC frames on the GPU until videorate has selected the
+            // frames we display. Other decoders still use system memory.
+            decoder.set_property(
+                "caps",
+                gst::Caps::builder_full()
+                    .structure_with_features(
+                        gst::Structure::new_empty("video/x-raw"),
+                        gst::CapsFeatures::new(["memory:CUDAMemory"]),
+                    )
+                    .structure(gst::Structure::new_empty("video/x-raw"))
+                    .build(),
+            );
+        }
+        let weak_pipeline = pipeline.downgrade();
         let decode_faulted = Arc::clone(&faulted);
         decoder.connect_pad_added(move |_decoder, source_pad| {
             if rate_sink.is_linked() {
@@ -1734,7 +1750,33 @@ fn build_pipeline(
             let is_video = caps
                 .structure(0)
                 .is_some_and(|structure| structure.name().starts_with("video/x-raw"));
-            if is_video && source_pad.link(&rate_sink).is_err() {
+            if !is_video {
+                return;
+            }
+            let cuda_download = download.as_ref().filter(|_| {
+                caps.features(0)
+                    .is_some_and(|features| features.contains("memory:CUDAMemory"))
+            });
+            if let Some(download) = cuda_download {
+                // Add the downloader only for CUDA output: a system-memory
+                // decoder must not start an otherwise unused NVIDIA context.
+                let Some(pipeline) = weak_pipeline.upgrade() else {
+                    decode_faulted.store(true, Ordering::Release);
+                    return;
+                };
+                rate.unlink(&convert);
+                if pipeline.add(download).is_err()
+                    || gst::Element::link_many([&rate, download, &convert]).is_err()
+                {
+                    decode_faulted.store(true, Ordering::Release);
+                    return;
+                }
+            }
+            // Link upstream before starting the downloader so its context
+            // query can reach the decoder and reuse the same CUDA context.
+            if source_pad.link(&rate_sink).is_err()
+                || cuda_download.is_some_and(|download| download.sync_state_with_parent().is_err())
+            {
                 decode_faulted.store(true, Ordering::Release);
             }
         });
