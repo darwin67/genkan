@@ -7,11 +7,10 @@ struct Layout {
     height: u32,
     y_stride: u32,
     uv_stride: u32,
-    output_stride: u32,
 }
 @group(0) @binding(0) var<storage, read> luma: array<u32>;
 @group(0) @binding(1) var<storage, read> chroma: array<u32>;
-@group(0) @binding(2) var<storage, read_write> rgba: array<u32>;
+@group(0) @binding(2) var rgba: texture_storage_2d<rgba8uint, write>;
 @group(0) @binding(3) var<uniform> image: Layout;
 
 fn expand(word: u32) -> u32 {
@@ -48,5 +47,6 @@ fn convert(@builtin(global_invocation_id) id: vec3<u32>) {
     let r = u32(clamp((298 * Y + 459 * c.y - 16259547) >> 16u, 0, 255));
     let g = u32(clamp((298 * Y - 55 * c.x - 136 * c.y + 5038282) >> 16u, 0, 255));
     let b = u32(clamp((298 * Y + 541 * c.x - 18941056) >> 16u, 0, 255));
-    rgba[y * image.output_stride + x] = r | (g << 8u) | (b << 16u) | 0xff000000u;
+    // Integer storage preserves the exact bytes without UNORM rounding.
+    textureStore(rgba, vec2<u32>(x, y), vec4<u32>(r, g, b, 255u));
 }

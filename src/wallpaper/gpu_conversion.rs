@@ -171,7 +171,11 @@ impl Converter {
     ) -> Result<bool, String> {
         let frame = source.frame.as_video_frame_ref();
         let info = frame.info();
-        if self.info.as_ref() != Some(info) {
+        // An intervening RGBA frame can resize and replace the renderer's
+        // texture even when the next P010 frame has the previous video layout.
+        if self.info.as_ref() != Some(info)
+            || self.gpu.as_ref().is_some_and(|gpu| gpu.output != *texture)
+        {
             self.info = Some(info.clone());
             let old = self.gpu.take();
             let _ = catch_unwind(AssertUnwindSafe(|| drop(old)));
@@ -185,6 +189,7 @@ impl Converter {
                         device.clone(),
                         queue.clone(),
                         failed.clone(),
+                        Some(texture.clone()),
                     )?);
                 }
                 let gpu = self.gpu.as_ref().unwrap();
@@ -196,9 +201,8 @@ impl Converter {
                     }
                     self.checked = true;
                     eprintln!("genkan wallpaper: exact GPU-resident color conversion enabled");
-                    gpu.copy_to_texture(texture)?;
                 } else {
-                    gpu.upload(&frame, texture)?;
+                    gpu.upload(&frame)?;
                 }
                 Ok(())
             }))
@@ -233,7 +237,7 @@ struct Gpu {
     bindings: wgpu::BindGroup,
     y: wgpu::Buffer,
     uv: wgpu::Buffer,
-    output: wgpu::Buffer,
+    output: wgpu::Texture,
     readback: wgpu::Buffer,
     width: u32,
     height: u32,
@@ -274,7 +278,7 @@ impl Gpu {
             "genkan wallpaper: GPU color conversion on {}",
             adapter.get_info().name
         );
-        Self::with_device(info, device, queue, failed)
+        Self::with_device(info, device, queue, failed, None)
     }
 
     fn with_device(
@@ -282,6 +286,7 @@ impl Gpu {
         device: wgpu::Device,
         queue: wgpu::Queue,
         failed: Arc<AtomicBool>,
+        output: Option<wgpu::Texture>,
     ) -> Result<Self, String> {
         let width = info.width();
         let height = info.height();
@@ -333,31 +338,37 @@ impl Gpu {
             sizes[1],
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
-        let output = buffer(
-            "converted RGBA",
-            sizes[2],
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        );
+        let output = output.unwrap_or_else(|| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("converted RGBA"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Uint,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        });
         let readback = buffer(
             "converted RGBA readback",
             sizes[2],
             wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         );
-        let parameters: Vec<u8> = [
-            width,
-            height,
-            strides[0] as u32 / 4,
-            strides[1] as u32 / 4,
-            output_stride / 4,
-        ]
-        .into_iter()
-        .flat_map(u32::to_le_bytes)
-        .collect();
+        let parameters: Vec<u8> = [width, height, strides[0] as u32 / 4, strides[1] as u32 / 4]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("conversion layout"),
             contents: &parameters,
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        let view = output.create_view(&Default::default());
         let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("conversion buffers"),
             layout: &pipeline.get_bind_group_layout(0),
@@ -372,7 +383,7 @@ impl Gpu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: output.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -427,43 +438,9 @@ impl Gpu {
         Ok(())
     }
 
-    fn texture_copy(&self, encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture) {
-        encoder.copy_buffer_to_texture(
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.output,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.output_stride),
-                    rows_per_image: Some(self.height),
-                },
-            },
-            texture.as_image_copy(),
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
-
-    fn copy_to_texture(&self, texture: &wgpu::Texture) -> Result<(), String> {
-        if self.failed.load(Ordering::Relaxed) {
-            return Err("GPU conversion device failed".into());
-        }
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.texture_copy(&mut encoder, texture);
-        self.queue.submit([encoder.finish()]);
-        Ok(())
-    }
-
-    fn upload(
-        &self,
-        frame: &video::VideoFrameRef<&gst::BufferRef>,
-        texture: &wgpu::Texture,
-    ) -> Result<(), String> {
+    fn upload(&self, frame: &video::VideoFrameRef<&gst::BufferRef>) -> Result<(), String> {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         self.encode(frame, &mut encoder)?;
-        self.texture_copy(&mut encoder, texture);
         self.queue.submit([encoder.finish()]);
         Ok(())
     }
@@ -471,7 +448,18 @@ impl Gpu {
     fn convert(&self, frame: &video::VideoFrameRef<&gst::BufferRef>) -> Result<Bytes, String> {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         self.encode(frame, &mut encoder)?;
-        encoder.copy_buffer_to_buffer(&self.output, 0, &self.readback, 0, self.readback.size());
+        encoder.copy_texture_to_buffer(
+            self.output.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.output_stride),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            self.output.size(),
+        );
         let submission = self.queue.submit([encoder.finish()]);
         self.read_pixels(submission)
     }
@@ -641,20 +629,23 @@ mod tests {
                     .unwrap();
                 assert!(supports(&info));
                 let gpu = Gpu::new(&info, true).unwrap();
-                let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("resident conversion test"),
-                    size: wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
+                let new_texture = || {
+                    gpu.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("resident conversion test"),
+                        size: wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Uint,
+                        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::STORAGE_BINDING,
+                        view_formats: &[],
+                    })
+                };
+                let mut texture = new_texture();
                 let mut converter = Converter::default();
                 for seed in [0u32, 1, 29, 0xdeadbeef] {
                     let mut state = seed;
@@ -703,6 +694,11 @@ mod tests {
                         video::VideoFrame::from_buffer_readable(buffer.clone(), &caps_info)
                             .unwrap(),
                     );
+                    if seed == 29 {
+                        // Returning from differently sized RGBA frames replaces
+                        // the destination without changing the P010 caps.
+                        texture = new_texture();
+                    }
                     assert!(converter
                         .upload(&source, &gpu.device, &gpu.queue, &gpu.failed, &texture)
                         .unwrap());
