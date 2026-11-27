@@ -58,28 +58,70 @@ pub(super) fn supports(info: &video::VideoInfo) -> bool {
         && info.chroma_site() == video::VideoChromaSite::MPEG2
 }
 
+/// Native frame unmapping can wait on the driver. Retire at most one queued
+/// frame and one in-flight frame away from presentation; never grow a backlog.
+#[derive(Debug)]
+pub(crate) struct FrameReleaser {
+    sender: Option<std::sync::mpsc::SyncSender<video::VideoFrame<video::video_frame::Readable>>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FrameReleaser {
+    pub fn new() -> Option<Arc<Self>> {
+        let (sender, frames) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("wallpaper-release".into())
+            .spawn(move || {
+                for frame in frames {
+                    drop(frame);
+                }
+            })
+            .ok()?;
+        Some(Arc::new(Self {
+            sender: Some(sender),
+            worker: Some(worker),
+        }))
+    }
+}
+
+impl Drop for FrameReleaser {
+    fn drop(&mut self) {
+        // Frames retain this owner, so close and drain only after the pipeline
+        // and its final displayed frame have both relinquished it.
+        drop(self.sender.take());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 /// Retaining the immutable input makes CPU recovery independent of GPU health.
 /// Only fallback consumers and loop crossfades materialize RGBA, once per frame.
 #[derive(Debug)]
 pub(crate) struct P010Frame {
     pub info: video::VideoInfo,
-    frame: video::VideoFrame<video::video_frame::Readable>,
+    frame: Option<video::VideoFrame<video::video_frame::Readable>>,
     rgba: OnceLock<Result<Bytes, gst::FlowError>>,
+    releaser: Option<Arc<FrameReleaser>>,
 }
 
 impl P010Frame {
-    pub fn new(frame: video::VideoFrame<video::video_frame::Readable>) -> Self {
+    pub fn new(
+        frame: video::VideoFrame<video::video_frame::Readable>,
+        releaser: Option<Arc<FrameReleaser>>,
+    ) -> Self {
         Self {
             info: frame.info().clone(),
-            frame,
+            frame: Some(frame),
             rgba: OnceLock::new(),
+            releaser,
         }
     }
 
     pub fn rgba(&self) -> Result<Bytes, gst::FlowError> {
         self.rgba
             .get_or_init(|| {
-                let frame = self.frame.as_video_frame_ref();
+                let frame = self.frame.as_ref().unwrap().as_video_frame_ref();
                 let info = frame.info();
                 let output = video::VideoInfo::builder(
                     video::VideoFormat::Rgba,
@@ -109,6 +151,22 @@ impl P010Frame {
     }
 }
 
+impl Drop for P010Frame {
+    fn drop(&mut self) {
+        if let Some(releaser) = &self.releaser {
+            // A full/disconnected queue drops the returned frame inline, as
+            // before. Do not block on queue capacity or retain extra surfaces
+            // when the driver cannot keep up. If worker creation failed, the
+            // ordinary field destructor still releases the mapping inline.
+            let _ = releaser
+                .sender
+                .as_ref()
+                .unwrap()
+                .try_send(self.frame.take().unwrap());
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Converter {
     gpu: Option<Gpu>,
@@ -124,7 +182,7 @@ impl Converter {
         if let Some(pixels) = source.rgba.get() {
             return pixels.clone();
         }
-        let frame = source.frame.as_video_frame_ref();
+        let frame = source.frame.as_ref().unwrap().as_video_frame_ref();
         let info = frame.info();
         if self.info.as_ref() != Some(info) {
             self.info = Some(info.clone());
@@ -169,7 +227,7 @@ impl Converter {
         failed: &Arc<AtomicBool>,
         texture: &wgpu::Texture,
     ) -> Result<bool, String> {
-        let frame = source.frame.as_video_frame_ref();
+        let frame = source.frame.as_ref().unwrap().as_video_frame_ref();
         let info = frame.info();
         // An intervening RGBA frame can resize and replace the renderer's
         // texture even when the next P010 frame has the previous video layout.
@@ -678,6 +736,7 @@ mod tests {
                         video::VideoFrameRef::from_buffer_ref_readable(&buffer, &info).unwrap();
                     let expected = P010Frame::new(
                         video::VideoFrame::from_buffer_readable(buffer.clone(), &info).unwrap(),
+                        None,
                     )
                     .rgba()
                     .unwrap();
@@ -693,6 +752,7 @@ mod tests {
                     let source = P010Frame::new(
                         video::VideoFrame::from_buffer_readable(buffer.clone(), &caps_info)
                             .unwrap(),
+                        None,
                     );
                     if seed == 29 {
                         // Returning from differently sized RGBA frames replaces

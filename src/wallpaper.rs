@@ -1856,6 +1856,10 @@ fn build_pipeline(
     let sample_bus = bus.clone();
     let sample_faulted = Arc::clone(&faulted);
     let mut conversion = gpu_conversion::Converter::default();
+    let releaser = shared
+        .gpu_conversion
+        .then(gpu_conversion::FrameReleaser::new)
+        .flatten();
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
@@ -1871,7 +1875,7 @@ fn build_pipeline(
                 let result = sink
                     .pull_sample()
                     .map_err(|_| gst::FlowError::Eos)
-                    .and_then(|sample| decoded_frame(&sample))
+                    .and_then(|sample| decoded_frame(&sample, releaser.as_ref()))
                     .map(
                         |frame| match loop_frame_action(&sample_shared, &frame, duration) {
                             LoopFrameAction::Publish => {
@@ -1911,7 +1915,10 @@ fn build_pipeline(
     })
 }
 
-fn decoded_frame(sample: &gst::Sample) -> Result<Frame, gst::FlowError> {
+fn decoded_frame(
+    sample: &gst::Sample,
+    releaser: Option<&Arc<gpu_conversion::FrameReleaser>>,
+) -> Result<Frame, gst::FlowError> {
     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
     let caps = sample.caps().ok_or(gst::FlowError::NotNegotiated)?;
     let info = gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::NotNegotiated)?;
@@ -1924,7 +1931,10 @@ fn decoded_frame(sample: &gst::Sample) -> Result<Frame, gst::FlowError> {
         // this immutable mapping, including its effective VideoMeta layout.
         (
             Bytes::new(),
-            Some(Arc::new(gpu_conversion::P010Frame::new(mapped))),
+            Some(Arc::new(gpu_conversion::P010Frame::new(
+                mapped,
+                releaser.cloned(),
+            ))),
         )
     } else {
         let stride = *info.stride().first().ok_or(gst::FlowError::Error)?;
@@ -4197,6 +4207,7 @@ mod tests {
     #[test]
     fn desktop_p010_crossfade_and_cpu_recovery_keep_current_pixels() {
         gst::init().unwrap();
+        let releaser = gpu_conversion::FrameReleaser::new().unwrap();
         let info = gst_video::VideoInfo::builder(gst_video::VideoFormat::P01010le, 2, 2)
             .fps((30, 1))
             .colorimetry(&"2:3:7:1".parse().unwrap())
@@ -4227,6 +4238,7 @@ mod tests {
                     .buffer(&buffer)
                     .caps(&info.to_caps().unwrap())
                     .build(),
+                Some(&releaser),
             )
             .unwrap()
         };
