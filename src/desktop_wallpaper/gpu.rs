@@ -15,6 +15,8 @@ use iced_runtime::window::raw_window_handle::{
 };
 use wayland_client::{protocol::wl_surface::WlSurface, Connection, Proxy};
 
+use crate::wallpaper::gpu_conversion::{Converter, P010Frame};
+
 /// wgpu 27 may also panic while retiring an acquired image after device loss.
 /// Take ownership before dropping so failed teardown cannot be retried, and
 /// retire targets before the device and the native Wayland surface.
@@ -63,6 +65,8 @@ pub(super) struct Renderer {
     failed: Arc<AtomicBool>,
     wake: Ping,
     texture: Option<wgpu::Texture>,
+    conversion: Converter,
+    pub rgba_required: bool,
     pub uploaded: bool,
 }
 
@@ -130,6 +134,8 @@ impl Renderer {
                 failed,
                 wake,
                 texture: None,
+                conversion: Converter::default(),
+                rgba_required: false,
                 uploaded: false,
             },
             target,
@@ -168,7 +174,11 @@ impl Renderer {
         self.failed.load(Ordering::Relaxed)
     }
 
-    fn upload(&mut self, frame: Option<(u32, u32, &[u8])>) -> Result<(), String> {
+    fn upload(
+        &mut self,
+        frame: Option<(u32, u32, &[u8])>,
+        p010: Option<&P010Frame>,
+    ) -> Result<(), String> {
         if self.failed.load(Ordering::Relaxed) {
             return Err("GPU device failed".into());
         }
@@ -182,6 +192,9 @@ impl Renderer {
             255,
         ];
         let (width, height, pixels) = frame.unwrap_or((1, 1, &fallback));
+        let (width, height) = p010.map_or((width, height), |source| {
+            (source.info.width(), source.info.height())
+        });
         let limit = self.device.limits().max_texture_dimension_2d;
         if width > limit || height > limit {
             return Err("wallpaper exceeds GPU texture limits".into());
@@ -207,6 +220,27 @@ impl Renderer {
                 view_formats: &[],
             }));
         }
+        let cpu_pixels;
+        let pixels = if let Some(source) = p010 {
+            if self.conversion.upload(
+                source,
+                &self.device,
+                &self.queue,
+                &self.failed,
+                self.texture.as_ref().unwrap(),
+            )? {
+                self.uploaded = true;
+                return Ok(());
+            }
+            if self.failed.load(Ordering::Relaxed) {
+                return Err("GPU device failed".into());
+            }
+            self.rgba_required = true;
+            cpu_pixels = source.rgba().map_err(|error| error.to_string())?;
+            cpu_pixels.as_ref()
+        } else {
+            pixels
+        };
         self.queue.write_texture(
             self.texture.as_ref().unwrap().as_image_copy(),
             pixels,
@@ -226,11 +260,14 @@ impl Renderer {
         target: &mut Target,
         size: (u32, u32),
         frame: Option<(u32, u32, &[u8])>,
+        p010: Option<&P010Frame>,
     ) -> Result<wgpu::SurfaceTexture, String> {
         // wgpu reports some device-loss errors (including acquired-texture
         // discard) as panics rather than through on_uncaptured_error. Do not
         // reuse this device after unwinding; the desktop can keep using SHM.
-        match catch_unwind(AssertUnwindSafe(|| self.draw_inner(target, size, frame))) {
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.draw_inner(target, size, frame, p010)
+        })) {
             Ok(result) => result,
             Err(_) => {
                 self.failed.store(true, Ordering::Relaxed);
@@ -254,6 +291,7 @@ impl Renderer {
         target: &mut Target,
         size: (u32, u32),
         frame: Option<(u32, u32, &[u8])>,
+        p010: Option<&P010Frame>,
     ) -> Result<wgpu::SurfaceTexture, String> {
         if self.failed.load(Ordering::Relaxed) {
             return Err("GPU device failed".into());
@@ -329,7 +367,7 @@ impl Renderer {
             .map_err(|error| error.to_string())?;
         // Do not stage uploads until a swapchain image is available. Otherwise
         // hidden outputs can accumulate unsubmitted writes on every retry.
-        self.upload(frame)?;
+        self.upload(frame, p010)?;
         let texture = self.texture.as_ref().expect("upload precedes draw");
         let source_size = (texture.width(), texture.height());
         if resize || target.source_size != source_size {

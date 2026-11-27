@@ -16,6 +16,7 @@ use clap::ValueEnum;
 use genkan::dynamic_wallpaper::heic::{Document, RgbaFrame as HeicFrame};
 use genkan::dynamic_wallpaper::playback::{DecodeOutcome, DecodeRequest, Playback as HeicPlayback};
 use genkan::dynamic_wallpaper::{AppearancePreference, CivilDate, CivilTime, ClockSnapshot};
+use gst_video::VideoFrameExt;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -29,7 +30,7 @@ use tokio::sync::watch;
 
 use crate::stable_file::{open_regular, OpenError};
 
-mod gpu_conversion;
+pub(crate) mod gpu_conversion;
 
 const OUTPUT_FRAMES_PER_SECOND: i32 = 30;
 const MAX_DIAGNOSTIC_CHARS: usize = 240;
@@ -303,6 +304,7 @@ pub(crate) struct State {
     heic: Option<HeicPlayer>,
     poster: Option<image::Handle>,
     frame: Option<image::Handle>,
+    p010: Option<Arc<gpu_conversion::P010Frame>>,
     allocation: Option<Allocation>,
     allocation_pending: bool,
     heic_adopted: bool,
@@ -382,6 +384,7 @@ impl State {
                 player: Some(player),
                 heic: None,
                 frame: poster.clone(),
+                p010: None,
                 poster,
                 allocation: None,
                 allocation_pending: false,
@@ -407,6 +410,7 @@ impl State {
                 player: None,
                 heic: Some(heic),
                 frame: poster.clone(),
+                p010: None,
                 poster,
                 allocation: None,
                 allocation_pending: false,
@@ -462,6 +466,7 @@ impl State {
             player: None,
             heic: None,
             frame: poster.clone(),
+            p010: None,
             poster,
             allocation: None,
             allocation_pending: false,
@@ -475,6 +480,7 @@ impl State {
             heic: None,
             poster: None,
             frame: None,
+            p010: None,
             allocation: None,
             allocation_pending: false,
             heic_adopted: false,
@@ -504,11 +510,14 @@ impl State {
         match update {
             Update::Frame(frame) => {
                 self.allocation = None;
-                self.frame = Some(image::Handle::from_rgba(
-                    frame.width,
-                    frame.height,
-                    frame.pixels,
-                ));
+                self.p010 = frame.p010;
+                if self.p010.is_none() {
+                    self.frame = Some(image::Handle::from_rgba(
+                        frame.width,
+                        frame.height,
+                        frame.pixels,
+                    ));
+                }
                 self.note_heic_adoption();
                 Refresh::Frame
             }
@@ -602,7 +611,27 @@ impl State {
         self.heic.take();
     }
 
+    pub(crate) fn p010_frame(&self) -> Option<Arc<gpu_conversion::P010Frame>> {
+        self.p010.clone()
+    }
+
+    pub(crate) fn require_rgba(&self) {
+        if let Some(player) = &self.player {
+            // Keep subsequent conversion off the presentation thread when
+            // either the output or its color converter needs CPU pixels.
+            player.shared.rgba_required.store(true, Ordering::Release);
+        }
+    }
+
     pub(crate) fn rgba_frame(&self) -> Option<genkan_session_lock::RgbaFrame> {
+        if let Some(frame) = &self.p010 {
+            self.require_rgba();
+            return genkan_session_lock::RgbaFrame::new(
+                frame.info.width(),
+                frame.info.height(),
+                frame.rgba().ok()?,
+            );
+        }
         let image::Handle::Rgba {
             width,
             height,
@@ -626,7 +655,7 @@ impl State {
     }
 
     pub(crate) fn has_frame(&self) -> bool {
-        self.frame.is_some()
+        self.frame.is_some() || self.p010.is_some()
     }
 
     pub(crate) fn decoder_is_stopped(&self) -> bool {
@@ -1196,6 +1225,7 @@ fn emit_heic_frame(
         width,
         height,
         pixels,
+        p010: None,
         pts: None,
     }));
     let sequence = shared.sequence.fetch_add(1, Ordering::AcqRel) + 1;
@@ -1575,6 +1605,7 @@ pub(crate) fn current_clock() -> Option<ClockSnapshot> {
 #[derive(Default)]
 struct Shared {
     gpu_conversion: bool,
+    rgba_required: AtomicBool,
     state: Mutex<SharedState>,
     sequence: AtomicU64,
     failed: AtomicBool,
@@ -1606,7 +1637,20 @@ struct Frame {
     width: u32,
     height: u32,
     pixels: Bytes,
+    p010: Option<Arc<gpu_conversion::P010Frame>>,
     pts: Option<Duration>,
+}
+
+impl Frame {
+    fn into_rgba(
+        mut self,
+        conversion: &mut gpu_conversion::Converter,
+    ) -> Result<Self, gst::FlowError> {
+        if let Some(source) = self.p010.take() {
+            self.pixels = conversion.rgba(&source)?;
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1827,15 +1871,24 @@ fn build_pipeline(
                 let result = sink
                     .pull_sample()
                     .map_err(|_| gst::FlowError::Eos)
-                    .and_then(|sample| decoded_frame(&sample, &mut conversion))
+                    .and_then(|sample| decoded_frame(&sample))
                     .map(
                         |frame| match loop_frame_action(&sample_shared, &frame, duration) {
                             LoopFrameAction::Publish => {
-                                publish_frame(&sample_shared, &sample_signal, frame);
+                                publish_frame(
+                                    &sample_shared,
+                                    &sample_signal,
+                                    frame,
+                                    &mut conversion,
+                                );
                             }
                             LoopFrameAction::Request => {
-                                if publish_frame(&sample_shared, &sample_signal, frame)
-                                    && !request_loop_before_eos(&sample_bus)
+                                if publish_frame(
+                                    &sample_shared,
+                                    &sample_signal,
+                                    frame,
+                                    &mut conversion,
+                                ) && !request_loop_before_eos(&sample_bus)
                                 {
                                     sample_faulted.store(true, Ordering::Release);
                                 }
@@ -1858,28 +1911,36 @@ fn build_pipeline(
     })
 }
 
-fn decoded_frame(
-    sample: &gst::Sample,
-    conversion: &mut gpu_conversion::Converter,
-) -> Result<Frame, gst::FlowError> {
+fn decoded_frame(sample: &gst::Sample) -> Result<Frame, gst::FlowError> {
     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
     let caps = sample.caps().ok_or(gst::FlowError::NotNegotiated)?;
     let info = gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::NotNegotiated)?;
-    let mapped = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info)
+    let mapped = gst_video::VideoFrame::from_buffer_readable(buffer.to_owned(), &info)
         .map_err(|_| gst::FlowError::Error)?;
-    let pixels = if info.format() == gst_video::VideoFormat::P01010le {
-        conversion.convert(&mapped)?
+    let info = mapped.info();
+    let (width, height) = (info.width(), info.height());
+    let (pixels, p010) = if info.format() == gst_video::VideoFormat::P01010le {
+        // VA-backed system-memory caps can download on each fresh map. Keep
+        // this immutable mapping, including its effective VideoMeta layout.
+        (
+            Bytes::new(),
+            Some(Arc::new(gpu_conversion::P010Frame::new(mapped))),
+        )
     } else {
         let stride = *info.stride().first().ok_or(gst::FlowError::Error)?;
         let plane = mapped.plane_data(0).map_err(|_| gst::FlowError::Error)?;
-        pack_rgba(plane, info.width(), info.height(), stride).ok_or(gst::FlowError::Error)?
+        (
+            pack_rgba(plane, width, height, stride).ok_or(gst::FlowError::Error)?,
+            None,
+        )
     };
     let pts = buffer.pts().map(|pts| Duration::from_nanos(pts.nseconds()));
 
     Ok(Frame {
-        width: info.width(),
-        height: info.height(),
+        width,
+        height,
         pixels,
+        p010,
         pts,
     })
 }
@@ -1905,7 +1966,12 @@ fn pack_rgba(source: &[u8], width: u32, height: u32, stride: i32) -> Option<Byte
     Some(packed.into())
 }
 
-fn publish_frame(shared: &Shared, signal: &watch::Sender<u64>, frame: Frame) -> bool {
+fn publish_frame(
+    shared: &Shared,
+    signal: &watch::Sender<u64>,
+    frame: Frame,
+    conversion: &mut gpu_conversion::Converter,
+) -> bool {
     let transition = {
         let mut state = lock(&shared.state);
         if shared.failed.load(Ordering::Acquire) {
@@ -1913,15 +1979,39 @@ fn publish_frame(shared: &Shared, signal: &watch::Sender<u64>, frame: Frame) -> 
         }
         state.transition.take()
     };
-    let (frame, transition) = transition.map_or((frame.clone(), None), |transition| {
+    let frame = if shared.rgba_required.load(Ordering::Acquire) {
+        let Ok(frame) = frame.into_rgba(conversion) else {
+            fail_once(shared, signal, "could not convert CPU presentation frame");
+            return false;
+        };
+        frame
+    } else {
+        frame
+    };
+    let (frame, transition) = if let Some(mut transition) = transition {
         let progress = transition_progress(&transition, frame.pts);
         if progress < 256 && same_dimensions(&transition.held, &frame) {
-            let frame = blend(&transition.held, frame, progress);
+            // Preserve the existing exact CPU crossfade. Steady-state movie
+            // frames reach the renderer without materializing RGBA.
+            let Ok(held) = transition.held.clone().into_rgba(conversion) else {
+                fail_once(shared, signal, "could not convert held crossfade frame");
+                return false;
+            };
+            let Ok(frame) = frame.into_rgba(conversion) else {
+                fail_once(shared, signal, "could not convert opening crossfade frame");
+                return false;
+            };
+            let frame = blend(&held, frame, progress);
+            // The unblended snapshot is now sufficient; release its decoder
+            // mapping rather than retaining a VA surface throughout the fade.
+            transition.held = held;
             (frame, Some(transition))
         } else {
             (frame, None)
         }
-    });
+    } else {
+        (frame, None)
+    };
     let mut state = lock(&shared.state);
     if shared.failed.load(Ordering::Acquire) {
         return false;
@@ -1979,7 +2069,7 @@ fn transition_progress(transition: &LoopTransition, pts: Option<Duration>) -> u1
 fn same_dimensions(left: &Frame, right: &Frame) -> bool {
     left.width == right.width
         && left.height == right.height
-        && left.pixels.len() == right.pixels.len()
+        && (left.p010.is_some() || right.p010.is_some() || left.pixels.len() == right.pixels.len())
 }
 
 fn blend(held: &Frame, opening: Frame, opening_weight: u16) -> Frame {
@@ -2355,6 +2445,7 @@ mod tests {
             width: 2,
             height: 1,
             pixels: Bytes::from(vec![value; 8]),
+            p010: None,
             pts: Some(pts),
         }
     }
@@ -3221,6 +3312,7 @@ mod tests {
             heic: Some(HeicPlayer::start_command(command).expect("worker process")),
             poster: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
             frame: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            p010: None,
             allocation: None,
             allocation_pending: false,
             heic_adopted: false,
@@ -3252,6 +3344,7 @@ mod tests {
             heic: Some(HeicPlayer::start_command(command).expect("worker process")),
             poster: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
             frame: Some(image::Handle::from_rgba(1, 1, vec![9, 9, 9, 255])),
+            p010: None,
             allocation: None,
             allocation_pending: false,
             heic_adopted: false,
@@ -4102,11 +4195,119 @@ mod tests {
     }
 
     #[test]
+    fn desktop_p010_crossfade_and_cpu_recovery_keep_current_pixels() {
+        gst::init().unwrap();
+        let info = gst_video::VideoInfo::builder(gst_video::VideoFormat::P01010le, 2, 2)
+            .fps((30, 1))
+            .colorimetry(&"2:3:7:1".parse().unwrap())
+            .chroma_site(gst_video::VideoChromaSite::MPEG2)
+            .build()
+            .unwrap();
+        let sample = |luma: u16, pts: Duration| {
+            let words = [
+                luma << 6,
+                luma << 6,
+                luma << 6,
+                luma << 6,
+                512 << 6,
+                512 << 6,
+            ];
+            let mut buffer = gst::Buffer::from_mut_slice(
+                words
+                    .into_iter()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            );
+            buffer
+                .get_mut()
+                .unwrap()
+                .set_pts(gst::ClockTime::from_nseconds(pts.as_nanos() as u64));
+            decoded_frame(
+                &gst::Sample::builder()
+                    .buffer(&buffer)
+                    .caps(&info.to_caps().unwrap())
+                    .build(),
+            )
+            .unwrap()
+        };
+        for cpu_consumer in [false, true] {
+            let shared = Arc::new(Shared::default());
+            let (sender, signal) = watch::channel(0);
+            let mut state = State::disabled();
+            state.player = Some(Player {
+                shared: shared.clone(),
+                signal,
+                stopping: Arc::new(AtomicBool::new(false)),
+                worker: None,
+            });
+            let mut conversion = gpu_conversion::Converter::default();
+            assert!(publish_frame(
+                &shared,
+                &sender,
+                sample(64, Duration::ZERO),
+                &mut conversion
+            ));
+            assert_eq!(state.receive_latest(), Refresh::Frame);
+            assert!(state.p010_frame().is_some());
+            assert_eq!(
+                state.p010_frame().unwrap().rgba().unwrap().as_ref(),
+                [0, 0, 0, 255].repeat(4)
+            );
+            begin_loop(&shared, Duration::from_secs(1));
+            for (millis, expected) in [(0, 0), (250, 64), (500, 128), (1000, 255)] {
+                assert!(publish_frame(
+                    &shared,
+                    &sender,
+                    sample(940, Duration::from_millis(millis)),
+                    &mut conversion,
+                ));
+                assert_eq!(state.receive_latest(), Refresh::Frame);
+                assert_eq!(state.p010_frame().is_some(), millis == 1000);
+                assert_eq!(
+                    state.rgba_frame().unwrap().pixels(),
+                    [expected, expected, expected, 255].repeat(4)
+                );
+            }
+            // A CPU consumer requests worker-side RGBA for subsequent frames,
+            // retaining the current image while that request takes effect.
+            if cpu_consumer {
+                assert!(publish_frame(
+                    &shared,
+                    &sender,
+                    sample(64, Duration::from_secs(2)),
+                    &mut conversion,
+                ));
+                assert_eq!(state.receive_latest(), Refresh::Frame);
+                assert!(state.p010_frame().is_none());
+                assert_eq!(
+                    state.rgba_frame().unwrap().pixels(),
+                    [0, 0, 0, 255].repeat(4)
+                );
+            }
+            // Terminal failure keeps the latest image rather than the loop tail.
+            fail_once(&shared, &sender, "expected test source failure");
+            assert_eq!(state.receive_latest(), Refresh::Failed);
+            assert_eq!(state.p010_frame().is_none(), cpu_consumer);
+            let value = if cpu_consumer { 0 } else { 255 };
+            assert_eq!(
+                state.rgba_frame().unwrap().pixels(),
+                [value, value, value, 255].repeat(4)
+            );
+        }
+    }
+
+    #[test]
     fn publishing_replaces_an_unconsumed_frame() {
         let shared = Shared::default();
         let (signal, _) = watch::channel(0);
-        publish_frame(&shared, &signal, frame(1, Duration::ZERO));
-        publish_frame(&shared, &signal, frame(2, Duration::from_millis(33)));
+        let mut conversion = gpu_conversion::Converter::default();
+        publish_frame(&shared, &signal, frame(1, Duration::ZERO), &mut conversion);
+        publish_frame(
+            &shared,
+            &signal,
+            frame(2, Duration::from_millis(33)),
+            &mut conversion,
+        );
 
         let state = lock(&shared.state);
         let Some(Update::Frame(latest)) = state.pending.as_ref() else {
@@ -4132,11 +4333,18 @@ mod tests {
             heic: None,
             poster: Some(poster.clone()),
             frame: Some(poster),
+            p010: None,
             allocation: None,
             allocation_pending: false,
             heic_adopted: false,
         };
-        publish_frame(&shared, &signal_sender, frame(1, Duration::ZERO));
+        let mut conversion = gpu_conversion::Converter::default();
+        publish_frame(
+            &shared,
+            &signal_sender,
+            frame(1, Duration::ZERO),
+            &mut conversion,
+        );
 
         let pending = state
             .prepare_latest()
@@ -4144,7 +4352,12 @@ mod tests {
         assert_ne!(pending.id(), poster_id);
         assert_eq!(state.frame.as_ref().unwrap().id(), poster_id);
 
-        publish_frame(&shared, &signal_sender, frame(2, Duration::from_millis(33)));
+        publish_frame(
+            &shared,
+            &signal_sender,
+            frame(2, Duration::from_millis(33)),
+            &mut conversion,
+        );
         assert!(state.prepare_latest().is_none());
         let shared_state = lock(&shared.state);
         let Some(Update::Frame(latest)) = shared_state.pending.as_ref() else {
@@ -4161,12 +4374,13 @@ mod tests {
         let late_terminal = frame(40, duration);
         let opening = frame(100, Duration::ZERO);
         let (signal, _) = watch::channel(0);
+        let mut conversion = gpu_conversion::Converter::default();
 
         assert_eq!(
             loop_frame_action(&shared, &terminal, duration),
             LoopFrameAction::Request
         );
-        assert!(publish_frame(&shared, &signal, terminal));
+        assert!(publish_frame(&shared, &signal, terminal, &mut conversion));
         begin_loop(&shared, Duration::from_secs(1));
         assert_eq!(
             loop_frame_action(&shared, &late_terminal, duration),
@@ -4187,7 +4401,7 @@ mod tests {
             loop_frame_action(&shared, &opening, duration),
             LoopFrameAction::Publish
         );
-        assert!(publish_frame(&shared, &signal, opening));
+        assert!(publish_frame(&shared, &signal, opening, &mut conversion));
         let state = lock(&shared.state);
         assert!(state.transition.is_some());
         assert_eq!(state.last_frame.as_ref().unwrap().pixels[0], 20);
@@ -4199,7 +4413,12 @@ mod tests {
         let (signal, _) = watch::channel(0);
 
         fail_once(&shared, &signal, "expected test failure");
-        assert!(!publish_frame(&shared, &signal, frame(1, Duration::ZERO)));
+        assert!(!publish_frame(
+            &shared,
+            &signal,
+            frame(1, Duration::ZERO),
+            &mut gpu_conversion::Converter::default()
+        ));
 
         assert!(matches!(lock(&shared.state).pending, Some(Update::Failed)));
         assert_eq!(shared.sequence.load(Ordering::Acquire), 1);
@@ -4221,6 +4440,7 @@ mod tests {
             heic: None,
             poster: Some(poster),
             frame: None,
+            p010: None,
             allocation: None,
             allocation_pending: false,
             heic_adopted: false,
@@ -4250,6 +4470,7 @@ mod tests {
             heic: None,
             poster: Some(poster),
             frame: Some(current),
+            p010: None,
             allocation: None,
             allocation_pending: false,
             heic_adopted: false,
@@ -4277,6 +4498,7 @@ mod tests {
             heic: None,
             poster: None,
             frame: Some(current),
+            p010: None,
             allocation: None,
             allocation_pending: true,
             heic_adopted: false,

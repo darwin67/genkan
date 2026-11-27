@@ -1370,7 +1370,16 @@ impl Runtime {
                 }
             }
         }
-        let media = self.media.rgba_frame();
+        let p010 = if self.frame_available() {
+            None
+        } else {
+            self.media.p010_frame()
+        };
+        let media = if p010.is_none() {
+            self.media.rgba_frame()
+        } else {
+            None
+        };
         let frame = self
             .scheduler
             .as_ref()
@@ -1397,8 +1406,13 @@ impl Runtime {
         let size = (buffer_width, buffer_height);
         let gpu_output = if let Some(target) = &mut surface.gpu {
             let renderer = self.gpu.as_mut().expect("GPU target requires renderer");
-            match renderer.draw(target, size, frame) {
-                Ok(output) => Some(output),
+            match renderer.draw(target, size, frame, p010.as_deref()) {
+                Ok(output) => {
+                    if renderer.rgba_required {
+                        self.media.require_rgba();
+                    }
+                    Some(output)
+                }
                 Err(error) => {
                     surface.fallback_to_cpu(&error);
                     None
@@ -1408,6 +1422,20 @@ impl Runtime {
             None
         };
         if gpu_output.is_none() {
+            // A failed or incompatible output still gets the current frame,
+            // reconstructed from the immutable source rather than GPU readback.
+            let cpu_frame = if p010.is_some() {
+                self.media.rgba_frame()
+            } else {
+                None
+            };
+            let frame = cpu_frame
+                .as_ref()
+                .map(|frame| {
+                    let (width, height) = frame.dimensions();
+                    (width, height, frame.pixels())
+                })
+                .or(frame);
             surface.buffers.retain_mut(|buffer| {
                 (buffer.size == size && buffer.generation == surface.geometry_generation)
                     || buffer.pool.canvas(&buffer.buffer).is_none()

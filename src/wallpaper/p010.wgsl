@@ -7,6 +7,7 @@ struct Layout {
     height: u32,
     y_stride: u32,
     uv_stride: u32,
+    output_stride: u32,
 }
 @group(0) @binding(0) var<storage, read> luma: array<u32>;
 @group(0) @binding(1) var<storage, read> chroma: array<u32>;
@@ -47,5 +48,5 @@ fn convert(@builtin(global_invocation_id) id: vec3<u32>) {
     let r = u32(clamp((298 * Y + 459 * c.y - 16259547) >> 16u, 0, 255));
     let g = u32(clamp((298 * Y - 55 * c.x - 136 * c.y + 5038282) >> 16u, 0, 255));
     let b = u32(clamp((298 * Y + 541 * c.x - 18941056) >> 16u, 0, 255));
-    rgba[y * image.width + x] = r | (g << 8u) | (b << 16u) | 0xff000000u;
+    rgba[y * image.output_stride + x] = r | (g << 8u) | (b << 16u) | 0xff000000u;
 }
