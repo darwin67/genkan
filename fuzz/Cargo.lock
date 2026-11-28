@@ -220,7 +220,7 @@ checksum = "795cbfc56d419a7ce47ccbb7504dd9a5b7c484c083c356e797de08bd988d9629"
 
 [[package]]
 name = "genkan"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "clap",
