@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-11-28
+<!-- release-base: b882ed08f7589c22b5ab0a80c81b2758a05663ff -->
+
+### ⚡ Performance
+
+- *(wallpaper)* Reduce CPU work in cover scaling (#104)
+- *(wallpaper)* Present desktop frames with Vulkan (#106)
+- *(wallpaper)* Download only selected NVIDIA frames (#107)
+- *(wallpaper)* Convert supported P010 frames on the GPU (#108)
+- *(wallpaper)* Keep converted frames on presentation GPU (#109)
+- *(wallpaper)* Convert directly into the presentation texture (#110)
+- *(wallpaper)* Retire decoded frames off the presentation thread (#111)
+- *(wallpaper)* Skip validated HEVC temporal layers (#113)
+
 ## [0.2.0] - 2026-11-20
 <!-- release-base: 2d445fc60f56bca9ea4aaee84d68e72e221c02c4 -->
 
