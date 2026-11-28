@@ -31,6 +31,7 @@ use tokio::sync::watch;
 use crate::stable_file::{open_regular, OpenError};
 
 pub(crate) mod gpu_conversion;
+mod temporal;
 
 const OUTPUT_FRAMES_PER_SECOND: i32 = 30;
 const MAX_DIAGNOSTIC_CHARS: usize = 240;
@@ -1672,7 +1673,10 @@ struct PlaybackPipeline {
     pipeline: gst::Pipeline,
     bus: gst::Bus,
     faulted: Arc<AtomicBool>,
+    prepared: Option<PreparedFrame>,
 }
+
+type PreparedFrame = Arc<Mutex<Option<(gst::Buffer, Frame)>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlaybackOutcome {
@@ -1710,6 +1714,7 @@ fn build_pipeline(
     file: &File,
     duration: Duration,
     mode: DecoderMode,
+    temporal: Option<&Arc<temporal::Plan>>,
     shared: &Arc<Shared>,
     signal: &watch::Sender<u64>,
 ) -> Result<PlaybackPipeline, String> {
@@ -1724,9 +1729,15 @@ fn build_pipeline(
     })?;
     let convert = element("videoconvert")?;
     let rate = element("videorate")?;
+    let buffered = temporal.is_some();
+    let output_rate = if buffered {
+        temporal::output_rate()
+    } else {
+        gst::Fraction::new(OUTPUT_FRAMES_PER_SECOND, 1)
+    };
     let caps = gst::Caps::builder("video/x-raw")
         .field("format", "RGBA")
-        .field("framerate", gst::Fraction::new(OUTPUT_FRAMES_PER_SECOND, 1))
+        .field("framerate", output_rate)
         .build();
     let appsink = gst_app::AppSink::builder()
         .caps(&caps)
@@ -1753,8 +1764,27 @@ fn build_pipeline(
     parser
         .link(&decoder)
         .map_err(|_| pipeline_error("could not link the wallpaper decoder"))?;
-    gst::Element::link_many([&rate, &convert, appsink.upcast_ref()])
+    rate.link(&convert)
         .map_err(|_| pipeline_error("could not link the wallpaper decoder"))?;
+    if buffered {
+        // Extraction leaves less decode work between delivered frames. Let
+        // decoding run ahead while the sink maps a frame before its deadline,
+        // avoiding late maps followed by closely spaced publications. This
+        // bounds queued buffers, not all retained native decoder frames.
+        let queue = element("queue")?;
+        queue.set_property("max-size-buffers", 1_u32);
+        queue.set_property("max-size-bytes", 0_u32);
+        queue.set_property("max-size-time", 0_u64);
+        pipeline
+            .add(&queue)
+            .map_err(|_| pipeline_error("could not add the delivery queue"))?;
+        gst::Element::link_many([&convert, &queue, appsink.upcast_ref()])
+            .map_err(|_| pipeline_error("could not link the delivery queue"))?;
+    } else {
+        convert
+            .link(&appsink)
+            .map_err(|_| pipeline_error("could not link the wallpaper sink"))?;
+    }
     let bus = pipeline
         .bus()
         .ok_or_else(|| pipeline_error("the decode pipeline has no event bus"))?;
@@ -1764,6 +1794,7 @@ fn build_pipeline(
         .static_pad("sink")
         .ok_or_else(|| pipeline_error("the HEVC parser has no input"))?;
     let demux_faulted = Arc::clone(&faulted);
+    let temporal = temporal.cloned();
     demux.connect_pad_added(move |_demux, source_pad| {
         if parser_sink.is_linked() {
             return;
@@ -1774,8 +1805,13 @@ fn build_pipeline(
         let is_hevc = caps
             .structure(0)
             .is_some_and(|structure| structure.name() == "video/x-h265");
-        if is_hevc && source_pad.link(&parser_sink).is_err() {
-            demux_faulted.store(true, Ordering::Release);
+        if is_hevc {
+            if let Some(plan) = &temporal {
+                plan.attach(source_pad, Arc::clone(&demux_faulted));
+            }
+            if source_pad.link(&parser_sink).is_err() {
+                demux_faulted.store(true, Ordering::Release);
+            }
         }
     });
 
@@ -1816,7 +1852,7 @@ fn build_pipeline(
                 return;
             }
             if gpu_conversion {
-                gpu_conversion::configure(source_pad, &conversion_sink);
+                gpu_conversion::configure(source_pad, &conversion_sink, output_rate);
             }
             let cuda_download = download.as_ref().filter(|_| {
                 caps.features(0)
@@ -1860,6 +1896,10 @@ fn build_pipeline(
         .gpu_conversion
         .then(gpu_conversion::FrameReleaser::new)
         .flatten();
+    let prepared = buffered
+        .then(|| prepare_frames(&appsink, releaser.clone()))
+        .transpose()?;
+    let sample_prepared = prepared.clone();
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
@@ -1875,7 +1915,9 @@ fn build_pipeline(
                 let result = sink
                     .pull_sample()
                     .map_err(|_| gst::FlowError::Eos)
-                    .and_then(|sample| decoded_frame(&sample, releaser.as_ref()))
+                    .and_then(|sample| {
+                        sample_frame(&sample, sample_prepared.as_ref(), releaser.as_ref())
+                    })
                     .map(
                         |frame| match loop_frame_action(&sample_shared, &frame, duration) {
                             LoopFrameAction::Publish => {
@@ -1912,7 +1954,77 @@ fn build_pipeline(
         pipeline,
         bus,
         faulted,
+        prepared,
     })
+}
+
+fn prepare_frames(
+    sink: &gst_app::AppSink,
+    releaser: Option<Arc<gpu_conversion::FrameReleaser>>,
+) -> Result<PreparedFrame, String> {
+    let prepared = Arc::new(Mutex::new(None));
+    let probe_prepared = Arc::clone(&prepared);
+    sink.static_pad("sink")
+        .ok_or_else(|| pipeline_error("the wallpaper sink has no input"))?
+        .add_probe(
+            gst::PadProbeType::BUFFER
+                | gst::PadProbeType::EVENT_DOWNSTREAM
+                | gst::PadProbeType::EVENT_FLUSH,
+            move |pad, probe| {
+                match &probe.data {
+                    Some(gst::PadProbeData::Buffer(buffer)) => {
+                        // Never retain a preceding mapping when preparation
+                        // fails. Native unmapping must not hold this mutex.
+                        let previous = lock(&probe_prepared).take();
+                        drop(previous);
+                        if let Some(caps) = pad.current_caps() {
+                            let sample = gst::Sample::builder().buffer(buffer).caps(&caps).build();
+                            if let Ok(frame) = decoded_frame(&sample, releaser.as_ref()) {
+                                let previous =
+                                    lock(&probe_prepared).replace((buffer.clone(), frame));
+                                drop(previous);
+                            }
+                        }
+                    }
+                    Some(gst::PadProbeData::Event(event))
+                        if matches!(
+                            event.view(),
+                            gst::EventView::Caps(_)
+                                | gst::EventView::FlushStop(_)
+                                | gst::EventView::Segment(_)
+                        ) =>
+                    {
+                        // FLUSH_START can race an in-progress map. FLUSH_STOP
+                        // is serialized with buffers and cannot be repopulated
+                        // by a mapping from the preceding segment.
+                        let previous = lock(&probe_prepared).take();
+                        drop(previous);
+                    }
+                    _ => {}
+                }
+                gst::PadProbeReturn::Ok
+            },
+        );
+    Ok(prepared)
+}
+
+fn sample_frame(
+    sample: &gst::Sample,
+    prepared: Option<&PreparedFrame>,
+    releaser: Option<&Arc<gpu_conversion::FrameReleaser>>,
+) -> Result<Frame, gst::FlowError> {
+    if let Some(prepared) = prepared {
+        let ready = lock(prepared).take();
+        if let Some((buffer, frame)) = ready {
+            if sample
+                .buffer()
+                .is_some_and(|sample_buffer| sample_buffer.as_ptr() == buffer.as_ptr())
+            {
+                return Ok(frame);
+            }
+        }
+    }
+    decoded_frame(sample, releaser)
 }
 
 fn decoded_frame(
@@ -2120,18 +2232,42 @@ fn run_playback(
     stopping: &AtomicBool,
 ) {
     let mut mode = DecoderMode::Automatic;
+    // Login/lock retain their existing startup and 30-fps behavior. The desktop
+    // worker validates the complete movie before any compressed frame is lost.
+    let mut temporal = shared
+        .gpu_conversion
+        .then(|| temporal::inspect(&mut file, stopping))
+        .flatten();
     loop {
         if stopping.load(Ordering::Acquire) {
             return;
         }
         shared.loop_requested.store(false, Ordering::Release);
         let outcome = run_attempt(
-            &mut file, duration, crossfade, mode, shared, signal, stopping,
+            &mut file,
+            (duration, crossfade),
+            mode,
+            temporal.as_ref(),
+            shared,
+            signal,
+            stopping,
         );
         if outcome == PlaybackOutcome::Stopped || stopping.load(Ordering::Acquire) {
             return;
         }
-        if should_retry_with_software(mode, lock(&shared.state).last_frame.is_some()) {
+        if temporal.take().is_some() {
+            // A source mismatch or decoder failure must never up-switch the
+            // depleted decoder. run_attempt has already stopped it. Retain the
+            // displayed image and make one clean, ordinary 30-fps restart at 0.
+            diagnostic("wallpaper temporal extraction stopped; restarting full decoding");
+            let mut state = lock(&shared.state);
+            state.pending = None;
+            state.transition = None;
+            state.last_frame_at = None;
+            state.awaiting_opening_since = None;
+            continue;
+        }
+        if should_retry_with_software(mode, lock(&shared.state).last_frame_at.is_some()) {
             mode = DecoderMode::Software;
             continue;
         }
@@ -2149,9 +2285,9 @@ fn should_retry_with_software(mode: DecoderMode, has_frame: bool) -> bool {
 
 fn run_attempt(
     file: &mut File,
-    duration: Duration,
-    crossfade: Duration,
+    (duration, crossfade): (Duration, Duration),
     mode: DecoderMode,
+    temporal: Option<&Arc<temporal::Plan>>,
     shared: &Arc<Shared>,
     signal: &watch::Sender<u64>,
     stopping: &AtomicBool,
@@ -2159,19 +2295,23 @@ fn run_attempt(
     if file.seek(SeekFrom::Start(0)).is_err() {
         return PlaybackOutcome::Failed("wallpaper file could not be rewound");
     }
-    let playback = match build_pipeline(file, duration, mode, shared, signal) {
+    let playback = match build_pipeline(file, duration, mode, temporal, shared, signal) {
         Ok(playback) => playback,
         Err(_) => {
             return PlaybackOutcome::Failed("wallpaper decode pipeline could not be built");
         }
     };
-    if playback.pipeline.set_state(gst::State::Playing).is_err() {
-        let _ = playback.pipeline.set_state(gst::State::Null);
-        return PlaybackOutcome::Failed("wallpaper decode pipeline did not start");
-    }
-    let started_at = Instant::now();
-    let outcome = monitor_pipeline(&playback, mode, started_at, crossfade, shared, stopping);
+    let outcome = if playback.pipeline.set_state(gst::State::Playing).is_err() {
+        PlaybackOutcome::Failed("wallpaper decode pipeline did not start")
+    } else {
+        monitor_pipeline(&playback, mode, Instant::now(), crossfade, shared, stopping)
+    };
     let _ = playback.pipeline.set_state(gst::State::Null);
+    // Quiesce the streaming task before releasing its last prepared mapping.
+    if let Some(prepared) = &playback.prepared {
+        let previous = lock(prepared).take();
+        drop(previous);
+    }
     outcome
 }
 
@@ -4193,6 +4333,147 @@ mod tests {
         );
         assert_eq!(pack_rgba(&source[..5], 1, 1, 6), None);
         assert_eq!(pack_rgba(&source, 2, 1, 6), None);
+    }
+
+    #[test]
+    fn discarded_movie_mappings_release_storage_on_stream_changes() {
+        struct Pixels(Vec<u8>, Arc<AtomicBool>);
+        impl AsMut<[u8]> for Pixels {
+            fn as_mut(&mut self) -> &mut [u8] {
+                &mut self.0
+            }
+        }
+        impl Drop for Pixels {
+            fn drop(&mut self) {
+                self.1.store(true, Ordering::Release);
+            }
+        }
+
+        gst::init().unwrap();
+        let sink = gst_app::AppSink::builder()
+            .sync(false)
+            .enable_last_sample(false)
+            .build();
+        let _prepared = prepare_frames(&sink, None).unwrap();
+        let sink_pad = sink.static_pad("sink").unwrap();
+        let source = gst::Pad::builder(gst::PadDirection::Src).build();
+        source.set_active(true).unwrap();
+        sink.set_state(gst::State::Playing).unwrap();
+        source.link(&sink_pad).unwrap();
+        assert!(source.push_event(gst::event::StreamStart::new("prepared-movie")));
+        let caps = gst_video::VideoInfo::builder(gst_video::VideoFormat::P01010le, 2, 2)
+            .fps((30, 1))
+            .build()
+            .unwrap()
+            .to_caps()
+            .unwrap();
+        // BaseSink clips these buffers after our probe, isolating the
+        // prepared mapping's ownership without replacing sink behavior.
+        let mut segment = gst::FormattedSegment::<gst::ClockTime>::new();
+        segment.set_start(gst::ClockTime::SECOND);
+        assert!(source.push_event(gst::event::Caps::new(&caps)));
+        assert!(source.push_event(gst::event::Segment::new(&segment)));
+
+        for invalidation in ["failure", "caps", "segment", "flush"] {
+            let released = Arc::new(AtomicBool::new(false));
+            let mut buffer = gst::Buffer::from_mut_slice(Pixels(vec![0; 12], released.clone()));
+            buffer.get_mut().unwrap().set_pts(gst::ClockTime::ZERO);
+            buffer
+                .get_mut()
+                .unwrap()
+                .set_duration(gst::ClockTime::from_mseconds(33));
+            source.push(buffer).unwrap();
+            assert!(!released.load(Ordering::Acquire));
+            match invalidation {
+                "failure" => {
+                    let mut invalid = gst::Buffer::new();
+                    invalid.get_mut().unwrap().set_pts(gst::ClockTime::ZERO);
+                    invalid
+                        .get_mut()
+                        .unwrap()
+                        .set_duration(gst::ClockTime::from_mseconds(33));
+                    source.push(invalid).unwrap();
+                }
+                "caps" => {
+                    let changed =
+                        gst_video::VideoInfo::builder(gst_video::VideoFormat::P01010le, 4, 2)
+                            .build()
+                            .unwrap()
+                            .to_caps()
+                            .unwrap();
+                    assert!(source.push_event(gst::event::Caps::new(&changed)));
+                    assert!(released.load(Ordering::Acquire), "CAPS");
+                    assert!(source.push_event(gst::event::Caps::new(&caps)));
+                }
+                "segment" => {
+                    assert!(source.push_event(gst::event::Segment::new(&segment)));
+                }
+                "flush" => {
+                    assert!(source.push_event(gst::event::FlushStart::new()));
+                    assert!(source.push_event(gst::event::FlushStop::new(true)));
+                    assert!(released.load(Ordering::Acquire), "FLUSH_STOP");
+                    assert!(source.push_event(gst::event::Segment::new(&segment)));
+                }
+                _ => unreachable!(),
+            }
+            assert!(released.load(Ordering::Acquire), "{invalidation}");
+        }
+        source.set_active(false).unwrap();
+        sink.set_state(gst::State::Null).unwrap();
+    }
+
+    #[test]
+    fn prepared_movie_samples_preserve_pixels_and_match_buffer_identity() {
+        gst::init().unwrap();
+        let sink = gst_app::AppSink::builder().sync(false).build();
+        let prepared = prepare_frames(&sink, None).unwrap();
+        let sink_pad = sink.static_pad("sink").unwrap();
+        sink_pad.add_probe(gst::PadProbeType::BUFFER, |_, _| gst::PadProbeReturn::Drop);
+        let source = gst::Pad::builder(gst::PadDirection::Src).build();
+        source.set_active(true).unwrap();
+        sink.set_state(gst::State::Playing).unwrap();
+        assert!(source.push_event(gst::event::StreamStart::new("movie-identity")));
+        source.link(&sink_pad).unwrap();
+        let sample = |width, height, pixels: Vec<u8>, millis| {
+            let caps = gst_video::VideoInfo::builder(gst_video::VideoFormat::Rgba, width, height)
+                .build()
+                .unwrap()
+                .to_caps()
+                .unwrap();
+            let mut buffer = gst::Buffer::from_mut_slice(pixels);
+            buffer
+                .get_mut()
+                .unwrap()
+                .set_pts(gst::ClockTime::from_mseconds(millis));
+            gst::Sample::builder().buffer(&buffer).caps(&caps).build()
+        };
+        let pixels = vec![4, 17, 29, 255, 50, 73, 91, 128];
+        let original = sample(2, 1, pixels.clone(), 47);
+        assert!(source.push_event(gst::event::Caps::new(&original.caps_owned().unwrap())));
+        assert!(
+            source.push_event(gst::event::Segment::new(&gst::FormattedSegment::<
+                gst::ClockTime,
+            >::new()))
+        );
+        let replacement_pixels = vec![96, 61, 24, 255, 87, 32, 15, 64];
+        let replacement = sample(1, 2, replacement_pixels.clone(), 47);
+        for (input, width, height, expected_pixels) in [
+            (&original, 2, 1, pixels),
+            (&replacement, 1, 2, replacement_pixels),
+        ] {
+            source.push(original.buffer_owned().unwrap()).unwrap();
+            let frame = sample_frame(input, Some(&prepared), None).unwrap();
+            assert_eq!((frame.width, frame.height), (width, height));
+            assert_eq!(frame.pixels.as_ref(), expected_pixels);
+            assert_eq!(frame.pts, Some(Duration::from_millis(47)));
+        }
+        source.push(original.buffer_owned().unwrap()).unwrap();
+        assert!(matches!(
+            sample_frame(&sample(1, 2, vec![], 47), Some(&prepared), None),
+            Err(gst::FlowError::Error)
+        ));
+        source.set_active(false).unwrap();
+        sink.set_state(gst::State::Null).unwrap();
     }
 
     #[test]

@@ -34,6 +34,7 @@ gui = [
     "dep:bytes",
     "dep:calloop",
     "dep:calloop-wayland-source",
+    "dep:cc",
     "dep:chrono",
     "dep:cosmic-text",
     "dep:futures-util",
@@ -46,6 +47,7 @@ gui = [
     "dep:image",
     "dep:iced",
     "dep:iced_runtime",
+    "dep:pkg-config",
     "dep:rclip-desktop-entry",
     "dep:seccompiler",
     "dep:sha2",
@@ -122,6 +124,10 @@ zbus = { version = "5.2.0", default-features = false, features = ["tokio"], opti
 zune-core = { version = "0.4", optional = true }
 zune-jpeg = { version = "0.4", optional = true }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"], optional = true }
+
+[build-dependencies]
+cc = { version = "1.4.4", optional = true }
+pkg-config = { version = "0.3.34", optional = true }
 
 [dev-dependencies]
 proptest = "1.6"
