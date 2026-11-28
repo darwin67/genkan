@@ -12,16 +12,17 @@ use gstreamer_video::{self as video, prelude::*};
 use iced::futures::executor::block_on;
 use iced::wgpu::{self, util::DeviceExt};
 
-pub(super) fn configure(source: &gst::Pad, sink: &gstreamer_app::AppSink) {
+pub(super) fn configure(
+    source: &gst::Pad,
+    sink: &gstreamer_app::AppSink,
+    output_rate: gst::Fraction,
+) {
     let sink = sink.clone();
     let select = move |caps: &gst::CapsRef| {
         let supported = video::VideoInfo::from_caps(caps).is_ok_and(|info| supports(&info));
         let selected = gst::Caps::builder("video/x-raw")
             .field("format", if supported { "P010_10LE" } else { "RGBA" })
-            .field(
-                "framerate",
-                gst::Fraction::new(super::OUTPUT_FRAMES_PER_SECOND, 1),
-            )
+            .field("framerate", output_rate)
             .build();
         sink.set_caps(Some(&selected));
     };
@@ -589,7 +590,8 @@ mod tests {
             .add_many([source.upcast_ref(), &rate, &convert, sink.upcast_ref()])
             .unwrap();
         gst::Element::link_many([source.upcast_ref(), &rate, &convert, sink.upcast_ref()]).unwrap();
-        configure(&source.static_pad("src").unwrap(), &sink);
+        let output_rate = gst::Fraction::new(2997, 100);
+        configure(&source.static_pad("src").unwrap(), &sink, output_rate);
         pipeline.set_state(gst::State::Playing).unwrap();
         let mut sequence = 0;
         let cases = [
@@ -630,6 +632,7 @@ mod tests {
         let mut observed = Vec::new();
         while let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_seconds(5)) {
             let info = video::VideoInfo::from_caps(sample.caps().unwrap()).unwrap();
+            assert_eq!(info.fps(), output_rate);
             observed.push((info.width(), info.height(), info.format()));
         }
         let eos = sink.is_eos();
